@@ -11,17 +11,18 @@
 ┌─────────────────────────────────────────┐        ┌──────────────────────────────────────┐
 │  UI  (Browser, Fullscreen Kiosk)         │        │  MIDI-Server  (Rust, Headless)       │
 │                                          │        │                                      │
-│  • Reines PixiJS (Unterwasser-Rendering) │  WS    │  • Zentrale MIDI-Clock (24 PPQN)     │
-│  • Touch-only + Touch-Keyboard           │◄──────►│  • midir + OS-Timestamp-Scheduler    │
-│  • Kein Timing, kein MIDI                │  JSON  │  • MIDI I/O (Out/In, CC, Notes, PC)  │
-│  • Nur Darstellung + Bedien-Events       │        │  • Projekt-Persistenz (JSON-Dateien) │
-│                                          │        │  • MIDI-Learn                        │
+│  • React-Frontend (alle Screens/Touch)   │  WS    │  • Zentrale MIDI-Clock (24 PPQN)     │
+│  • PixiJS nur im Hintergrund (§6)        │◄──────►│  • midir + OS-Timestamp-Scheduler    │
+│  • Touch-only + Touch-Keyboard           │  JSON  │  • MIDI I/O (Out/In, CC, Notes, PC)  │
+│  • Kein Timing, kein MIDI                │        │  • Projekt-Persistenz (JSON-Dateien) │
+│  • Nur Darstellung + Bedien-Events       │        │  • MIDI-Learn                        │
 └─────────────────────────────────────────┘        └──────────────────────────────────────┘
 ```
 
 - **Die UI ist „dumm".** Sie sendet Absichten (`play`, `triggerBlock`, `setControlValue`) und rendert den vom Server gepushten Zustand. Kein Timing-Code im Browser.
 - **Der Server ist die einzige Zeitquelle.** Er hält Transport, Clock, Scheduling und alle MIDI-Ausgabe.
 - **Kommunikation:** WebSocket, JSON-Nachrichten. UI → Server = Commands; Server → UI = State-Patches + hochfrequente Transport-Ticks (gethrottelt auf ~30–60 Hz fürs Rendering, **nicht** die echte Clock).
+- **Rendering-Split innerhalb der UI** (siehe §6 für Details): der Browser-Prozess trägt zwei übereinanderliegende Ebenen — `#pixi-bg` (Canvas, `pointer-events: none`) rendert ausschließlich die Unterwasser-Hintergrundszene + den Touch-Ripple-Effekt; `#react-root` (DOM, darüber) ist das komplette interaktive Frontend (Transport, Dashboard, Sequencer Overview, Baustein-Detail/-Bibliothek, Lane-Controls, Touch-Keyboard). Beide Ebenen teilen sich `state.ts`'s `Store` und `net.ts`'s `Net` (framework-agnostische Pub-Sub-Klassen, unverändert) — React hängt sich per `useSyncExternalStore`-Hook daran (`ui/src/app/store.ts`).
 
 ---
 
@@ -34,7 +35,7 @@
 | Timing         | **OS-Timestamping + Look-Ahead**  | ALSA-seq / CoreMIDI dispatchen zeitgestempelt im Kernel → Sub-ms, GC-unabhängig. |
 | Web/WS-Layer   | `axum` + `tokio-tungstenite`      | Async WebSocket-Server in Rust, leichtgewichtig. |
 | Serialisierung | `serde` / `serde_json`            | Rust-Typen spiegeln [`shared/model.ts`](../shared/model.ts) 1:1. |
-| UI-Rendering   | **Reines PixiJS**                 | Maximale Kontrolle über Unterwasser-Look & Touch. |
+| UI-Rendering   | **React (Frontend) + PixiJS (Hintergrund)** | React: native DOM-Layout/Scroll/Events statt Pixi-Hitboxen und Hand-Pixel-Layout für jeden Screen. PixiJS bleibt exklusiv für die WebGL-Partikelszene (§6) — dort lohnt sich das GPU-Rendering wirklich, für Buttons/Listen/Popups nicht. |
 | Persistenz     | **JSON-Dateien**                  | Einfach kopierbar (Projekte duplizieren), versionierbar, kein DB-Setup. |
 
 > **Sprach-Trennung ist sauber:** UI ist ein eigener Browser-Prozess (PixiJS/JS), Server ist Rust.
@@ -180,12 +181,13 @@ Navigation: Overview → Device → Lane → Baustein (immer tiefer, immer touch
 
 ---
 
-## 6. Unterwasser-Look (PixiJS)
+## 6. Unterwasser-Look (PixiJS-Hintergrund + React-Frontend)
 
-- Hintergrund: Farbverlauf Tiefsee → hellere Oberfläche, sanfte Lichtstrahlen (God Rays).
-- Partikel: **Seifenblasen** (aufsteigend), **Algen** (Wave-Shader, wiegend), gelegentlich **kleine Fische**, die durchschwimmen.
-- UI-Elemente wirken wie „schwebend": leichtes Bobbing, weiche Glow-Ränder, Blasen-Feedback bei Touch.
-- Performance: Partikel-Container mit Sprite-Pooling; Ziel 60 FPS auf dem Pi 5 (Fallback-Qualitätsstufe).
+- **Layering:** `index.html` mountet zwei volle Viewport-Ebenen — `#pixi-bg` (Canvas, `pointer-events: none`, z-index 0) und `#react-root` (DOM, z-index 1, darüber). `ui/src/main.tsx` startet beide: `mountBackground()` (`ui/src/background.ts`) für die Pixi-Seite, `createRoot(...).render(<App />)` (`ui/src/app/App.tsx`) für React.
+- **Pixi-Hintergrund** (`ui/src/scene/underwater.ts`, unverändert seit vor dem React-Umbau): Farbverlauf Tiefsee → hellere Oberfläche, Kaustik-Lichtbänder, **Seifenblasen** (aufsteigend), **Plankton**, **Algen** (wiegend, von Krabben/Schnecken abgefressen), **Fische/Haie/Schildkröten/Quallen**. Braucht kein eigenes Interaktionssystem — nichts darin ist tappable.
+- **Touch-Ripple** (`ui/src/ui/ripple.ts`): ein `window`-`pointerdown`-Listener prüft `getComputedStyle(target).cursor === "pointer"` auf dem tatsächlich getroffenen DOM-Element (egal ob React-Button, -Tile, -Keyboard-Taste, …) und zeichnet den expandierenden Ring in die Pixi-Ebene — die einzige Stelle, an der Hintergrund und Frontend sich berühren.
+- **React-Frontend** (`ui/src/app/`): jeder Screen ist eine eigene Komponente (`Transport`, `Dashboard`, `overview/Overview`, `BlockDetail`, `BlockLibrary`, `LaneControls`, `TouchKeyboard`, `NotePicker`), Layout per Flexbox/Grid/`overflow: auto` statt Hand-Pixel-Positionierung; `theme.css` spiegelt `theme.ts`'s Palette als CSS-Variablen.
+- Performance: die Partikelszene bleibt WebGL/Pixi (Ziel 60 FPS auf dem Pi 5, Fallback-Qualitätsstufe); das Frontend ist normales DOM-Rendering.
 
 ---
 

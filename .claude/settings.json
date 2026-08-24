@@ -7,7 +7,11 @@
       "Bash(pkill -f \"target/debug/mididrift-server\")",
       "Bash(pkill -f \"cargo run\")",
       "Bash(rm -rf /tmp/mididrift-smoketest)",
-      "Bash(jobs -l)"
+      "Bash(jobs -l)",
+      "Bash(nohup cargo run --quiet)",
+      "Bash(disown)",
+      "Bash(rm -rf /tmp/mididrift-smoketest3 /tmp/mididrift-server3.log)",
+      "Bash(cargo build *)"
     ],
     "additionalDirectories": [
       "/private/tmp"

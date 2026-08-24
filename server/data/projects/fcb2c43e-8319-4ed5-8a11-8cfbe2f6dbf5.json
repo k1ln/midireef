@@ -19,48 +19,96 @@
       "latencyOffsetMs": 0.0,
       "blocks": [
         {
-          "baseNote": 36,
-          "id": "c0312c13-c072-4030-83f5-5524b65eff3d",
+          "events": [],
+          "id": "5f6e39b7-b3f3-44ea-93e8-1725752e7659",
           "lengthBars": 1,
-          "name": "Bass",
-          "notes": [
+          "name": "PC",
+          "slot": {
+            "col": 1,
+            "row": 1,
+            "type": "programChange"
+          },
+          "stepsPerBar": 16,
+          "timeSignature": "4/4",
+          "type": "programChange"
+        },
+        {
+          "events": [
             {
-              "lengthSteps": 2,
-              "note": 36,
-              "step": 0,
-              "velocity": 100
+              "atStep": 4,
+              "program": 0
             },
             {
-              "lengthSteps": 2,
-              "note": 36,
-              "step": 3,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 2,
-              "note": 43,
-              "step": 6,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 2,
-              "note": 36,
-              "step": 8,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 2,
-              "note": 39,
-              "step": 11,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 2,
-              "note": 43,
-              "step": 14,
-              "velocity": 100
+              "atStep": 3,
+              "program": 5
             }
           ],
+          "id": "182d4acf-fe45-45f1-8646-39ade125ce1f",
+          "lengthBars": 1,
+          "name": "PC",
+          "slot": {
+            "col": 2,
+            "row": 1,
+            "type": "programChange"
+          },
+          "stepsPerBar": 16,
+          "timeSignature": "4/4",
+          "type": "programChange"
+        },
+        {
+          "ccNumber": 45,
+          "channel": 3,
+          "curve": "linear",
+          "id": "2657a7d9-feff-4df0-a94c-daf59cd9a0e1",
+          "layers": [
+            {
+              "combine": "max",
+              "depth": 1.0,
+              "enabled": true,
+              "id": "ade22bc6-fea0-4850-9f8d-c91909ea5ff2",
+              "kind": "stepped",
+              "offset": 0,
+              "values": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          ],
+          "lengthBars": 1,
+          "name": "CC",
+          "outMax": 127,
+          "outMin": 50,
+          "resolutionPerBar": 16,
+          "slewMs": 0,
+          "slot": {
+            "col": 1,
+            "row": 1,
+            "type": "cc"
+          },
+          "stepsPerBar": 16,
+          "timeSignature": "4/4",
+          "type": "cc"
+        },
+        {
+          "baseNote": 60,
+          "id": "ac5996b3-9484-4507-a753-3206784f693b",
+          "lengthBars": 1,
+          "name": "Mel",
+          "notes": [],
           "slot": {
             "col": 1,
             "row": 1,
@@ -71,50 +119,13 @@
           "type": "melody"
         },
         {
-          "baseNote": 36,
-          "id": "af5c8a28-45f7-4a56-9b96-87f546c1f222",
+          "baseNote": 60,
+          "id": "c4cc2bc9-b4a6-49bb-b47e-f4b3d261a981",
           "lengthBars": 1,
-          "name": "Bass",
-          "notes": [
-            {
-              "lengthSteps": 2,
-              "note": 36,
-              "step": 0,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 2,
-              "note": 36,
-              "step": 3,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 2,
-              "note": 43,
-              "step": 6,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 2,
-              "note": 36,
-              "step": 8,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 2,
-              "note": 39,
-              "step": 11,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 2,
-              "note": 43,
-              "step": 14,
-              "velocity": 100
-            }
-          ],
+          "name": "Mel",
+          "notes": [],
           "slot": {
-            "col": 1,
+            "col": 2,
             "row": 1,
             "type": "melody"
           },
@@ -139,16 +150,8 @@
           "triggerQuantize": "nextBar",
           "slots": [
             {
-              "blockId": "c0312c13-c072-4030-83f5-5524b65eff3d",
-              "id": "d686b0dc-83d0-4f22-a915-4239759d06eb",
-              "loopCount": 0,
-              "loopMode": "loop",
-              "speed": 1,
-              "transpose": 0
-            },
-            {
-              "blockId": "af5c8a28-45f7-4a56-9b96-87f546c1f222",
-              "id": "5d1e2a38-1a6b-46bb-b794-ffda16526b66",
+              "blockId": "c4cc2bc9-b4a6-49bb-b47e-f4b3d261a981",
+              "id": "585abd59-79fe-471f-8fa1-9676af990add",
               "loopCount": 0,
               "loopMode": "loop",
               "speed": 1,
@@ -158,10 +161,10 @@
           "controls": []
         },
         {
-          "id": "e8844dd6-3e3f-4aae-a07b-a90fd5246119",
+          "id": "a60dd357-a2f0-4bc7-80b6-fe6d5c436786",
           "name": "Lane 2",
-          "role": "programChange",
-          "color": "#b794f4",
+          "role": "cc",
+          "color": "#63b3ed",
           "enabled": true,
           "visible": true,
           "muted": false,
@@ -170,7 +173,16 @@
           "height": 64.0,
           "playMode": "sequential",
           "triggerQuantize": "nextBar",
-          "slots": [],
+          "slots": [
+            {
+              "blockId": "2657a7d9-feff-4df0-a94c-daf59cd9a0e1",
+              "id": "1183817b-2958-42b3-a8f3-711971c4325c",
+              "loopCount": 0,
+              "loopMode": "loop",
+              "speed": 1,
+              "transpose": 0
+            }
+          ],
           "controls": []
         }
       ]
@@ -549,6 +561,407 @@
           "stepsPerBar": 16,
           "timeSignature": "4/4",
           "type": "beat"
+        },
+        {
+          "id": "97cd7bae-5ce9-4dfe-a3d8-c35accd7cbe3",
+          "lengthBars": 1,
+          "lines": [
+            {
+              "id": "ddeadb02-8155-4f6e-afd5-982c7c23487d",
+              "muted": false,
+              "name": "Kick",
+              "note": 36,
+              "steps": [
+                {
+                  "velocity": 110
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 110
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 110
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 110
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                }
+              ]
+            },
+            {
+              "id": "af039e46-6501-4e8d-a194-8281e3d407f3",
+              "muted": false,
+              "name": "Snare",
+              "note": 38,
+              "steps": [
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 100
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 100
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                }
+              ]
+            },
+            {
+              "id": "842673d7-9c09-4e1c-9b8e-b811ea2c7194",
+              "muted": false,
+              "name": "Hat",
+              "note": 42,
+              "steps": [
+                {
+                  "velocity": 70
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 60
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 70
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 60
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 70
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 60
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 70
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 60
+                },
+                {
+                  "velocity": 0
+                }
+              ]
+            }
+          ],
+          "name": "Beat",
+          "slot": {
+            "col": 2,
+            "row": 1,
+            "type": "beat"
+          },
+          "stepsPerBar": 16,
+          "timeSignature": "4/4",
+          "type": "beat"
+        },
+        {
+          "channel": 2,
+          "id": "8a608175-bb23-44fb-8714-56e9a2a53d8d",
+          "lengthBars": 1,
+          "lines": [
+            {
+              "id": "ff8cd38a-6a91-4584-b9d5-d5c0ee54be4f",
+              "muted": false,
+              "name": "Kick",
+              "note": 36,
+              "steps": [
+                {
+                  "velocity": 110
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 110
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 110
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 110
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                }
+              ]
+            },
+            {
+              "id": "4ffb70ed-e1a5-4727-8212-3330e87c23b1",
+              "muted": false,
+              "name": "Snare",
+              "note": 38,
+              "steps": [
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 100
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 100
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 0
+                }
+              ]
+            },
+            {
+              "id": "61c40291-3c06-4f65-ac9c-d76887337be2",
+              "muted": false,
+              "name": "Hat",
+              "note": 42,
+              "steps": [
+                {
+                  "velocity": 70
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 60
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 70
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 60
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 70
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 60
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 70
+                },
+                {
+                  "velocity": 0
+                },
+                {
+                  "velocity": 60
+                },
+                {
+                  "velocity": 0
+                }
+              ]
+            }
+          ],
+          "name": "Beat",
+          "slot": {
+            "col": 3,
+            "row": 1,
+            "type": "beat"
+          },
+          "stepsPerBar": 16,
+          "timeSignature": "4/4",
+          "type": "beat"
+        },
+        {
+          "baseNote": 60,
+          "id": "d1f0e991-2229-4445-adce-8ec459496488",
+          "lengthBars": 1,
+          "name": "Mel",
+          "notes": [
+            {
+              "lengthSteps": 1,
+              "note": 66,
+              "step": 3,
+              "velocity": 100
+            },
+            {
+              "lengthSteps": 1,
+              "note": 66,
+              "step": 0,
+              "velocity": 100
+            },
+            {
+              "lengthSteps": 1,
+              "note": 70,
+              "step": 1,
+              "velocity": 100
+            }
+          ],
+          "slot": {
+            "col": 1,
+            "row": 1,
+            "type": "melody"
+          },
+          "stepsPerBar": 16,
+          "timeSignature": "4/4",
+          "type": "melody"
         }
       ],
       "lanes": [
@@ -577,6 +990,14 @@
             {
               "blockId": "68efa661-fe5d-4af0-8486-74f61d00fc60",
               "id": "1d63884c-a9bb-4054-9a68-22b18ccdd176",
+              "loopCount": 0,
+              "loopMode": "loop",
+              "speed": 1,
+              "transpose": 0
+            },
+            {
+              "blockId": "8a608175-bb23-44fb-8714-56e9a2a53d8d",
+              "id": "508eadc4-de2c-4cc5-a180-2978cbc150d9",
               "loopCount": 0,
               "loopMode": "loop",
               "speed": 1,

@@ -468,6 +468,50 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 broadcast_snapshot(state);
             }
         }
+        // Baustein-Bibliothek: verschiebt einen bestehenden Baustein auf eine
+        // andere (row, col) im 9×9-Raster seines Typs — no-op, wenn die
+        // Zielzelle schon von einem ANDEREN Baustein belegt ist.
+        "block.move" => {
+            if let (Some(id), Some(row), Some(col)) = (
+                str_field(&cmd, "blockId"),
+                cmd.get("row").and_then(|v| v.as_u64()),
+                cmd.get("col").and_then(|v| v.as_u64()),
+            ) {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(d) = proj.devices.iter_mut().find(|d| {
+                    d.blocks
+                        .as_array()
+                        .map(|arr| arr.iter().any(|b| b.get("id").and_then(|v| v.as_str()) == Some(id.as_str())))
+                        .unwrap_or(false)
+                }) {
+                    let block_type = d
+                        .blocks
+                        .as_array()
+                        .and_then(|arr| arr.iter().find(|b| b.get("id").and_then(|v| v.as_str()) == Some(id.as_str())))
+                        .and_then(|b| b.get("type").and_then(|v| v.as_str()))
+                        .map(str::to_string);
+                    if let Some(block_type) = block_type {
+                        let occupied_by_other = d.blocks.as_array().map(|arr| {
+                            arr.iter().any(|b| {
+                                b.get("id").and_then(|v| v.as_str()) != Some(id.as_str())
+                                    && b.get("type").and_then(|v| v.as_str()) == Some(block_type.as_str())
+                                    && b.get("slot").and_then(|s| s.get("row")).and_then(|v| v.as_u64()) == Some(row)
+                                    && b.get("slot").and_then(|s| s.get("col")).and_then(|v| v.as_u64()) == Some(col)
+                            })
+                        }).unwrap_or(false);
+                        if !occupied_by_other {
+                            if let Some(b) = d.blocks.as_array_mut().and_then(|arr| {
+                                arr.iter_mut().find(|b| b.get("id").and_then(|v| v.as_str()) == Some(id.as_str()))
+                            }) {
+                                b["slot"] = serde_json::json!({ "type": block_type, "row": row, "col": col });
+                            }
+                        }
+                    }
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
         // Generischer Skalarfeld-Setter für Baustein-Felder, die keine
         // strukturelle Array-Logik brauchen (Kanal-Override, ccNumber,
         // baseNote, direction, gateSteps, rateSteps, velocity, …).
@@ -490,33 +534,34 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 broadcast_snapshot(state);
             }
         }
-        // Baustein-Detail: Note bei (step, note) an/aus — Grundlage für den
-        // Melodie-Editor (Piano-Roll-Grid).
-        "melody.toggleNote" => {
-            if let (Some(id), Some(step), Some(note)) = (
-                str_field(&cmd, "blockId"),
-                cmd.get("step").and_then(|v| v.as_u64()),
-                cmd.get("note").and_then(|v| v.as_u64()),
-            ) {
+        // Baustein-Detail: Note an einem Step setzen/ersetzen/löschen (note=null
+        // → löschen). Ein Step trägt genau eine Note — ersetzt eine ggf.
+        // vorhandene Note an diesem Step, statt mehrere zu stapeln (Melodie-
+        // Editor ist eine Step-Reihe + Noten-Listenauswahl, kein Piano-Roll-Grid).
+        "melody.setStepNote" => {
+            if let (Some(id), Some(step)) =
+                (str_field(&cmd, "blockId"), cmd.get("step").and_then(|v| v.as_u64()))
+            {
+                let note = cmd.get("note").and_then(|v| v.as_u64());
                 let mut proj = state.project.lock().unwrap();
                 if let Some(b) = find_block_mut(&mut proj, &id) {
                     if !b["notes"].is_array() {
                         b["notes"] = serde_json::json!([]);
                     }
                     if let Some(arr) = b["notes"].as_array_mut() {
-                        let existing = arr.iter().position(|n| {
-                            n.get("step").and_then(|v| v.as_u64()) == Some(step)
-                                && n.get("note").and_then(|v| v.as_u64()) == Some(note)
-                        });
-                        if let Some(i) = existing {
-                            arr.remove(i);
-                        } else {
-                            arr.push(serde_json::json!({
+                        let existing = arr.iter().position(|n| n.get("step").and_then(|v| v.as_u64()) == Some(step));
+                        match (existing, note) {
+                            (Some(i), Some(n)) => arr[i]["note"] = serde_json::json!(n.min(127)),
+                            (Some(i), None) => {
+                                arr.remove(i);
+                            }
+                            (None, Some(n)) => arr.push(serde_json::json!({
                                 "step": step,
                                 "lengthSteps": 1,
-                                "note": note,
+                                "note": n.min(127),
                                 "velocity": 100,
-                            }));
+                            })),
+                            (None, None) => {}
                         }
                     }
                 }
@@ -627,19 +672,128 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 broadcast_snapshot(state);
             }
         }
-        // CC-Detail: Wert eines Steps der (einzigen, impliziten) Stepped-Layer setzen.
-        "cc.setStepValue" => {
-            if let (Some(id), Some(step), Some(value)) = (
+        // CC-Detail: Layer-Verwaltung (mehrere Layer, "von unten nach oben
+        // kombiniert" — LFO/Envelope/Ramp/Random/Stepped, siehe CcLayer im
+        // Modell). Werte in Layern sind IMMER 0..1 normiert (nicht 0-127) —
+        // die endgültige Skalierung auf outMin..outMax passiert erst beim
+        // Zusammensetzen der Layer (Engine, folgt später).
+        "cc.addLayer" => {
+            if let (Some(id), Some(kind)) = (str_field(&cmd, "blockId"), str_field(&cmd, "kind")) {
+                let steps = cmd.get("steps").and_then(|v| v.as_u64()).unwrap_or(16) as usize;
+                let mut proj = state.project.lock().unwrap();
+                if let Some(b) = find_block_mut(&mut proj, &id) {
+                    if !b["layers"].is_array() {
+                        b["layers"] = serde_json::json!([]);
+                    }
+                    if let Some(layer) = default_cc_layer(&kind, steps) {
+                        if let Some(arr) = b["layers"].as_array_mut() {
+                            arr.push(layer);
+                        }
+                    }
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        "cc.removeLayer" => {
+            if let (Some(id), Some(layer_id)) = (str_field(&cmd, "blockId"), str_field(&cmd, "layerId")) {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(b) = find_block_mut(&mut proj, &id) {
+                    if let Some(arr) = b["layers"].as_array_mut() {
+                        arr.retain(|l| l.get("id").and_then(|v| v.as_str()) != Some(layer_id.as_str()));
+                    }
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        "cc.moveLayer" => {
+            if let (Some(id), Some(layer_id), Some(dir)) = (
                 str_field(&cmd, "blockId"),
-                cmd.get("step").and_then(|v| v.as_u64()),
-                cmd.get("value").and_then(|v| v.as_u64()),
+                str_field(&cmd, "layerId"),
+                str_field(&cmd, "dir"),
             ) {
                 let mut proj = state.project.lock().unwrap();
                 if let Some(b) = find_block_mut(&mut proj, &id) {
-                    if let Some(layer) = first_stepped_layer_mut(b) {
+                    if let Some(arr) = b["layers"].as_array_mut() {
+                        if let Some(i) = arr.iter().position(|l| l.get("id").and_then(|v| v.as_str()) == Some(layer_id.as_str())) {
+                            let j = if dir == "up" { i.checked_sub(1) } else { (i + 1 < arr.len()).then_some(i + 1) };
+                            if let Some(j) = j {
+                                arr.swap(i, j);
+                            }
+                        }
+                    }
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        // Patcht beliebige Skalarfelder eines Layers (enabled/combine/depth/
+        // offset/waveform/rateBars/phase/from/to/everySteps/smooth, …).
+        "cc.updateLayer" => {
+            if let (Some(id), Some(layer_id), Some(patch)) = (
+                str_field(&cmd, "blockId"),
+                str_field(&cmd, "layerId"),
+                cmd.get("patch").cloned(),
+            ) {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(b) = find_block_mut(&mut proj, &id) {
+                    if let Some(layer) = find_cc_layer_mut(b, &layer_id) {
+                        if let (Some(obj), Some(patch_obj)) = (layer.as_object_mut(), patch.as_object()) {
+                            for (k, v) in patch_obj {
+                                obj.insert(k.clone(), v.clone());
+                            }
+                        }
+                    }
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        "cc.setStepValue" => {
+            if let (Some(id), Some(layer_id), Some(step), Some(value)) = (
+                str_field(&cmd, "blockId"),
+                str_field(&cmd, "layerId"),
+                cmd.get("step").and_then(|v| v.as_u64()),
+                cmd.get("value").and_then(|v| v.as_f64()),
+            ) {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(b) = find_block_mut(&mut proj, &id) {
+                    if let Some(layer) = find_cc_layer_mut(b, &layer_id) {
                         if let Some(values) = layer["values"].as_array_mut() {
                             if let Some(slot) = values.get_mut(step as usize) {
-                                *slot = serde_json::json!(value.min(127));
+                                *slot = serde_json::json!(value.clamp(0.0, 1.0));
+                            }
+                        }
+                    }
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        // Envelope-Layer: Punkt bei `step` anlegen/ändern/löschen (value=null → löschen).
+        "cc.setEnvelopePoint" => {
+            if let (Some(id), Some(layer_id), Some(step)) = (
+                str_field(&cmd, "blockId"),
+                str_field(&cmd, "layerId"),
+                cmd.get("step").and_then(|v| v.as_u64()),
+            ) {
+                let value = cmd.get("value").and_then(|v| v.as_f64());
+                let mut proj = state.project.lock().unwrap();
+                if let Some(b) = find_block_mut(&mut proj, &id) {
+                    if let Some(layer) = find_cc_layer_mut(b, &layer_id) {
+                        if !layer["points"].is_array() {
+                            layer["points"] = serde_json::json!([]);
+                        }
+                        if let Some(arr) = layer["points"].as_array_mut() {
+                            let idx = arr.iter().position(|p| p.get("step").and_then(|v| v.as_u64()) == Some(step));
+                            match (idx, value) {
+                                (Some(i), Some(v)) => arr[i]["value"] = serde_json::json!(v.clamp(0.0, 1.0)),
+                                (Some(i), None) => {
+                                    arr.remove(i);
+                                }
+                                (None, Some(v)) => arr.push(serde_json::json!({ "step": step, "value": v.clamp(0.0, 1.0) })),
+                                (None, None) => {}
                             }
                         }
                     }
@@ -752,6 +906,149 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 broadcast_snapshot(state);
             }
         }
+        // Fügt einen BESTEHENDEN Baustein (aus der Baustein-Bibliothek des
+        // Devices) als neuen Slot in eine Lane ein — anders als
+        // `lane.addBlock`, das immer einen frischen Baustein anlegt. Nur
+        // erlaubt, wenn Baustein-Typ und Lane-Rolle übereinstimmen und
+        // beide zum selben Device gehören.
+        "laneSlot.add" => {
+            if let (Some(lane_id), Some(block_id)) = (str_field(&cmd, "laneId"), str_field(&cmd, "blockId")) {
+                let mut proj = state.project.lock().unwrap();
+                for d in proj.devices.iter_mut() {
+                    let Some(pos) = d.lanes.iter().position(|l| l.id == lane_id) else { continue };
+                    let role = d.lanes[pos].role.clone();
+                    let block_matches = d
+                        .blocks
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter().any(|b| {
+                                b.get("id").and_then(|v| v.as_str()) == Some(block_id.as_str())
+                                    && b.get("type").and_then(|v| v.as_str()) == Some(role.as_str())
+                            })
+                        })
+                        .unwrap_or(false);
+                    if block_matches {
+                        if let Some(sl) = d.lanes[pos].slots.as_array_mut() {
+                            sl.push(demo_slot(&block_id));
+                        }
+                    }
+                    break;
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        // Per-Slot-Felder — jede Lane kann denselben Baustein mehrfach mit
+        // unterschiedlichem Transpose/Speed/Loop einsetzen, daher hängen
+        // diese drei am Slot (laneId+slotId), nicht am Baustein selbst.
+        "block.setTranspose" => {
+            if let (Some(lane_id), Some(slot_id), Some(transpose)) = (
+                str_field(&cmd, "laneId"),
+                str_field(&cmd, "slotId"),
+                cmd.get("transpose").and_then(|v| v.as_i64()),
+            ) {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(lane) = find_lane_mut(&mut proj, &lane_id) {
+                    if let Some(arr) = lane.slots.as_array_mut() {
+                        if let Some(slot) = arr.iter_mut().find(|s| s.get("id").and_then(|v| v.as_str()) == Some(slot_id.as_str())) {
+                            slot["transpose"] = serde_json::json!(transpose);
+                        }
+                    }
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        "block.setSpeed" => {
+            if let (Some(lane_id), Some(slot_id), Some(speed)) = (
+                str_field(&cmd, "laneId"),
+                str_field(&cmd, "slotId"),
+                cmd.get("speed").and_then(|v| v.as_f64()),
+            ) {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(lane) = find_lane_mut(&mut proj, &lane_id) {
+                    if let Some(arr) = lane.slots.as_array_mut() {
+                        if let Some(slot) = arr.iter_mut().find(|s| s.get("id").and_then(|v| v.as_str()) == Some(slot_id.as_str())) {
+                            slot["speed"] = serde_json::json!(speed);
+                        }
+                    }
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        "block.setLoop" => {
+            if let (Some(lane_id), Some(slot_id), Some(loop_mode)) = (
+                str_field(&cmd, "laneId"),
+                str_field(&cmd, "slotId"),
+                str_field(&cmd, "loop"),
+            ) {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(lane) = find_lane_mut(&mut proj, &lane_id) {
+                    if let Some(arr) = lane.slots.as_array_mut() {
+                        if let Some(slot) = arr.iter_mut().find(|s| s.get("id").and_then(|v| v.as_str()) == Some(slot_id.as_str())) {
+                            slot["loopMode"] = serde_json::json!(loop_mode);
+                            if let Some(count) = cmd.get("count").and_then(|v| v.as_i64()) {
+                                slot["loopCount"] = serde_json::json!(count);
+                            }
+                        }
+                    }
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        // Tauscht den Baustein eines bestehenden Slots aus — Slot-ID und
+        // Slot-Felder (transpose/speed/loopMode) bleiben erhalten, nur
+        // blockId wechselt. Gleiche Validierung wie laneSlot.add (Typ muss
+        // zur Lane-Rolle passen).
+        "laneSlot.setBlock" => {
+            if let (Some(lane_id), Some(slot_id), Some(block_id)) = (
+                str_field(&cmd, "laneId"),
+                str_field(&cmd, "slotId"),
+                str_field(&cmd, "blockId"),
+            ) {
+                let mut proj = state.project.lock().unwrap();
+                for d in proj.devices.iter_mut() {
+                    let Some(lpos) = d.lanes.iter().position(|l| l.id == lane_id) else { continue };
+                    let role = d.lanes[lpos].role.clone();
+                    let block_matches = d
+                        .blocks
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter().any(|b| {
+                                b.get("id").and_then(|v| v.as_str()) == Some(block_id.as_str())
+                                    && b.get("type").and_then(|v| v.as_str()) == Some(role.as_str())
+                            })
+                        })
+                        .unwrap_or(false);
+                    if block_matches {
+                        if let Some(sl) = d.lanes[lpos].slots.as_array_mut() {
+                            if let Some(slot) = sl.iter_mut().find(|s| {
+                                s.get("id").and_then(|v| v.as_str()) == Some(slot_id.as_str())
+                            }) {
+                                slot["blockId"] = serde_json::json!(block_id);
+                            }
+                        }
+                    }
+                    break;
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        "laneSlot.remove" => {
+            if let (Some(lane_id), Some(slot_id)) = (str_field(&cmd, "laneId"), str_field(&cmd, "slotId")) {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(lane) = find_lane_mut(&mut proj, &lane_id) {
+                    if let Some(arr) = lane.slots.as_array_mut() {
+                        arr.retain(|s| s.get("id").and_then(|v| v.as_str()) != Some(slot_id.as_str()));
+                    }
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
         other => {
             // Noch nicht implementierte Commands werden geloggt, aber ignoriert.
             tracing::debug!("Command (noch) nicht behandelt: {other}");
@@ -845,13 +1142,49 @@ fn find_beat_line_mut<'a>(block: &'a mut serde_json::Value, line_id: &str) -> Op
         .find(|l| l.get("id").and_then(|v| v.as_str()) == Some(line_id))
 }
 
-/// Die (einzige, implizite) Stepped-Layer eines CC-Bausteins.
-fn first_stepped_layer_mut(block: &mut serde_json::Value) -> Option<&mut serde_json::Value> {
+fn find_cc_layer_mut<'a>(block: &'a mut serde_json::Value, layer_id: &str) -> Option<&'a mut serde_json::Value> {
     block
         .get_mut("layers")?
         .as_array_mut()?
         .iter_mut()
-        .find(|l| l.get("kind").and_then(|v| v.as_str()) == Some("stepped"))
+        .find(|l| l.get("id").and_then(|v| v.as_str()) == Some(layer_id))
+}
+
+/// Neuer Layer mit sinnvollen Defaults für seine Art (siehe `CcLayer` im
+/// Modell — alle Werte 0..1 normiert, unabhängig von `outMin`/`outMax`).
+fn default_cc_layer(kind: &str, steps: usize) -> Option<serde_json::Value> {
+    let base = serde_json::json!({
+        "id": uuid::Uuid::new_v4().to_string(),
+        "kind": kind,
+        "enabled": true,
+        "combine": "add",
+        "depth": 1.0,
+        "offset": 0.0,
+    });
+    let mut layer = base;
+    match kind {
+        "lfo" => {
+            layer["waveform"] = serde_json::json!("sine");
+            layer["rateBars"] = serde_json::json!(1.0);
+            layer["phase"] = serde_json::json!(0.0);
+        }
+        "envelope" => {
+            layer["points"] = serde_json::json!([]);
+        }
+        "ramp" => {
+            layer["from"] = serde_json::json!(0.0);
+            layer["to"] = serde_json::json!(1.0);
+        }
+        "random" => {
+            layer["everySteps"] = serde_json::json!(1);
+            layer["smooth"] = serde_json::json!(false);
+        }
+        "stepped" => {
+            layer["values"] = serde_json::json!(vec![0.0f64; steps]);
+        }
+        _ => return None,
+    }
+    Some(layer)
 }
 
 /// Erste freie (row, col)-Position im 9×9-Raster dieses Bausteintyps
@@ -1061,7 +1394,7 @@ fn warn_no_device(state: &AppState, control_id: &str) {
     let _ = state.events.send(serde_json::json!({
         "t": "control.sendError",
         "controlId": control_id,
-        "message": "Kein Gerät zugewiesen — im Kontextmenü „Gerät …“ wählen, sonst geht der Ton nur an den virtuellen Port.",
+        "message": "No device assigned — pick one via \"Device …\" in the context menu, otherwise sound only goes to the virtual port.",
     }));
 }
 
@@ -1144,8 +1477,8 @@ fn demo_slot(block_id: &str) -> serde_json::Value {
 
 fn default_block_for(role: &str) -> Option<serde_json::Value> {
     match role {
-        "melody" => Some(demo_melody_block()),
-        "beat" => Some(demo_beat_block()),
+        "melody" => Some(blank_melody_block()),
+        "beat" => Some(blank_beat_block()),
         "cc" => Some(default_cc_block()),
         "chord" => Some(default_chord_block()),
         "arp" => Some(default_arp_block()),
@@ -1155,40 +1488,29 @@ fn default_block_for(role: &str) -> Option<serde_json::Value> {
     }
 }
 
-fn demo_melody_block() -> serde_json::Value {
-    // Einfache 1-Takt-Bassline in 16 Steps (C2-Grundton).
-    let steps = [0u32, 3, 6, 8, 11, 14];
-    let semis = [0i32, 0, 7, 0, 3, 7];
-    let notes: Vec<serde_json::Value> = steps
-        .iter()
-        .zip(semis.iter())
-        .map(|(s, semi)| {
-            serde_json::json!({
-                "step": s,
-                "lengthSteps": 2,
-                "note": 36 + semi,
-                "velocity": 100,
-            })
-        })
-        .collect();
+/// Leerer Baustein — jeder neu angelegte Melodie-Baustein startet ohne Noten
+/// (nicht mehr mit einer festen Demo-Bassline geklont), damit "+" jedes Mal
+/// wirklich etwas Neues anlegt statt derselben Kachel mit anderer ID.
+fn blank_melody_block() -> serde_json::Value {
     serde_json::json!({
         "id": uuid::Uuid::new_v4().to_string(),
         "type": "melody",
-        "name": "Bass",
+        "name": "Mel",
         "lengthBars": 1,
         "timeSignature": "4/4",
         "stepsPerBar": 16,
-        "baseNote": 36,
-        "notes": notes,
+        "baseNote": 60,
+        "notes": [],
     })
 }
 
-fn demo_beat_block() -> serde_json::Value {
-    let line = |name: &str, note: u8, pattern: [u8; 16]| {
-        let steps: Vec<serde_json::Value> = pattern
-            .iter()
-            .map(|v| serde_json::json!({ "velocity": v }))
-            .collect();
+/// Leerer Baustein mit drei benannten, aber stummen Lines (Kick/Snare/Hat) —
+/// das Beat-Editor-Grid kann bislang keine Lines hinzufügen/entfernen, daher
+/// müssen die Lines vorhanden sein; das Muster selbst ist aber leer, nicht
+/// die feste Demo-Groove-Kopie.
+fn blank_beat_block() -> serde_json::Value {
+    let line = |name: &str, note: u8| {
+        let steps: Vec<serde_json::Value> = (0..16).map(|_| serde_json::json!({ "velocity": 0 })).collect();
         serde_json::json!({
             "id": uuid::Uuid::new_v4().to_string(),
             "name": name,
@@ -1197,9 +1519,6 @@ fn demo_beat_block() -> serde_json::Value {
             "steps": steps,
         })
     };
-    let kick = line("Kick", 36, [110, 0, 0, 0, 110, 0, 0, 0, 110, 0, 0, 0, 110, 0, 0, 0]);
-    let snare = line("Snare", 38, [0, 0, 0, 0, 100, 0, 0, 0, 0, 0, 0, 0, 100, 0, 0, 0]);
-    let hat = line("Hat", 42, [70, 0, 60, 0, 70, 0, 60, 0, 70, 0, 60, 0, 70, 0, 60, 0]);
     serde_json::json!({
         "id": uuid::Uuid::new_v4().to_string(),
         "type": "beat",
@@ -1207,7 +1526,7 @@ fn demo_beat_block() -> serde_json::Value {
         "lengthBars": 1,
         "timeSignature": "4/4",
         "stepsPerBar": 16,
-        "lines": [kick, snare, hat],
+        "lines": [line("Kick", 36), line("Snare", 38), line("Hat", 42)],
     })
 }
 
@@ -1230,9 +1549,9 @@ fn default_cc_block() -> serde_json::Value {
             "kind": "stepped",
             "enabled": true,
             "combine": "replace",
-            "depth": 1,
-            "offset": 0,
-            "values": vec![0u8; 16],
+            "depth": 1.0,
+            "offset": 0.0,
+            "values": vec![0.0f64; 16],
         }],
     })
 }

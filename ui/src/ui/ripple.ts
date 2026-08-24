@@ -1,12 +1,17 @@
 //! Water-droplet ripple: an expanding, fading ring at the touch point,
 //! matching the underwater look (soap-bubble/glow feedback per the
 //! architecture doc). Wired globally once (see `wireGlobalRipples` in
-//! main.ts) — every element that follows the app-wide "tappable" convention
-//! (`cursor = "pointer"`) ripples automatically on pointerdown, so no
-//! individual button/tile/cell needs to call this itself.
+//! background.ts) — every DOM element that follows the app-wide "tappable"
+//! convention (`cursor: pointer`) ripples automatically on pointerdown, so
+//! no individual React button/tile/cell needs to call this itself.
+//!
+//! The ripple itself still draws into the Pixi background layer (a stacked
+//! particle-style effect is cheap in WebGL and awkward in DOM/CSS), but the
+//! trigger is a plain `window` pointerdown listener — the React UI sits in
+//! its own DOM layer above the (pointer-events: none) background canvas, so
+//! Pixi's own interaction system is never involved.
 
 import { Container, Graphics } from "pixi.js";
-import type { FederatedPointerEvent } from "pixi.js";
 import { PAL } from "../theme";
 
 const DURATION_MS = 550;
@@ -38,21 +43,21 @@ export function spawnRipple(x: number, y: number, color: number = PAL.white) {
 }
 
 /**
- * Attaches a single bubbling pointerdown listener to the stage root — every
- * tap that hits a `cursor: "pointer"` element anywhere (buttons, tiles, grid
- * cells, keyboard keys, …) ripples, without touching each call site. Plain
+ * Attaches a single `window` pointerdown listener — every tap that lands on
+ * a `cursor: pointer` DOM element anywhere (buttons, tiles, grid cells,
+ * keyboard keys, …) ripples, without touching each call site. Plain
  * background drag/pan surfaces are excluded on purpose: by convention they
- * never set `cursor = "pointer"`.
+ * never set `cursor: pointer`.
  */
-export function wireGlobalRipples(stage: Container) {
+export function wireGlobalRipples(bgStage: Container) {
   layer = new Container();
   layer.eventMode = "none"; // never itself a touch target
-  stage.addChild(layer);
+  bgStage.addChild(layer);
 
-  stage.on("pointerdown", (e: FederatedPointerEvent) => {
-    const target = e.target as Container | null;
-    if (target && target.cursor === "pointer") {
-      spawnRipple(e.global.x, e.global.y);
+  window.addEventListener("pointerdown", (e: PointerEvent) => {
+    const target = e.target as Element | null;
+    if (target && getComputedStyle(target).cursor === "pointer") {
+      spawnRipple(e.clientX, e.clientY);
     }
   });
 }

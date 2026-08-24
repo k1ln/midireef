@@ -1,0 +1,257 @@
+/* Zentrale Schwarzweiß-Palette für die React-Oberfläche — 1:1 Spiegel von
+   theme.ts's PAL (die Pixi-Hintergrundszene bezieht ihre Farben weiterhin
+   von dort). Alpha wird bewusst nicht in die Variablen gebacken, sondern
+   pro Klasse gesetzt — genau wie Pixi's `.fill({ color, alpha })`. */
+
+:root {
+  --pal-black: #000000;
+  --pal-water-top: #1a1a1a;
+  --pal-water-mid: #0d0d0d;
+  --pal-water-deep: #000000;
+
+  --pal-white: #ffffff;
+  --pal-text: #f2f2f2;
+  --pal-text-dim: #8a8a8a;
+  --pal-ink: #050505;
+
+  --pal-line: #ffffff;
+  --pal-panel: #111111;
+  --pal-panel-deep: #080808;
+
+  --pal-btn: #1c1c1c;
+  --pal-btn-alt: #2a2a2a;
+  --pal-btn-active: #f0f0f0;
+  --pal-danger: #2b2b2b;
+  --pal-loop-on: #2ecc71;
+
+  --radius: 12px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: system-ui, sans-serif;
+  color: var(--pal-text);
+}
+
+/* ── Button — mirrors widgets.ts's button(): rounded rect, soft white
+   border, press feedback. CSS :active replaces the old alpha+setTimeout
+   press-flash (reverts on its own, no timer). ── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius);
+  border: 1.5px solid rgba(255, 255, 255, 0.3);
+  background: var(--pal-btn);
+  background-clip: padding-box;
+  color: var(--pal-text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  user-select: none;
+}
+.btn:active {
+  opacity: 0.55;
+}
+.btn.alt {
+  background: var(--pal-btn-alt);
+}
+.btn.active {
+  background: var(--pal-btn-active);
+  color: var(--pal-ink);
+  border-color: rgba(255, 255, 255, 0.7);
+}
+.btn.danger {
+  background: var(--pal-danger);
+  color: var(--pal-white);
+}
+.btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ── Pill toggle (E/M/S) — mirrors widgets.ts's pillToggle(). ── */
+.pill-toggle {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  border: 1.5px solid rgba(255, 255, 255, 0.25);
+  background: var(--pal-btn);
+  color: var(--pal-text-dim);
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  user-select: none;
+}
+.pill-toggle.on {
+  background: var(--pal-btn-active);
+  color: var(--pal-ink);
+  border-color: rgba(255, 255, 255, 0.7);
+}
+
+/* ── Panel / floating surfaces. ── */
+.panel {
+  border-radius: 18px;
+  background: rgba(17, 17, 17, 0.55);
+  border: 1.5px solid rgba(255, 255, 255, 0.25);
+}
+.panel-deep {
+  border-radius: 12px;
+  background: rgba(8, 8, 8, 0.85);
+}
+
+/* ── Modal / popup — backdrop + centered box, mirrors the many
+   openXPicker()/showPopupMenu() overlay+box pairs across the Pixi UI. ── */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+.modal-box {
+  border-radius: 18px;
+  background: rgba(17, 17, 17, 0.98);
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  padding: 16px;
+  max-width: calc(100vw - 40px);
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ── Popup row list — mirrors the many openXPicker()'s row buttons. ── */
+.popup-title {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 0 0 12px;
+}
+.popup-row {
+  display: flex;
+  width: 100%;
+  min-width: 260px;
+  justify-content: flex-start;
+  padding: 0 12px;
+  height: 46px;
+  margin-bottom: 8px;
+  text-align: left;
+  font-size: 16px;
+}
+.popup-row:last-child {
+  margin-bottom: 0;
+}
+
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+/* ── Slot tile (Sequencer Overview lane row). ── */
+.slot-tile {
+  position: relative;
+  width: 112px;
+  height: 112px;
+  flex: 0 0 auto;
+  border-radius: 12px;
+  background: var(--pal-btn);
+  border: 1.5px solid rgba(255, 255, 255, 0.3);
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  gap: 4px;
+}
+/* Delete — small badge pinned to the tile's top-right corner. */
+.slot-tile .delete-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 11px;
+  z-index: 1;
+}
+.slot-tile .id-strip {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+.slot-tile .transpose-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.slot-tile .transpose-value {
+  flex: 1;
+  text-align: center;
+  font-size: 14px;
+  color: var(--pal-text-dim);
+  font-weight: 600;
+}
+.slot-tile .bottom-row {
+  display: flex;
+  height: 26px;
+  gap: 4px;
+}
+.slot-tile .speed-btn,
+.slot-tile .loop-btn {
+  flex: 1;
+  font-size: 13px;
+}
+.slot-tile .loop-btn.loop-on {
+  background: var(--pal-loop-on);
+  border-color: var(--pal-loop-on);
+  color: var(--pal-ink);
+}
+
+/* ── Step grid cells (Block Detail editors). ── */
+.step-row {
+  display: flex;
+}
+.step-cell {
+  border-radius: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 12px;
+  cursor: pointer;
+  flex: 0 0 auto;
+  margin-right: 2px;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+/* ── Touch keyboard — mirrors ui/keyboard.ts's grid math via CSS instead of
+   hand-computed key widths. ── */
+.kb-row {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.kb-key {
+  width: min(74px, 8.6vw);
+  height: min(64px, 10.5vh);
+  font-size: 26px;
+}
+

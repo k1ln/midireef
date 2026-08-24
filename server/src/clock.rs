@@ -141,9 +141,9 @@ fn clock_loop(
                 ClockCommand::Midi(port, bytes) => {
                     if !engine.send_raw(&port, &bytes) {
                         let reason = if port.is_empty() {
-                            "Kein virtueller MIDI-Ausgang verfügbar.".to_string()
+                            "No virtual MIDI output available.".to_string()
                         } else {
-                            format!("MIDI-Ausgang „{port}“ nicht gefunden — ist das Gerät angeschlossen?")
+                            format!("MIDI output \"{port}\" not found — is the device connected?")
                         };
                         let _ = events.send(
                             serde_json::json!({ "t": "control.sendError", "message": reason }),

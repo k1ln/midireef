@@ -54,8 +54,14 @@ export class Net {
     }, 1000);
   }
 
-  onEvent(h: EventHandler) {
+  /** Returns an unsubscribe function — React components mount/unmount, so
+   *  callers must clean up (mirrors Store.subscribe in state.ts). */
+  onEvent(h: EventHandler): () => void {
     this.handlers.push(h);
+    return () => {
+      const i = this.handlers.indexOf(h);
+      if (i !== -1) this.handlers.splice(i, 1);
+    };
   }
 
   send(cmd: object) {

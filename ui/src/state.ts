@@ -11,6 +11,7 @@ export interface Slot {
   transpose: number;
   speed: number;
   loopMode: string;
+  loopCount?: number; // nur bei loopMode === "count"
 }
 
 export interface MelodyNote {
@@ -39,14 +40,27 @@ export interface ChordEvent {
   velocity: number;
 }
 
+export interface CcEnvelopePoint {
+  step: number;
+  value: number; // 0..1
+}
+
 export type CcLayer = {
   id: string;
-  kind: string;
+  kind: string; // "lfo" | "envelope" | "ramp" | "random" | "stepped"
   enabled: boolean;
-  combine: string;
-  depth: number;
-  offset: number;
-  values?: number[]; // kind === "stepped"
+  combine: string; // "add" | "multiply" | "max" | "min" | "replace"
+  depth: number; // 0..1
+  offset: number; // -1..1
+  values?: number[]; // stepped: 0..1 per step
+  points?: CcEnvelopePoint[]; // envelope
+  waveform?: string; // lfo
+  rateBars?: number; // lfo
+  phase?: number; // lfo, 0..1
+  from?: number; // ramp, 0..1
+  to?: number; // ramp, 0..1
+  everySteps?: number; // random
+  smooth?: boolean; // random
 };
 
 export interface ProgramChangeEvent {
@@ -190,8 +204,14 @@ export class Store {
   midiOutputs: string[] = [];
   private listeners: Listener[] = [];
 
-  subscribe(fn: Listener) {
+  /** Returns an unsubscribe function — React components mount/unmount
+   *  (unlike the old long-lived Pixi screens), so callers must clean up. */
+  subscribe(fn: Listener): () => void {
     this.listeners.push(fn);
+    return () => {
+      const i = this.listeners.indexOf(fn);
+      if (i !== -1) this.listeners.splice(i, 1);
+    };
   }
 
   private emit() {

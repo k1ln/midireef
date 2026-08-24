@@ -53,7 +53,7 @@ export type TimeSignature =
  * Nur ganzzahlige Vielfache erlaubt (Wunsch: "nur in geraden Noten").
  *  1 = normal, 2 = doppelt so schnell, 3 = dreifach, 0.5 = halb (halbe = gerade Teilung).
  */
-export type SpeedMultiplier = 0.25 | 0.5 | 1 | 2 | 3 | 4 | 6 | 8;
+export type SpeedMultiplier = 0.25 | 0.5 | 1 | 2 | 3 | 4 | 6 | 8 | 16;
 
 /**
  * Baustein-Typen. Jeder Typ hat ein eigenes 9×9-ID-Raster pro Projekt.
@@ -894,12 +894,14 @@ export type Command =
   // ── Slots in Lanes ──
   | { t: "laneSlot.add"; laneId: Id; blockId: Id }
   | { t: "laneSlot.remove"; laneId: Id; slotId: Id }
+  | { t: "laneSlot.setBlock"; laneId: Id; slotId: Id; blockId: Id } // Slot behält transpose/speed/loopMode, nur blockId wechselt (Baustein tauschen)
   | { t: "laneSlot.reorder"; laneId: Id; orderedSlotIds: Id[] }
   // ── Bausteine ──
   | { t: "block.trigger"; laneId: Id; slotId: Id }
   | { t: "block.rename"; blockId: Id; name: string } // max. 6 Zeichen (BLOCK_NAME_MAX_LENGTH)
   | { t: "block.createAt"; deviceId: Id; blockType: BlockType; row: number; col: number } // Baustein-Bibliothek: an gewählter Zelle anlegen (no-op falls belegt)
   | { t: "block.delete"; blockId: Id } // entfernt Baustein + räumt dangling Lane-Slot-Referenzen auf
+  | { t: "block.move"; blockId: Id; row: number; col: number } // Baustein-Bibliothek: an andere Zelle verschieben (no-op falls belegt)
   | { t: "block.setTranspose"; laneId: Id; slotId: Id; transpose: number }
   | { t: "block.setSpeed"; laneId: Id; slotId: Id; speed: SpeedMultiplier }
   | { t: "block.setLoop"; laneId: Id; slotId: Id; loop: LoopMode; count?: number }
@@ -910,11 +912,17 @@ export type Command =
   | { t: "block.setField"; blockId: Id; field: string; value: unknown }
   | { t: "beat.setLineMuted"; blockId: Id; lineId: Id; muted: boolean }
   | { t: "beat.setEuclid"; blockId: Id; lineId: Id; euclid: EuclidConfig }
-  | { t: "melody.toggleNote"; blockId: Id; step: number; note: MidiNote } // Baustein-Detail: Note an Step an/aus
+  | { t: "melody.setStepNote"; blockId: Id; step: number; note: MidiNote | null } // Baustein-Detail: Note an Step setzen/ersetzen (null löscht) — ein Step trägt genau eine Note
   | { t: "beat.toggleStep"; blockId: Id; lineId: Id; step: number } // Baustein-Detail: Step an/aus
   | { t: "chord.toggleNote"; blockId: Id; step: number; note: MidiNote } // Baustein-Detail: Note im Akkord an Step an/aus
   | { t: "arp.toggleNote"; blockId: Id; note: MidiNote } // Baustein-Detail: Note im Notenvorrat an/aus
-  | { t: "cc.setStepValue"; blockId: Id; step: number; value: Midi7Bit } // Baustein-Detail: Wert der Stepped-Layer an Step
+  // CC-Layer-Verwaltung (mehrere Layer pro Block — LFO/Envelope/Ramp/Random/Stepped).
+  | { t: "cc.addLayer"; blockId: Id; kind: CcLayerKind; steps?: number } // steps = Länge einer neuen Stepped-Layer
+  | { t: "cc.removeLayer"; blockId: Id; layerId: Id }
+  | { t: "cc.moveLayer"; blockId: Id; layerId: Id; dir: "up" | "down" }
+  | { t: "cc.updateLayer"; blockId: Id; layerId: Id; patch: Partial<CcLayer> } // enabled/combine/depth/offset/waveform/…
+  | { t: "cc.setStepValue"; blockId: Id; layerId: Id; step: number; value: number } // 0..1, Stepped-Layer
+  | { t: "cc.setEnvelopePoint"; blockId: Id; layerId: Id; step: number; value: number | null } // 0..1; null löscht den Punkt
   | { t: "programChange.setEvent"; blockId: Id; step: number; program: number | null } // null löscht das Event
   | { t: "patternShift.setEvent"; blockId: Id; step: number; kind: MidiMessageKind | null; data1?: number; data2?: number } // kind=null löscht die Nachricht
   // ── Scenes ──
