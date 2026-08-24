@@ -1,0 +1,15 @@
+# Rust
+/server/target/
+**/*.rs.bk
+
+# Node / UI
+/ui/node_modules/
+/ui/dist/
+/ui/.npm-cache/
+npm-debug.log*
+
+# Daten (Projekte)
+/data/
+
+# OS
+.DS_Store
