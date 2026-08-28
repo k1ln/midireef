@@ -4,8 +4,13 @@
 
 import type { Device, Lane, Block } from "../../state";
 import { useSend, useStoreValue } from "../store";
+import type { LiveControl } from "../dashboard/ControlWidget";
 import { Popup } from "../widgets/Popup";
 import { Button } from "../widgets/Button";
+
+// Stable reference for the useSyncExternalStore selector — see the
+// EMPTY_DEVICES comment in Dashboard.tsx.
+const EMPTY_CONTROLS: LiveControl[] = [];
 
 export const ROLES: { role: string; label: string }[] = [
   { role: "melody", label: "Melody" },
@@ -63,6 +68,63 @@ export function RolePickerPopup({ deviceId, onClose }: { deviceId: string; onClo
           </Button>
         ))}
       </div>
+    </Popup>
+  );
+}
+
+/**
+ * CC-Lane: Ziel-Knob wählen. Angeboten werden NUR gelernte Knobs, die zu genau
+ * diesem Gerät gehören und ein CC-Mapping haben — alles andere wäre nicht
+ * verbunden und würde beim Abspielen verworfen (siehe `resolve_cc_target` in
+ * engine.rs). Das Ziel sitzt an der Lane, nicht am Baustein: derselbe
+ * Bewegungs-Baustein soll in mehreren Lanes auf verschiedene CCs gehen können.
+ */
+export function CcTargetPickerPopup({ lane, dev, onClose }: { lane: Lane; dev: Device; onClose: () => void }) {
+  const send = useSend();
+  const controls = useStoreValue((s) => (s.project?.controls as LiveControl[] | undefined) ?? EMPTY_CONTROLS);
+  const knobs = controls.filter(
+    (c) => c.kind === "knob" && c.deviceId === dev.id && c.mapping?.kind === "cc",
+  );
+
+  return (
+    <Popup onClose={onClose}>
+      <div className="popup-title">CC target — {dev.name}</div>
+      <div style={{ fontSize: 13, color: "var(--pal-text-dim)", marginBottom: 12 }}>
+        The blocks in this lane supply the movement; this knob picks the CC number. The channel comes from the
+        lane (currently {lane.channel ?? dev.channel}).
+      </div>
+      {knobs.length === 0 ? (
+        <div style={{ color: "var(--pal-text-dim)", fontSize: 15 }}>
+          No knobs learned for this device yet — turn one on the device with MIDI-Learn armed on the Dashboard.
+        </div>
+      ) : (
+        knobs.map((k) => (
+          <Button
+            key={k.id}
+            variant={lane.ccControlId === k.id ? "active" : "default"}
+            className="popup-row"
+            style={{ height: 44, marginBottom: 8 }}
+            onClick={() => {
+              onClose();
+              send({ t: "lane.setCcControl", laneId: lane.id, controlId: k.id });
+            }}
+          >
+            {k.name || "(unnamed)"} — CC{k.mapping?.number}
+          </Button>
+        ))
+      )}
+      {lane.ccControlId && (
+        <Button
+          variant="danger"
+          className="popup-row"
+          onClick={() => {
+            onClose();
+            send({ t: "lane.setCcControl", laneId: lane.id, controlId: null });
+          }}
+        >
+          Clear target
+        </Button>
+      )}
     </Popup>
   );
 }

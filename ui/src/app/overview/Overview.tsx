@@ -15,6 +15,7 @@ import {
   AddBlockPickerPopup,
   SwapPickerPopup,
   BlockContextMenuPopup,
+  CcTargetPickerPopup,
 } from "./popups";
 
 // Stable reference so the useSyncExternalStore selector below returns the
@@ -28,7 +29,8 @@ type PopupState =
   | { kind: "role"; deviceId: string }
   | { kind: "addBlock"; laneId: string; deviceId: string }
   | { kind: "swap"; laneId: string; deviceId: string; slotId: string; currentBlockId: string }
-  | { kind: "blockMenu"; laneId: string; deviceId: string; slotId: string };
+  | { kind: "blockMenu"; laneId: string; deviceId: string; slotId: string }
+  | { kind: "ccTarget"; laneId: string; deviceId: string };
 
 export interface OverviewProps {
   onOpenBlock: (blockId: string) => void;
@@ -87,6 +89,7 @@ export function Overview({ onOpenBlock, onOpenLaneControls, onOpenLibrary }: Ove
             onOpenAddBlock={(laneId) => setPopup({ kind: "addBlock", laneId, deviceId: dev.id })}
             onOpenBlockMenu={(laneId, slotId) => setPopup({ kind: "blockMenu", laneId, deviceId: dev.id, slotId })}
             onOpenLaneControls={onOpenLaneControls}
+            onOpenCcTarget={(laneId) => setPopup({ kind: "ccTarget", laneId, deviceId: dev.id })}
           />
         ))
       )}
@@ -100,6 +103,13 @@ export function Overview({ onOpenBlock, onOpenLaneControls, onOpenLibrary }: Ove
           const dev = findDevice(popup.deviceId);
           const lane = dev?.lanes.find((l) => l.id === popup.laneId);
           return dev && lane ? <AddBlockPickerPopup lane={lane} dev={dev} onClose={closePopup} /> : null;
+        })()}
+
+      {popup?.kind === "ccTarget" &&
+        (() => {
+          const dev = findDevice(popup.deviceId);
+          const lane = dev?.lanes.find((l) => l.id === popup.laneId);
+          return dev && lane ? <CcTargetPickerPopup lane={lane} dev={dev} onClose={closePopup} /> : null;
         })()}
 
       {popup?.kind === "swap" &&

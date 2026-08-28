@@ -1,6 +1,13 @@
 //! Transport-Leiste (oben, eine Reihe) — React-Port von ui/transport.ts.
-//! Play ▶, Stop ■, SQ (Sequencer), Start-Symbol (⌂), SAVE, dann BPM −/+
-//! (Auto-Repeat beim Halten) und Position/MIDI-Port-Anzeige.
+//! Play/Stop (ein Knopf, grün ▶ / rot glühend ■), SQ (Sequencer),
+//! Start-Symbol (⌂), ⚙ (Projekte), dann
+//! BPM −/+ (Auto-Repeat beim Halten) und Position/MIDI-Port-Anzeige.
+//!
+//! Bewusst flach gehalten: die Leiste steht auf JEDEM Screen und nimmt dem
+//! eigentlichen Inhalt Platz weg. Speichern hängt deshalb nicht mehr hier,
+//! sondern im Projekt-Menü hinter dem Zahnrad (dort, wo auch geladen und
+//! umbenannt wird) — der Server sichert strukturelle Änderungen ohnehin
+//! automatisch, der Knopf war ein Notnagel.
 //!
 //! `transport.tick` kommt gethrottelt aber trotzdem häufig (~30-60 Hz) rein
 //! — das läuft bewusst über eine eigene net.onEvent()-Subscription statt
@@ -13,14 +20,21 @@ import { useNet, useSend } from "./store";
 import { Button } from "./widgets/Button";
 import { TRANSPORT_H } from "./layout";
 
-const BTN = 60;
+const BTN = 50;
+/** BPM-Wippe: kleiner als die Transport-Tasten, aber noch fingerbreit. */
+const NUDGE = 46;
 
 export interface TransportProps {
   view: "start" | "seq";
   onNav: (view: "start" | "seq") => void;
+  /** Zahnrad → Projekt-Menü. Der Dialog selbst hängt in App.tsx neben den
+   *  Screens: diese Leiste ist `position: fixed` und damit ein eigener
+   *  Stacking-Context, in dem ein Overlay unter den Screens landen könnte. */
+  onOpenSettings: () => void;
+  settingsOpen: boolean;
 }
 
-export function Transport({ view, onNav }: TransportProps) {
+export function Transport({ view, onNav, onOpenSettings, settingsOpen }: TransportProps) {
   const net = useNet();
   const send = useSend();
   const [t, setT] = useState<TransportState | null>(null);
@@ -67,54 +81,81 @@ export function Transport({ view, onNav }: TransportProps) {
       }}
     >
       <Button
-        style={{ width: BTN, height: BTN, fontSize: 24, opacity: t?.playing ? 1 : 0.7 }}
-        onClick={() => send({ t: "transport.play" })}
-      >
-        ▶
-      </Button>
-      <Button
-        style={{ width: BTN, height: BTN, fontSize: 24, opacity: t?.playing ? 0.7 : 1, marginRight: 6 }}
+        className={t?.playing ? "transport-stop" : "transport-play"}
+        style={{ width: BTN, height: BTN, fontSize: 24, marginRight: 6 }}
+        title={t?.playing ? "Stop" : "Play"}
         onClick={() => {
-          send({ t: "transport.stop" });
-          send({ t: "transport.panic" });
+          if (t?.playing) {
+            send({ t: "transport.stop" });
+            send({ t: "transport.panic" });
+          } else {
+            send({ t: "transport.play" });
+          }
         }}
       >
-        ■
+        {t?.playing ? "■" : "▶"}
       </Button>
       <Button
-        style={{ width: BTN, height: BTN, fontSize: 20, opacity: view === "seq" ? 1 : 0.55 }}
+        className={view === "seq" ? "transport-nav on" : "transport-nav"}
+        style={{ width: BTN, height: BTN, fontSize: 20 }}
         onClick={() => onNav("seq")}
       >
         SQ
       </Button>
       <Button
-        style={{ width: BTN, height: BTN, fontSize: 26, opacity: view === "start" ? 1 : 0.55 }}
+        className={view === "start" ? "transport-nav on" : "transport-nav"}
+        style={{ width: BTN, height: BTN, fontSize: 26 }}
         onClick={() => onNav("start")}
       >
         ⌂
       </Button>
       <Button
-        style={{ width: 84, height: BTN, fontSize: 16, marginRight: 16 }}
-        onClick={() => send({ t: "project.save" })}
+        className={settingsOpen ? "transport-nav on" : "transport-nav"}
+        style={{ width: BTN, height: BTN, fontSize: 26, marginRight: 16 }}
+        title="Projects"
+        onClick={onOpenSettings}
       >
-        SAVE
+        ⚙
       </Button>
 
-      <RepeatButton width={56} height={BTN} onFire={() => nudgeBpm(-1)}>
+      <RepeatButton width={NUDGE} height={NUDGE} onFire={() => nudgeBpm(-1)}>
         −
       </RepeatButton>
-      <div style={{ width: 120, textAlign: "center", fontSize: 24, fontWeight: 700 }}>
-        {bpmDisplay} BPM
+      <div style={{ width: 84, textAlign: "center", fontSize: 18, fontWeight: 700 }}>
+        {bpmDisplay}
+        <span style={{ fontSize: 11, color: "var(--pal-text-dim)", marginLeft: 3 }}>BPM</span>
       </div>
-      <RepeatButton width={56} height={BTN} onFire={() => nudgeBpm(1)}>
+      <RepeatButton width={NUDGE} height={NUDGE} onFire={() => nudgeBpm(1)}>
         +
       </RepeatButton>
 
       <div style={{ marginLeft: "auto", textAlign: "right" }}>
-        <div style={{ fontFamily: "ui-monospace, monospace", fontSize: 30, fontWeight: 700, color: "var(--pal-white)" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "flex-end",
+            gap: 10,
+            fontFamily: "ui-monospace, monospace",
+            fontSize: 24,
+            fontWeight: 700,
+            color: "var(--pal-white)",
+          }}
+        >
+          {/* Metronom-Punkt: der `key` wechselt mit jedem Beat, React montiert
+              das Element also neu — dadurch startet die CSS-Animation von
+              vorn, ohne dass hier ein Timer oder eine Klasse verwaltet wird.
+              Beat 1 blitzt heller (Taktanfang). */}
+          {t?.playing && (
+            <span
+              key={`${t.bar}:${t.beat}`}
+              className={t.beat === 1 ? "beat-dot downbeat" : "beat-dot"}
+              aria-hidden="true"
+            />
+          )}
           {posText}
         </div>
-        <div style={{ fontSize: 14, color: "var(--pal-text-dim)" }}>{portText}</div>
+        <div style={{ fontSize: 12, color: "var(--pal-text-dim)" }}>{portText}</div>
       </div>
     </div>
   );

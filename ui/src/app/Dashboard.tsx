@@ -10,12 +10,12 @@
 //!    MIDI-Learn.
 
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
-import { useNet, useSend, useStoreValue } from "./store";
+import { useNet, useSend, useStore, useStoreValue } from "./store";
 import { useTouchKeyboard } from "./TouchKeyboard";
 import { useViewportSize } from "./useViewportSize";
 import { Button } from "./widgets/Button";
 import { ControlWidget, type LiveControl } from "./dashboard/ControlWidget";
-import { ContextMenuPopup, DevicePickerPopup, KindPickerPopup } from "./dashboard/menus";
+import { ContextMenuPopup, DevicePickerPopup, KindPickerPopup, LanePickerPopup } from "./dashboard/menus";
 import type { Device } from "../state";
 
 const TOP = 100;
@@ -42,10 +42,12 @@ function clampZoom(z: number): number {
 export function Dashboard() {
   const send = useSend();
   const net = useNet();
+  const store = useStore();
   const openKeyboard = useTouchKeyboard();
   const { w, h } = useViewportSize();
   const devices = useStoreValue((s) => s.project?.devices ?? EMPTY_DEVICES);
   const controls = useStoreValue((s) => (s.project?.controls as LiveControl[] | undefined) ?? EMPTY_CONTROLS);
+  const recordArmed = useStoreValue((s) => s.recordArmed);
 
   const [armed, setArmed] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -54,7 +56,12 @@ export function Dashboard() {
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [menu, setMenu] = useState<{ ctrl: LiveControl; x: number; y: number } | null>(null);
   const [devicePicker, setDevicePicker] = useState<{ ctrl: LiveControl; x: number; y: number } | null>(null);
-  const [kindPickerControlId, setKindPickerControlId] = useState<string | null>(null);
+  const [lanePicker, setLanePicker] = useState<{ ctrl: LiveControl; x: number; y: number } | null>(null);
+  const [kindPicker, setKindPicker] = useState<{ controlId: string; mappingKind: "cc" | "note" } | null>(null);
+  // Controls currently "on" because the physical device sent a matching
+  // Note-On (not persisted project state — purely a live UI light-up, mirrors
+  // what a hardware pad's own LED would do).
+  const [physicallyActive, setPhysicallyActive] = useState<Set<string>>(new Set());
 
   const pointers = useRef(new Map<number, Pt>());
   const panStart = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
@@ -98,18 +105,37 @@ export function Dashboard() {
             setArmed(false);
             // CC ist mehrdeutig: mancher Controller sendet für Taster (z.B.
             // „Play") ebenfalls CC statt Note — Nutzer entscheidet, wie
-            // reproduziert wird.
-            if (evt.mapping?.kind === "cc") setKindPickerControlId(evt.controlId);
-            else promptName(evt.controlId);
+            // reproduziert wird. Note ist ebenso mehrdeutig: eine einzelne
+            // gelernte Taste oder Stellvertreter für ein ganzes Keyboard?
+            if (evt.mapping?.kind === "cc" || evt.mapping?.kind === "note") {
+              setKindPicker({ controlId: evt.controlId, mappingKind: evt.mapping.kind });
+            } else {
+              promptName(evt.controlId);
+            }
           }
           break;
         case "control.sendError":
           if (evt.message) showError(evt.message);
           break;
+        // Physisch am Gerät bedientes, gelerntes Control — Dashboard live
+        // nachführen (Gegenstück zu den obigen einmaligen Learn-Events).
+        case "control.valueChanged":
+          if (evt.controlId) store.patchControl(evt.controlId, { value: evt.value });
+          break;
+        case "control.activity":
+          if (evt.controlId) {
+            setPhysicallyActive((prev) => {
+              const next = new Set(prev);
+              if (evt.active) next.add(evt.controlId);
+              else next.delete(evt.controlId);
+              return next;
+            });
+          }
+          break;
       }
     });
     return off;
-  }, [net]);
+  }, [net, store]);
 
   const openContextMenu = (ctrl: LiveControl, x: number, y: number) => {
     // Stuck-note safety net: if this control has a note currently held,
@@ -230,6 +256,8 @@ export function Dashboard() {
               deviceName={deviceName(ctrl.deviceId)}
               editMode={editMode}
               zoom={zoom}
+              externalActive={physicallyActive.has(ctrl.id)}
+              recording={recordArmed?.controlId === ctrl.id}
               onContextMenu={(x, y) => openContextMenu(ctrl, x, y)}
               onPress={() => (pressedControl.current = ctrl)}
               onRelease={() => {
@@ -318,6 +346,31 @@ export function Dashboard() {
             send({ t: "control.delete", controlId: menu.ctrl.id });
             setMenu(null);
           }}
+          showRecord={menu.ctrl.kind === "keyboard"}
+          isRecording={recordArmed?.controlId === menu.ctrl.id}
+          onRecord={() => {
+            const m = menu;
+            setMenu(null);
+            if (recordArmed?.controlId === m.ctrl.id) {
+              // Bereits armiert → nochmal senden hebt es auf (Toggle, siehe Server).
+              send({ t: "record.arm", controlId: m.ctrl.id, laneId: recordArmed.laneId });
+            } else {
+              setLanePicker({ ctrl: m.ctrl, x: m.x, y: m.y });
+            }
+          }}
+        />
+      )}
+
+      {lanePicker && (
+        <LanePickerPopup
+          x={lanePicker.x}
+          y={lanePicker.y}
+          devices={devices}
+          onClose={() => setLanePicker(null)}
+          onPick={(lane) => {
+            send({ t: "record.arm", controlId: lanePicker.ctrl.id, laneId: lane.id });
+            setLanePicker(null);
+          }}
         />
       )}
 
@@ -335,18 +388,19 @@ export function Dashboard() {
         />
       )}
 
-      {kindPickerControlId && (
+      {kindPicker && (
         <KindPickerPopup
+          mappingKind={kindPicker.mappingKind}
           onCancel={() => {
             // Cancel cleans up the just-learned control too (same reasoning
             // as promptName's cancel path).
-            send({ t: "control.delete", controlId: kindPickerControlId });
-            setKindPickerControlId(null);
+            send({ t: "control.delete", controlId: kindPicker.controlId });
+            setKindPicker(null);
           }}
           onPick={(kind) => {
-            send({ t: "control.setKind", controlId: kindPickerControlId, kind });
-            const id = kindPickerControlId;
-            setKindPickerControlId(null);
+            send({ t: "control.setKind", controlId: kindPicker.controlId, kind });
+            const id = kindPicker.controlId;
+            setKindPicker(null);
             promptName(id);
           }}
         />

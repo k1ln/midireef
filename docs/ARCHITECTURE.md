@@ -1,4 +1,4 @@
-# MidiDrift — Architektur & Konzept
+# MidiReef — Architektur & Konzept
 
 > Touch-only MIDI-Automations-Software im Unterwasser-Look.
 > Läuft im Kiosk-Modus auf einem Raspberry Pi 5 mit Touchdisplay.
@@ -132,7 +132,7 @@ Das Datenmodell dazu: `LaneRole` (= `BlockType`, reine Typ-Lanes), `LaneControl`
 
 ## 4b. Routing-Hub (Controller on-the-fly umrouten)
 
-MidiDrift ist zugleich ein **MIDI-Routing-Hub**: externe Controller werden **ohne Kabelwechsel** live auf verschiedene Synths/Devices geroutet. Ein Knob deines Keyboards steuert erst Synth A (Cutoff), per Touch dann Synth B — ohne Umstecken, ohne neues Learn.
+MidiReef ist zugleich ein **MIDI-Routing-Hub**: externe Controller werden **ohne Kabelwechsel** live auf verschiedene Synths/Devices geroutet. Ein Knob deines Keyboards steuert erst Synth A (Cutoff), per Touch dann Synth B — ohne Umstecken, ohne neues Learn.
 
 - **`MidiInputSource`** — ein physischer MIDI-Eingang (benennbar, z.B. „Launchkey").
 - **`MidiRoute`** — leitet **gefilterte** Nachrichten (Note/CC/PB/AT/NRPN/SysEx, Noten-/CC-Bereiche) einer Quelle an ein Ziel-Device, mit **Remapping** (Kanal, CC-Umnummerierung, Transpose, Velocity-Scale).

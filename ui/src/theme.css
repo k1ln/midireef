@@ -23,6 +23,30 @@
   --pal-btn-active: #f0f0f0;
   --pal-danger: #2b2b2b;
   --pal-loop-on: #2ecc71;
+  /* Laufzeit-Grün (Wiedergabe-Feedback). Als RGB-Tripel dabei, weil Glow und
+     Sweep es mit verschiedenen Alphas brauchen (rgba(var(--pal-run-rgb), …)) —
+     Alpha wird bewusst nicht in die Variable gebacken, s. Kommentar oben. */
+  --pal-run: #2ecc71;
+  --pal-run-rgb: 46, 204, 113;
+  /* Gedecktes Laufzeit-Grün für den Ruhezustand (Pegel bei Stop) — DECKEND,
+     nicht `--pal-run` mit Alpha: s. Step-Töne unten. */
+  --pal-run-idle: #1e6b3c;
+  /* Stop-Rot — Gegenstück zu `--pal-run`, nur für den laufenden Transport-
+     Knopf. Ebenfalls als RGB-Tripel, weil der Glow es mit Alpha braucht. */
+  --pal-stop: #e74c3c;
+  --pal-stop-rgb: 231, 76, 60;
+
+  /* Step-Raster im Baustein-Detail — durchgehend DECKENDE Töne. Vorher wurde
+     hier mit `opacity` abgestuft; das machte nicht nur die leeren Zellen
+     blass, sondern auch die Notenblöcke und Wertbalken DARIN durchscheinend,
+     wodurch das ganze Raster ausgewaschen wirkte. Die Töne hier sind die
+     deckenden Entsprechungen der früheren Alpha-Stufen. */
+  --pal-step-off: #151515; /* leerer Step */
+  --pal-step-off-beat: #0c0c0c; /* leerer Step auf einem Beat-Marker */
+  --pal-step-off-muted: #101010; /* leerer Step einer stummen Beat-Line */
+  --pal-step-held: #757575; /* klingende (gehaltene) Note */
+  --pal-step-label: #5a5a5a; /* Beischrift IN einer aktiven (hellen) Zelle */
+  --pal-step-border: #3a3a3a; /* Zellrahmen */
 
   --radius: 12px;
 }
@@ -70,6 +94,56 @@ body {
   background: var(--pal-danger);
   color: var(--pal-white);
 }
+
+/* ── Transport-Hauptknopf — EIN Knopf, der zwischen Play und Stop kippt.
+   Grün ist dasselbe `--pal-run` wie das übrige Laufzeit-Feedback (Slot-Glow,
+   Sweep, Beat-Blitz), damit „läuft gerade" überall dieselbe Farbe hat. Im
+   Lauf wird daraus ein rot pulsender Stop-Knopf. ── */
+.btn.transport-play {
+  background: rgba(var(--pal-run-rgb), 0.14);
+  border-color: rgba(var(--pal-run-rgb), 0.8);
+  color: var(--pal-run);
+  box-shadow: inset 0 0 14px rgba(var(--pal-run-rgb), 0.12);
+}
+.btn.transport-stop {
+  background: rgba(var(--pal-stop-rgb), 0.18);
+  border-color: rgba(var(--pal-stop-rgb), 0.9);
+  color: var(--pal-stop);
+  animation: transport-stop-glow 1.4s ease-in-out infinite;
+}
+@keyframes transport-stop-glow {
+  0%,
+  100% {
+    box-shadow:
+      0 0 10px rgba(var(--pal-stop-rgb), 0.45),
+      inset 0 0 12px rgba(var(--pal-stop-rgb), 0.15);
+  }
+  50% {
+    box-shadow:
+      0 0 22px rgba(var(--pal-stop-rgb), 0.85),
+      inset 0 0 18px rgba(var(--pal-stop-rgb), 0.3);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .btn.transport-stop {
+    animation: none;
+    box-shadow:
+      0 0 16px rgba(var(--pal-stop-rgb), 0.7),
+      inset 0 0 16px rgba(var(--pal-stop-rgb), 0.22);
+  }
+}
+
+/* Navigations-/Menü-Knöpfe der Transport-Leiste (SQ, ⌂, ⚙). Der ausgewählte
+   Screen wird über Rahmen und Fläche markiert, NICHT über `opacity`: das
+   blasste vorher auch das Symbol selbst aus. Die Glyphen stehen so in beiden
+   Zuständen im vollen Textweiß. */
+.btn.transport-nav {
+  color: var(--pal-text);
+}
+.btn.transport-nav.on {
+  background: var(--pal-btn-alt);
+  border-color: rgba(255, 255, 255, 0.75);
+}
 .btn:disabled {
   opacity: 0.4;
   cursor: default;
@@ -105,8 +179,8 @@ body {
   border: 1.5px solid rgba(255, 255, 255, 0.25);
 }
 .panel-deep {
-  border-radius: 12px;
-  background: rgba(8, 8, 8, 0.85);
+  border-radius: 10px;
+  background: rgba(8, 8, 8, 0.35);
 }
 
 /* ── Modal / popup — backdrop + centered box, mirrors the many
@@ -161,8 +235,8 @@ textarea {
 /* ── Slot tile (Sequencer Overview lane row). ── */
 .slot-tile {
   position: relative;
-  width: 112px;
-  height: 112px;
+  width: 200px;
+  height: 200px;
   flex: 0 0 auto;
   border-radius: 12px;
   background: var(--pal-btn);
@@ -170,7 +244,7 @@ textarea {
   display: flex;
   flex-direction: column;
   padding: 4px;
-  gap: 4px;
+  gap: 6px;
 }
 /* Delete — small badge pinned to the tile's top-right corner. */
 .slot-tile .delete-badge {
@@ -189,7 +263,7 @@ textarea {
   align-items: center;
   justify-content: center;
   font-weight: 700;
-  font-size: 13px;
+  font-size: 17px;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
@@ -208,18 +282,338 @@ textarea {
 }
 .slot-tile .bottom-row {
   display: flex;
-  height: 26px;
-  gap: 4px;
+  height: 52px;
+  gap: 6px;
 }
 .slot-tile .speed-btn,
 .slot-tile .loop-btn {
   flex: 1;
-  font-size: 13px;
+  min-width: 52px;
+  font-size: 15px;
 }
 .slot-tile .loop-btn.loop-on {
   background: var(--pal-loop-on);
   border-color: var(--pal-loop-on);
   color: var(--pal-ink);
+}
+
+/* ── Wiedergabe-Feedback der Slot-Kacheln ────────────────────────────────
+   Getrieben von app/runtime.ts, das pro Frame `--play` (0..1) setzt und die
+   Klassen `playing` (läuft) / `starting` (Blockstart) schaltet. Alles andere
+   — vor allem das Ausblenden am Blockende — macht CSS von allein:
+
+     Start  → .starting-Animation blitzt die Kachel auf,
+              .play-glow blendet in 70ms ein (schnappt an)
+     Lauf   → .play-fill wächst mit --play, der Playhead wandert mit
+     Ende   → Klasse fällt weg, .play-glow/.play-fill blenden 700ms aus
+              (deshalb transition am Grundzustand, nicht am .playing-Zustand)  */
+
+/* --play / --cc01 als typisierte Custom Properties registrieren, damit der
+   Browser sie interpolieren kann. runtime.ts setzt sie nur noch pro Server-
+   Snapshot (alle 16tel); die Zwischenbewegung rechnet die CSS-Transition auf
+   der Animations-Uhr aus — nicht auf unserem rAF neben dem Pixi-Renderer.
+   Dadurch bleibt der Sweep flüssig, auch wenn die GPU beschäftigt ist. */
+@property --play {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+@property --cc01 {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+.slot-tile {
+  transition: --play var(--play-dur, 0.13s) linear;
+}
+.block-detail {
+  transition:
+    --play var(--play-dur, 0.13s) linear,
+    --cc01 120ms linear;
+}
+
+.slot-tile .play-fill,
+.slot-tile .play-glow {
+  position: absolute;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 700ms ease-out;
+  z-index: 0;
+}
+.slot-tile.playing .play-fill,
+.slot-tile.playing .play-glow {
+  opacity: 1;
+  transition-duration: 70ms;
+}
+
+/* Fortschritt: gefüllte Fläche bis --play, rechts abgeschlossen vom Playhead. */
+.slot-tile .play-fill {
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: calc(var(--play, 0) * 100%);
+  border-radius: 11px 0 0 11px;
+  background: linear-gradient(
+    to right,
+    rgba(var(--pal-run-rgb), 0.06),
+    rgba(var(--pal-run-rgb), 0.38)
+  );
+  border-right: 2px solid rgba(var(--pal-run-rgb), 0.95);
+  box-shadow: 2px 0 10px rgba(var(--pal-run-rgb), 0.5);
+}
+
+/* Rahmen + Schein, solange der Baustein läuft. */
+.slot-tile .play-glow {
+  inset: -2px;
+  border-radius: 14px;
+  border: 2px solid var(--pal-run);
+  box-shadow:
+    0 0 16px rgba(var(--pal-run-rgb), 0.55),
+    inset 0 0 18px rgba(var(--pal-run-rgb), 0.15);
+}
+
+/* Anblitzen im Moment des Blockstarts. */
+@keyframes tile-start {
+  0% {
+    box-shadow:
+      0 0 0 4px rgba(var(--pal-run-rgb), 0.95),
+      0 0 34px rgba(var(--pal-run-rgb), 0.8);
+  }
+  100% {
+    box-shadow:
+      0 0 0 0 rgba(var(--pal-run-rgb), 0),
+      0 0 0 rgba(var(--pal-run-rgb), 0);
+  }
+}
+.slot-tile.starting {
+  animation: tile-start 420ms ease-out;
+}
+
+/* Inhalt über Sweep und Rahmen halten — positionierte Elemente malen sonst
+   über die statischen Kinder (die .delete-badge hat ihr z-index schon). */
+.slot-tile .id-strip,
+.slot-tile .transpose-row,
+.slot-tile .bottom-row {
+  position: relative;
+  z-index: 1;
+}
+.slot-tile.playing .id-strip {
+  text-shadow: 0 0 10px rgba(var(--pal-run-rgb), 0.7);
+}
+
+/* Bausteinkette einer Lane: bricht bei Bedarf in mehrere Zeilen um, damit
+   immer ALLE Kacheln sichtbar sind (kein Querscrollen mehr). Die Kacheln
+   stehen in Abspielreihenfolge, zeilenweise von links nach rechts. */
+.lane-slots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  align-content: flex-start;
+}
+
+/* ── Lane-Puls: kurzer Blitz am linken Rand bei jedem gesendeten Noten-Step,
+   damit man auch bei vielen Kacheln sieht, welche Lane gerade feuert. ── */
+.lane-row {
+  position: relative;
+}
+.lane-row .lane-pulse {
+  position: absolute;
+  left: -4px;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  border-radius: 4px;
+  pointer-events: none;
+  opacity: 0;
+  background: var(--pal-run);
+}
+@keyframes lane-pulse {
+  0% {
+    opacity: 1;
+    box-shadow: 0 0 12px 2px rgba(var(--pal-run-rgb), 0.85);
+  }
+  100% {
+    opacity: 0;
+    box-shadow: 0 0 0 0 rgba(var(--pal-run-rgb), 0);
+  }
+}
+.lane-row.hit .lane-pulse {
+  animation: lane-pulse 260ms ease-out;
+}
+
+/* Bewegung sparsam, wenn das System es so will — der Zustand bleibt sichtbar
+   (Rahmen/Fortschritt), nur Blitze und Übergänge fallen weg. */
+@media (prefers-reduced-motion: reduce) {
+  .slot-tile.starting,
+  .lane-row.hit .lane-pulse {
+    animation: none;
+  }
+  .slot-tile .play-fill,
+  .slot-tile .play-glow {
+    transition: none;
+  }
+}
+
+/* ── Laufzeit-Feedback im Baustein-Detail ────────────────────────────────
+   Dieselbe Mechanik wie bei den Slot-Kacheln: runtime.ts setzt auf
+   `.block-detail` die Klasse `playing` und die Variablen --play-step /
+   --cc01, alles Weitere macht CSS. Kein React-Render pro Frame.  */
+
+/* Eine Raster-Zeile: quer scrollbar, mit Schwung (Touchdisplay). Jede Zeile
+   scrollt für sich — bei taktweisem Layout bleiben die Takte so untereinander
+   stehen, statt gemeinsam wegzurutschen. */
+.step-scroller {
+  position: relative;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  -webkit-overflow-scrolling: touch;
+  /* Ein Wisch, der am Ende des Rasters ankommt, soll nicht den ganzen
+     Baustein-Screen mitziehen. */
+  overscroll-behavior-x: contain;
+}
+.step-bar + .step-bar {
+  margin-top: 10px;
+}
+.bar-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--pal-text-dim);
+  margin-bottom: 2px;
+}
+
+/* Spalten-Playhead über dem Step-Raster. Steht absolut IM Scroller, wandert
+   also beim Querscrollen korrekt mit dem Raster mit. Der Klipp-Rahmen deckt
+   genau die Steps DIESER Zeile ab: liegt der laufende Step woanders, schiebt
+   die Transformation den Playhead aus dem Rahmen und er ist unsichtbar —
+   ohne dass JavaScript wissen müsste, welche Zeile gerade dran ist. */
+.step-playhead-clip {
+  position: absolute;
+  top: 0;
+  bottom: 4px;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 2;
+}
+.step-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--cell-w, 0px);
+  transform: translateX(calc((var(--play-step, 0) - var(--bar-start, 0)) * var(--cell-w, 0px)));
+  border-radius: 4px;
+  opacity: 0;
+  background: rgba(var(--pal-run-rgb), 0.16);
+  box-shadow:
+    inset 0 0 0 2px rgba(var(--pal-run-rgb), 0.85),
+    0 0 14px rgba(var(--pal-run-rgb), 0.45);
+  transition: opacity 500ms ease-out;
+}
+.block-detail.playing .step-playhead {
+  opacity: 1;
+  transition-duration: 60ms;
+}
+
+/* Statuszeile: was geht gerade raus? */
+.runtime-strip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 14px;
+  min-height: 30px;
+}
+.runtime-chip {
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums; /* Step-Zähler soll nicht zappeln */
+  color: var(--pal-text-dim);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: var(--pal-panel);
+}
+.block-detail.playing .runtime-chip {
+  color: var(--pal-run);
+  border-color: rgba(var(--pal-run-rgb), 0.7);
+}
+@keyframes chip-hit {
+  0% {
+    box-shadow: 0 0 0 3px rgba(var(--pal-run-rgb), 0.8);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(var(--pal-run-rgb), 0);
+  }
+}
+.runtime-chip.hit {
+  animation: chip-hit 260ms ease-out;
+}
+
+/* Pegel des zuletzt GESENDETEN CC-Werts (0..127 → --cc01). Bleibt bei Stop
+   stehen, wo die Automation aufgehört hat — das ist auch der Wert, den das
+   Gerät gerade hält. */
+.cc-meter {
+  position: relative;
+  width: 140px;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--pal-panel-deep);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+.cc-meter i {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: calc(var(--cc01, 0) * 100%);
+  background: var(--pal-run-idle);
+}
+.block-detail.playing .cc-meter i {
+  background: var(--pal-run);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .runtime-chip.hit {
+    animation: none;
+  }
+  .step-playhead {
+    transition: none;
+  }
+}
+
+/* ── Metronom-Punkt der Transportleiste (s. Transport.tsx). ── */
+@keyframes beat-flash {
+  0% {
+    opacity: 1;
+    transform: scale(1.35);
+  }
+  100% {
+    opacity: 0.12;
+    transform: scale(0.85);
+  }
+}
+.beat-dot {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--pal-white);
+  animation: beat-flash 260ms ease-out forwards;
+}
+.beat-dot.downbeat {
+  background: var(--pal-run);
+  box-shadow: 0 0 14px rgba(var(--pal-run-rgb), 0.9);
+  animation-duration: 360ms;
+}
+@media (prefers-reduced-motion: reduce) {
+  .beat-dot {
+    animation: none;
+    opacity: 0.6;
+  }
 }
 
 /* ── Step grid cells (Block Detail editors). ── */
@@ -228,7 +622,7 @@ textarea {
 }
 .step-cell {
   border-radius: 2px;
-  border: 1px solid rgba(255, 255, 255, 0.25);
+  border: 1px solid var(--pal-step-border);
   display: flex;
   align-items: center;
   justify-content: center;

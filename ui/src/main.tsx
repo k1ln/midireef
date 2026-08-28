@@ -1,4 +1,4 @@
-//! MidiDrift UI — Einstiegspunkt. Mountet den Pixi-Hintergrund (#pixi-bg,
+//! MidiReef UI — Einstiegspunkt. Mountet den Pixi-Hintergrund (#pixi-bg,
 //! nur Unterwasser-Szene + Ripple) und die React-Oberfläche (#react-root,
 //! das eigentliche Frontend) — siehe docs/ARCHITECTURE.md §2/§6.
 

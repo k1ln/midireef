@@ -7,6 +7,7 @@ import { Net } from "../net";
 import { Store } from "../state";
 import type { BlockType } from "../state";
 import { AppProvider } from "./store";
+import { RuntimeFeed } from "./runtime";
 import { Transport } from "./Transport";
 import { TouchKeyboardProvider } from "./TouchKeyboard";
 import { NotePickerProvider } from "./NotePicker";
@@ -15,6 +16,8 @@ import { BlockDetail } from "./BlockDetail";
 import { BlockLibrary } from "./BlockLibrary";
 import { LaneControls } from "./LaneControls";
 import { Dashboard } from "./Dashboard";
+import { ProjectSettings } from "./ProjectSettings";
+import { applyUiScale, getUiScale } from "./uiScale";
 
 type SubScreen =
   | { kind: "blockDetail"; blockId: string }
@@ -25,29 +28,54 @@ type SubScreen =
 export function App() {
   const [store] = useState(() => new Store());
   const [net] = useState(() => new Net());
+  const [runtime] = useState(() => new RuntimeFeed());
   const [view, setView] = useState<"start" | "seq">("start");
   const [sub, setSub] = useState<SubScreen>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // Gespeicherten UI-Zoom beim Start anwenden (s. uiScale.ts).
+  useEffect(() => {
+    applyUiScale(getUiScale());
+  }, []);
 
   useEffect(() => {
     const off = net.onEvent((evt) => {
       switch (evt.t) {
         case "state.snapshot":
-          if (evt.project) store.setProject(evt.project);
+          if (evt.project) {
+            // Projektwechsel: ein offener Unter-Screen zeigt auf einen
+            // Baustein/eine Lane des ALTEN Projekts — schließen, statt ihn
+            // ins Leere zeigen zu lassen.
+            if (store.project && store.project.id !== evt.project.id) setSub(null);
+            store.setProject(evt.project);
+          }
           break;
         case "midi.ports":
           store.setPorts(evt.outputs ?? []);
           break;
+        case "record.armState":
+          store.setRecordArmed(evt.controlId && evt.laneId ? { controlId: evt.controlId, laneId: evt.laneId } : null);
+          break;
       }
     });
+    const offRuntime = runtime.attach(net);
     net.connect();
-    return off;
-  }, [net, store]);
+    return () => {
+      off();
+      offRuntime();
+    };
+  }, [net, store, runtime]);
 
   return (
-    <AppProvider value={{ store, send: (cmd) => net.send(cmd), net }}>
+    <AppProvider value={{ store, send: (cmd) => net.send(cmd), net, runtime }}>
       <TouchKeyboardProvider>
         <NotePickerProvider>
-          <Transport view={view} onNav={setView} />
+          <Transport
+            view={view}
+            onNav={setView}
+            settingsOpen={settingsOpen}
+            onOpenSettings={() => setSettingsOpen(true)}
+          />
 
           {view === "start" ? (
             <Dashboard />
@@ -80,6 +108,8 @@ export function App() {
           )}
 
           {sub?.kind === "laneControls" && <LaneControls laneId={sub.laneId} onClose={() => setSub(null)} />}
+
+          {settingsOpen && <ProjectSettings onClose={() => setSettingsOpen(false)} />}
         </NotePickerProvider>
       </TouchKeyboardProvider>
     </AppProvider>

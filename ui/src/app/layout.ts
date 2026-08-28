@@ -2,4 +2,6 @@
 //! (every screen needs to know how tall the fixed Transport bar is to clear
 //! it with its own top padding/offset).
 
-export const TRANSPORT_H = 88;
+/** Höhe der Transportleiste. Flach gehalten — sie steht auf jedem Screen und
+ *  fehlt sonst unten beim Raster (s. Transport.tsx). */
+export const TRANSPORT_H = 66;

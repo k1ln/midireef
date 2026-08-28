@@ -56,6 +56,15 @@ pub struct Lane {
     pub trigger_quantize: String, // immediate|nextBeat|nextBar|nextBlock
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel: Option<u8>,
+    /// Nur für `role == "cc"`: der Ziel-Knob dieser Lane (ein gelerntes
+    /// Live-Control aus `Project.controls`, `kind == "knob"`). Die CC-Bausteine
+    /// der Lane liefern ausschließlich die BEWEGUNG (0..1) — Port, Kanal und
+    /// CC-Nummer kommen aus dem Mapping dieses Knobs. `None` = kein Ziel
+    /// gewählt, die Lane spielt stumm. Bewusst hier und nicht am Baustein:
+    /// derselbe Baustein soll in mehreren Lanes auf unterschiedliche CCs
+    /// laufen können (siehe `resolve_cc_target` in engine.rs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cc_control_id: Option<Id>,
     #[serde(default)]
     pub slots: serde_json::Value,
     #[serde(default)]
@@ -78,6 +87,7 @@ impl Lane {
             play_mode: "sequential".to_string(),
             trigger_quantize: "nextBar".to_string(),
             channel: None,
+            cc_control_id: None,
             slots: serde_json::json!([]),
             controls: serde_json::json!([]),
         }

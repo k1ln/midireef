@@ -10,7 +10,7 @@ export interface LiveControl {
   id: string;
   name: string;
   kind: string;
-  mapping?: { channel: number; kind: string; number: number };
+  mapping?: { channel: number; kind: string; number?: number }; // number fehlt nur bei kind="keyboard" (Wildcard-Mapping)
   deviceId?: string | null;
   x: number;
   y: number;
@@ -35,16 +35,25 @@ export interface ControlWidgetProps {
    *  landing on the background can open that control's context menu. */
   onPress: () => void;
   onRelease: () => void;
+  /** True while the physical device itself reports this control as "on"
+   *  (matching Note-On came in over MIDI) — lights the button up the same
+   *  way a touch/click on it would, independent of local pointer state. */
+  externalActive?: boolean;
+  /** True while this ("keyboard"-kind) control is linked to a melody lane
+   *  via `record.arm` — shows a small REC badge. */
+  recording?: boolean;
 }
 
-export function ControlWidget({ ctrl, deviceName, editMode, zoom, onContextMenu, onPress, onRelease }: ControlWidgetProps) {
+export function ControlWidget({ ctrl, deviceName, editMode, zoom, onContextMenu, onPress, onRelease, externalActive, recording }: ControlWidgetProps) {
   const send = useSend();
-  const isButton = ctrl.kind === "button" || ctrl.mapping?.kind === "note";
+  const isKeyboard = ctrl.kind === "keyboard";
+  const isButton = ctrl.kind === "button" || isKeyboard || ctrl.mapping?.kind === "note";
   const size = ctrl.w ?? 130;
 
   const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
   const [dragValue, setDragValue] = useState<number | null>(null);
   const [pressed, setPressed] = useState(false);
+  const lit = pressed || !!externalActive;
   const mode = useRef<"none" | "drag" | "turn">("none");
   const start = useRef({ gx: 0, gy: 0, x: 0, y: 0, value: 0 });
 
@@ -53,6 +62,10 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, onContextMenu,
   const value = dragValue ?? ctrl.value ?? 0;
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    // Don't let this bubble to the Dashboard background handler — it would
+    // start the MIDI-learn long-press timer for what's actually a press on
+    // this control.
+    e.stopPropagation();
     onPress();
     if (e.button === 2) {
       onContextMenu(e.clientX, e.clientY);
@@ -62,6 +75,10 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, onContextMenu,
     start.current = { gx: e.clientX, gy: e.clientY, x, y, value };
     if (editMode) {
       mode.current = "drag";
+    } else if (isKeyboard) {
+      // Reine Live-Aktivitäts-Anzeige (leuchtet nur, wenn das physische
+      // Keyboard tatsächlich gespielt wird) — kein Touch-Trigger hier.
+      mode.current = "none";
     } else if (isButton) {
       mode.current = "none";
       setPressed(true);
@@ -90,7 +107,7 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, onContextMenu,
     if (mode.current === "drag") {
       send({ t: "control.move", controlId: ctrl.id, x: Math.round(x), y: Math.round(y - 30) });
       setDragPos(null);
-    } else if (isButton) {
+    } else if (isButton && !isKeyboard) {
       setPressed(false);
       send({ t: "control.release", controlId: ctrl.id });
     }
@@ -106,6 +123,24 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, onContextMenu,
       onPointerCancel={endGesture}
       onContextMenu={(e) => e.preventDefault()}
     >
+      {recording && (
+        <div
+          style={{
+            position: "absolute",
+            top: -8,
+            right: -8,
+            padding: "2px 6px",
+            borderRadius: 4,
+            background: "var(--pal-danger)",
+            color: "var(--pal-white)",
+            fontSize: 10,
+            fontWeight: 700,
+            zIndex: 1,
+          }}
+        >
+          REC
+        </div>
+      )}
       {isButton ? (
         <div
           style={{
@@ -117,7 +152,7 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, onContextMenu,
             justifyContent: "center",
           }}
         >
-          <div style={{ width: size - 16, height: size - 16, background: "var(--pal-btn)", opacity: pressed ? 0.6 : 0.95 }} />
+          <div style={{ width: size - 16, height: size - 16, background: "var(--pal-btn)", opacity: lit ? 0.6 : 0.95 }} />
         </div>
       ) : (
         <svg width={size} height={size} style={{ display: "block" }}>
@@ -142,9 +177,9 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, onContextMenu,
         {ctrl.mapping && (
           <>
             <div style={{ fontSize: 11, color: "var(--pal-text-dim)" }}>
-              {ctrl.mapping.kind.toUpperCase()} {ctrl.mapping.number} · Ch{ctrl.mapping.channel}
+              {isKeyboard ? "KEYBOARD (any key)" : `${ctrl.mapping.kind.toUpperCase()} ${ctrl.mapping.number}`} · Ch{ctrl.mapping.channel}
             </div>
-            {ctrl.mapping.kind === "note" && (
+            {ctrl.mapping.kind === "note" && !isKeyboard && ctrl.mapping.number != null && (
               <div style={{ fontSize: 11, color: "var(--pal-text-dim)" }}>{noteToFreq(ctrl.mapping.number).toFixed(1)} Hz</div>
             )}
           </>

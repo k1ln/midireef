@@ -1,4 +1,4 @@
-//! WebSocket-Client zum MidiDrift-Server. Sendet Commands, empfängt Events.
+//! WebSocket-Client zum MidiReef-Server. Sendet Commands, empfängt Events.
 
 export interface TransportState {
   playing: boolean;

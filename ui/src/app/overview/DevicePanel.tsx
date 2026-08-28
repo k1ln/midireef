@@ -15,6 +15,7 @@ export interface DevicePanelProps {
   onOpenAddBlock: (laneId: string) => void;
   onOpenBlockMenu: (laneId: string, slotId: string) => void;
   onOpenLaneControls: (laneId: string) => void;
+  onOpenCcTarget: (laneId: string) => void;
 }
 
 export function DevicePanel({
@@ -24,6 +25,7 @@ export function DevicePanel({
   onOpenAddBlock,
   onOpenBlockMenu,
   onOpenLaneControls,
+  onOpenCcTarget,
 }: DevicePanelProps) {
   const send = useSend();
   const openKeyboard = useTouchKeyboard();
@@ -58,6 +60,16 @@ export function DevicePanel({
 
         <Button variant="alt" style={{ width: 44, height: 40, fontSize: 18 }} onClick={onOpenLibrary}>
           📚
+        </Button>
+
+        {/* Clock — schaltet, ob dieses Device MIDI-Clock/Start/Stop empfängt
+            (z.B. aus, wenn ein Synth ohne Clock-Sync unnötig Ticks bekäme). */}
+        <Button
+          variant={dev.sendClock ? "active" : "default"}
+          style={{ width: 92, height: 40, fontSize: 14 }}
+          onClick={() => send({ t: "device.setSendClock", deviceId: dev.id, sendClock: !dev.sendClock })}
+        >
+          Clock {dev.sendClock ? "On" : "Off"}
         </Button>
 
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -101,6 +113,7 @@ export function DevicePanel({
             onOpenAddBlock={() => onOpenAddBlock(lane.id)}
             onOpenBlockMenu={(slotId) => onOpenBlockMenu(lane.id, slotId)}
             onOpenLaneControls={() => onOpenLaneControls(lane.id)}
+            onOpenCcTarget={() => onOpenCcTarget(lane.id)}
           />
         ))}
       </div>

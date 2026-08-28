@@ -55,7 +55,9 @@ export type CcLayer = {
   values?: number[]; // stepped: 0..1 per step
   points?: CcEnvelopePoint[]; // envelope
   waveform?: string; // lfo
+  rateMode?: string; // lfo: "bars" | "hz"
   rateBars?: number; // lfo
+  rateHz?: number; // lfo, rateMode="hz"
   phase?: number; // lfo, 0..1
   from?: number; // ramp, 0..1
   to?: number; // ramp, 0..1
@@ -92,7 +94,8 @@ export interface Block {
   lengthBars?: number;
   stepsPerBar?: number;
   timeSignature?: string;
-  channel?: number; // Kanal-Override, sonst Lane/Device-Kanal
+  // Kein channel/CC-Ziel: ein Baustein ist reiner Inhalt und in mehreren Lanes
+  // (auf anderen Kanälen/CCs) wiederverwendbar — das Ziel legt die Lane fest.
   baseNote?: number; // melody, chord, arp
   notes?: MelodyNote[]; // melody
   lines?: BeatLine[]; // beat
@@ -102,7 +105,6 @@ export interface Block {
   gateSteps?: number; // arp
   rateSteps?: number; // arp
   velocity?: number; // arp
-  ccNumber?: number; // cc
   outMin?: number; // cc
   outMax?: number; // cc
   layers?: CcLayer[]; // cc
@@ -144,16 +146,15 @@ export interface MidiSignalControl {
   trigger: string;
 }
 
+/** Fernbedienung für einen gelernten Dashboard-Knob desselben Geräts —
+ *  Wert/Kanal/CC-Nummer liegen dort (Project.controls), nicht hier. */
 export interface MacroKnobControl {
   id: string;
   kind: "macroKnob";
   label: string;
   color?: string;
   order: number;
-  ccNumber: number;
-  min: number;
-  max: number;
-  value: number;
+  controlId: string;
 }
 
 export type LaneControl = NoteControl | DrumButtonControl | MidiSignalControl | MacroKnobControl;
@@ -172,6 +173,7 @@ export interface Lane {
   playMode: string;
   triggerQuantize: string;
   channel?: number; // Kanal-Override, sonst Device-Kanal
+  ccControlId?: string | null; // cc-Lane: Ziel-Knob (LiveControl-Id desselben Geräts)
   slots: Slot[];
   controls: LaneControl[];
 }
@@ -198,10 +200,18 @@ export interface Project {
 
 type Listener = () => void;
 
+export interface RecordArm {
+  controlId: string;
+  laneId: string;
+}
+
 export class Store {
   project?: Project;
   transport?: TransportState;
   midiOutputs: string[] = [];
+  /** Which keyboard control is currently linked to which melody lane for
+   *  live recording (`record.arm`) — null when nothing is armed. */
+  recordArmed: RecordArm | null = null;
   private listeners: Listener[] = [];
 
   /** Returns an unsubscribe function — React components mount/unmount
@@ -229,6 +239,27 @@ export class Store {
 
   setPorts(outputs: string[]) {
     this.midiOutputs = outputs;
+    this.emit();
+  }
+
+  setRecordArmed(arm: RecordArm | null) {
+    this.recordArmed = arm;
+    this.emit();
+  }
+
+  /** Patches a single field of a Live-Control (dashboard `controls` array)
+   *  in place — e.g. `value` when a physically turned knob reports back via
+   *  `control.valueChanged`. Rebuilds project/controls/control as new object
+   *  references (not just mutating in place) so `useSyncExternalStore`
+   *  selectors in Dashboard/ControlWidget actually see a change and re-render. */
+  patchControl(controlId: string, patch: Record<string, unknown>) {
+    if (!this.project) return;
+    const controls = (this.project.controls as Array<Record<string, unknown>> | undefined) ?? [];
+    const idx = controls.findIndex((c) => c.id === controlId);
+    if (idx === -1) return;
+    const newControls = controls.slice();
+    newControls[idx] = { ...newControls[idx], ...patch };
+    this.project = { ...this.project, controls: newControls };
     this.emit();
   }
 }

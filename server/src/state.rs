@@ -1,5 +1,6 @@
 //! Gemeinsamer App-Zustand: Projekt, Transport, Clock-Handle, Event-Broadcast.
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -7,8 +8,18 @@ use std::time::Instant;
 
 use tokio::sync::broadcast;
 
-use crate::clock::ClockHandle;
+use crate::clock::{ClockCommand, ClockHandle};
 use crate::model::{Project, TransportState};
+
+/// Ein per `record.arm` live an eine Melodie-Lane gelinktes Keyboard-Control
+/// (siehe `AppState::forward_to_recorder`). `channel` kommt aus dessen
+/// gelerntem Mapping — nur Noten auf genau diesem Kanal werden aufgenommen.
+#[derive(Debug, Clone)]
+pub struct RecordArm {
+    pub control_id: String,
+    pub lane_id: String,
+    pub channel: u8,
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -23,6 +34,15 @@ pub struct AppState {
     pub generation: Arc<AtomicU64>,
     /// Drosselt die "Kein Gerät zugewiesen"-Warnung (sonst Flut bei CC-Ziehen).
     pub last_device_warning: Arc<Mutex<Option<Instant>>>,
+    /// Aktuell gehaltene Noten je Control-ID (nur Note-Mappings betroffen).
+    /// Nötig für "keyboard"-Controls (matchen JEDE Note ihres Kanals): beim
+    /// Loslassen EINER Taste darf das Licht nicht erlöschen, während andere
+    /// Tasten noch gehalten werden (polyphones Spiel). Für normale
+    /// Einzel-Tasten-Controls bleibt die Menge einfach bei Größe 0/1.
+    pub held_notes: Arc<Mutex<HashMap<String, HashSet<u8>>>>,
+    /// Aktuell an eine Melodie-Lane gelinktes Keyboard-Control (`record.arm`),
+    /// falls eines armiert ist. Nur EINES gleichzeitig (v1).
+    pub record_armed: Arc<Mutex<Option<RecordArm>>>,
 }
 
 impl AppState {
@@ -32,7 +52,7 @@ impl AppState {
     }
 
     pub fn data_dir() -> PathBuf {
-        let base = std::env::var("MIDIDRIFT_DATA")
+        let base = std::env::var("MIDIREEF_DATA")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("./data"));
         let _ = std::fs::create_dir_all(base.join("projects"));
@@ -45,16 +65,26 @@ impl AppState {
 
     pub fn save_project(&self) -> std::io::Result<()> {
         let proj = self.project.lock().unwrap().clone();
-        let path = self.project_path(&proj.id);
-        let json = serde_json::to_string_pretty(&proj)?;
-        std::fs::write(path, json)
+        save_project_to(&self.data_dir, &proj)
     }
 
     pub fn load_project(&self, id: &str) -> std::io::Result<Project> {
         let path = self.project_path(id);
         let data = std::fs::read_to_string(path)?;
-        let proj: Project = serde_json::from_str(&data)?;
+        let mut proj: Project = serde_json::from_str(&data)?;
+        migrate_project(&mut proj);
         Ok(proj)
+    }
+
+    /// Alle auf Platte liegenden Projekte fürs Einstellungs-Menü.
+    pub fn list_projects(&self) -> Vec<serde_json::Value> {
+        list_projects_in(&self.data_dir)
+    }
+
+    /// Löscht die Projektdatei. Ob dabei gerade dieses Projekt geöffnet ist,
+    /// entscheidet der Aufrufer (siehe `project.delete` in ws.rs).
+    pub fn delete_project_file(&self, id: &str) -> std::io::Result<()> {
+        std::fs::remove_file(self.project_path(id))
     }
 
     pub fn snapshot_event(&self) -> serde_json::Value {
@@ -163,6 +193,141 @@ impl AppState {
             }
         }
     }
+
+    /// Spiegelt eine physisch am Gerät ausgelöste MIDI-Nachricht auf ein
+    /// bereits gelerntes Live-Control zurück, damit der Dashboard-Knopf sich
+    /// mitdreht bzw. der Taster aufleuchtet — Gegenstück zu MIDI-Learn (das
+    /// nur EINMAL im Lern-Modus zuhört, hier läuft es dauerhaft mit).
+    /// Bewusst OHNE `broadcast_snapshot`: Regler können sehr schnell
+    /// aufeinanderfolgende CCs schicken, ein voller Snapshot pro Nachricht
+    /// (inkl. Autosave) wäre unnötige Last — siehe gleiche Überlegung beim
+    /// `control.setValue`-Handler in ws.rs.
+    pub fn handle_midi_feedback(&self, msg: &[u8]) {
+        if msg.len() < 3 {
+            return;
+        }
+        let status = msg[0] & 0xF0;
+        let channel = (msg[0] & 0x0F) + 1;
+        match status {
+            0x90 | 0x80 => {
+                let (note, velocity) = (msg[1], msg[2]);
+                let note_on = status == 0x90 && velocity > 0;
+                let id = {
+                    let proj = self.project.lock().unwrap();
+                    find_control_id_by_mapping(&proj, channel, "note", note)
+                };
+                if let Some(id) = id {
+                    let active = {
+                        let mut held = self.held_notes.lock().unwrap();
+                        let set = held.entry(id.clone()).or_default();
+                        if note_on {
+                            set.insert(note);
+                        } else {
+                            set.remove(&note);
+                        }
+                        !set.is_empty()
+                    };
+                    let _ = self.events.send(serde_json::json!({
+                        "t": "control.activity",
+                        "controlId": id,
+                        "active": active,
+                    }));
+                }
+            }
+            0xB0 => {
+                let (cc, value) = (msg[1], msg[2]);
+                let id = {
+                    let mut proj = self.project.lock().unwrap();
+                    set_control_value_by_mapping(&mut proj, channel, "cc", cc, value)
+                };
+                if let Some(id) = id {
+                    let _ = self.events.send(serde_json::json!({
+                        "t": "control.valueChanged",
+                        "controlId": id,
+                        "value": value,
+                    }));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Leitet eine eingehende Note-On/Off-Nachricht an den Clock-Thread weiter,
+    /// FALLS gerade eine Lane über `record.arm` an ein Keyboard-Control auf
+    /// genau diesem Kanal gelinkt ist — unabhängig vom MIDI-Learn-Status, das
+    /// ist ein komplett separater Vorgang. Der Clock-Thread trägt die Note
+    /// dort taktgenau ein (siehe `ClockCommand::RecordNoteIn` in clock.rs),
+    /// weil nur er den laufenden Puls-Zähler kennt.
+    pub fn forward_to_recorder(&self, msg: &[u8]) {
+        if msg.len() < 3 {
+            return;
+        }
+        let status = msg[0] & 0xF0;
+        if status != 0x90 && status != 0x80 {
+            return;
+        }
+        let channel = (msg[0] & 0x0F) + 1;
+        let armed = self.record_armed.lock().unwrap().clone();
+        let Some(arm) = armed else { return };
+        if arm.channel != channel {
+            return;
+        }
+        let (note, velocity) = (msg[1], msg[2]);
+        let on = status == 0x90 && velocity > 0;
+        self.clock.send(ClockCommand::RecordNoteIn {
+            lane_id: arm.lane_id,
+            note,
+            velocity,
+            on,
+        });
+    }
+}
+
+/// Ob das Mapping eines Live-Controls zu Kanal/Art/Nummer einer eingehenden
+/// MIDI-Nachricht passt. Fehlt `number` im Mapping (nur bei "keyboard"-
+/// Controls, siehe `control.setKind`), matcht JEDE Nummer auf dem Kanal —
+/// so muss man nicht jede einzelne Taste eines Keyboards einzeln lernen.
+fn mapping_matches(control: &serde_json::Value, channel: u8, kind: &str, number: u8) -> bool {
+    let Some(m) = control.get("mapping") else {
+        return false;
+    };
+    if m.get("channel").and_then(|v| v.as_u64()) != Some(channel as u64) {
+        return false;
+    }
+    if m.get("kind").and_then(|v| v.as_str()) != Some(kind) {
+        return false;
+    }
+    match m.get("number").and_then(|v| v.as_u64()) {
+        Some(n) => n == number as u64,
+        None => true,
+    }
+}
+
+fn find_control_id_by_mapping(proj: &Project, channel: u8, kind: &str, number: u8) -> Option<String> {
+    proj.controls
+        .as_array()?
+        .iter()
+        .find(|c| mapping_matches(c, channel, kind, number))?
+        .get("id")?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// Setzt `value` auf dem passenden Control und liefert dessen ID zurück.
+fn set_control_value_by_mapping(
+    proj: &mut Project,
+    channel: u8,
+    kind: &str,
+    number: u8,
+    value: u8,
+) -> Option<String> {
+    let c = proj
+        .controls
+        .as_array_mut()?
+        .iter_mut()
+        .find(|c| mapping_matches(c, channel, kind, number))?;
+    c["value"] = serde_json::json!(value);
+    c.get("id")?.as_str().map(str::to_string)
 }
 
 /// Findet eine freie Position für ein neu gelerntes Control: rastert von
@@ -242,6 +407,60 @@ fn strip_io_suffix(name: &str) -> String {
     trimmed.to_string()
 }
 
+/// Schreibt ein Projekt nach `<data_dir>/projects/<id>.json`. Freie Funktion
+/// (statt nur `AppState::save_project`), weil der Clock-Thread (Live-Aufnahme
+/// vom Keyboard, siehe `clock.rs`) nur einzelne `Arc`-Felder hält, kein
+/// komplettes `AppState`.
+pub fn save_project_to(data_dir: &std::path::Path, proj: &Project) -> std::io::Result<()> {
+    let path = data_dir.join("projects").join(format!("{}.json", proj.id));
+    let json = serde_json::to_string_pretty(proj)?;
+    std::fs::write(path, json)
+}
+
+/// Kurzinfos zu allen gespeicherten Projekten, neuestes zuerst — Grundlage
+/// der Projektliste im Einstellungs-Dialog. Als Zeitstempel dient die
+/// Änderungszeit der DATEI (Unix-Sekunden), nicht `updatedAt` im Projekt:
+/// die Datei-Zeit ist auch bei Altprojekten verlässlich und ist derselbe
+/// Schlüssel, nach dem `load_most_recent_project_from` beim Start wählt.
+/// Unlesbare/fremde JSON-Dateien werden still übersprungen statt die ganze
+/// Liste scheitern zu lassen.
+pub fn list_projects_in(data_dir: &std::path::Path) -> Vec<serde_json::Value> {
+    let Ok(entries) = std::fs::read_dir(data_dir.join("projects")) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(u64, serde_json::Value)> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
+        .filter_map(|e| {
+            let raw = std::fs::read_to_string(e.path()).ok()?;
+            let proj: serde_json::Value = serde_json::from_str(&raw).ok()?;
+            let id = proj.get("id")?.as_str()?.to_string();
+            let name = proj.get("name").and_then(|v| v.as_str()).unwrap_or("Unbenannt");
+            let devices = proj
+                .get("devices")
+                .and_then(|v| v.as_array())
+                .map_or(0, |a| a.len());
+            let updated = e
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_secs());
+            Some((
+                updated,
+                serde_json::json!({
+                    "id": id,
+                    "name": name,
+                    "updatedAt": updated,
+                    "deviceCount": devices,
+                }),
+            ))
+        })
+        .collect();
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found.into_iter().map(|(_, v)| v).collect()
+}
+
 /// Lädt beim Serverstart das zuletzt gespeicherte Projekt (nach Änderungsdatum
 /// der `projects/*.json`-Datei), falls eines existiert. Verhindert Datenverlust
 /// (gelernte Controls, Devices) bei einem Server-Neustart.
@@ -253,5 +472,216 @@ pub fn load_most_recent_project_from(data_dir: &std::path::Path) -> Option<Proje
         .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
         .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())?;
     let data = std::fs::read_to_string(newest.path()).ok()?;
-    serde_json::from_str(&data).ok()
+    let mut proj: Project = serde_json::from_str(&data).ok()?;
+    migrate_project(&mut proj);
+    Some(proj)
+}
+
+/// Zieht Altprojekte auf das aktuelle Modell nach: Bausteine sind reiner Inhalt,
+/// das MIDI-Ziel (Kanal bzw. Ziel-Knob) hängt an der Lane.
+///
+/// Früher trug jeder CC-Baustein sein eigenes `sourceControlId` (und Reste einer
+/// noch älteren manuellen `ccNumber`/`channel`-Eingabe). Dadurch war ein
+/// Baustein an genau ein Ziel gefesselt und konnte nicht auf einem zweiten CC
+/// wiederverwendet werden. Hier wandert das Ziel einmalig auf die Lane; die
+/// toten Felder werden aus den Bausteinen entfernt.
+///
+/// `resolutionPerBar`/`slewMs`/`curve` fallen ersatzlos weg — sie waren nie
+/// implementiert (die Senderate deckelt `MIN_CC_SEND_INTERVAL` in engine.rs).
+pub fn migrate_project(proj: &mut Project) {
+    let controls = proj.controls.clone();
+
+    for dev in proj.devices.iter_mut() {
+        let dev_id = dev.id.clone();
+        let blocks = dev.blocks.clone();
+        let block_field = |block_id: &str, field: &str| -> Option<serde_json::Value> {
+            blocks
+                .as_array()?
+                .iter()
+                .find(|b| b.get("id").and_then(|v| v.as_str()) == Some(block_id))?
+                .get(field)
+                .cloned()
+                .filter(|v| !v.is_null())
+        };
+
+        for lane in dev.lanes.iter_mut() {
+            let slot_block_ids: Vec<String> = lane
+                .slots
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|s| s.get("blockId")?.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            if lane.cc_control_id.is_none() {
+                lane.cc_control_id = slot_block_ids
+                    .iter()
+                    .find_map(|bid| block_field(bid, "sourceControlId"))
+                    .and_then(|v| v.as_str().map(str::to_string))
+                    // Nur übernehmen, wenn der Knob wirklich an DIESEM Gerät
+                    // hängt — sonst war das Ziel ohnehin nie „verbunden".
+                    .filter(|cid| knob_belongs_to(&controls, cid, &dev_id));
+            }
+
+            if lane.channel.is_none() {
+                lane.channel = slot_block_ids
+                    .iter()
+                    .find_map(|bid| block_field(bid, "channel"))
+                    .and_then(|v| v.as_u64())
+                    .map(|c| (c as u8).clamp(1, 16));
+            }
+
+            // Macro-Knobs zeigten früher auf eine freie CC-Nummer; jetzt auf
+            // einen gelernten Knob. Ohne passenden Knob gibt es kein Ziel mehr —
+            // das Control fliegt raus statt stumm liegen zu bleiben.
+            if let Some(arr) = lane.controls.as_array_mut() {
+                arr.retain_mut(|c| {
+                    if c.get("kind").and_then(|v| v.as_str()) != Some("macroKnob") {
+                        return true;
+                    }
+                    if c.get("controlId").and_then(|v| v.as_str()).is_some() {
+                        return true;
+                    }
+                    let Some(cc) = c.get("ccNumber").and_then(|v| v.as_u64()) else {
+                        return false;
+                    };
+                    let Some(id) = knob_with_cc(&controls, &dev_id, cc as u8) else {
+                        return false;
+                    };
+                    if let Some(obj) = c.as_object_mut() {
+                        obj.insert("controlId".into(), serde_json::json!(id));
+                        obj.remove("ccNumber");
+                        obj.remove("min");
+                        obj.remove("max");
+                        obj.remove("value");
+                    }
+                    true
+                });
+            }
+        }
+
+        if let Some(arr) = dev.blocks.as_array_mut() {
+            for b in arr.iter_mut() {
+                let Some(obj) = b.as_object_mut() else { continue };
+                for dead in [
+                    "sourceControlId",
+                    "channel",
+                    "ccNumber",
+                    "resolutionPerBar",
+                    "slewMs",
+                    "curve",
+                ] {
+                    obj.remove(dead);
+                }
+            }
+        }
+    }
+}
+
+/// Ob `control_id` ein gelernter Knob des Geräts `device_id` ist.
+fn knob_belongs_to(controls: &serde_json::Value, control_id: &str, device_id: &str) -> bool {
+    controls
+        .as_array()
+        .and_then(|arr| {
+            arr.iter()
+                .find(|c| c.get("id").and_then(|v| v.as_str()) == Some(control_id))
+        })
+        .is_some_and(|c| {
+            c.get("kind").and_then(|v| v.as_str()) == Some("knob")
+                && c.get("deviceId").and_then(|v| v.as_str()) == Some(device_id)
+        })
+}
+
+/// Erster gelernter Knob dieses Geräts, dessen CC-Mapping auf `cc` zeigt.
+fn knob_with_cc(controls: &serde_json::Value, device_id: &str, cc: u8) -> Option<String> {
+    controls
+        .as_array()?
+        .iter()
+        .find(|c| {
+            c.get("deviceId").and_then(|v| v.as_str()) == Some(device_id)
+                && c.get("mapping").and_then(|m| m.get("kind")).and_then(|v| v.as_str()) == Some("cc")
+                && c.get("mapping").and_then(|m| m.get("number")).and_then(|v| v.as_u64())
+                    == Some(cc as u64)
+        })?
+        .get("id")?
+        .as_str()
+        .map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Device, Lane};
+
+    fn project_with_legacy_cc_block() -> Project {
+        let mut proj = Project::new("t");
+        let mut dev = Device::new("D MINI".into(), "D MINI".into());
+        dev.id = "dev-1".into();
+        dev.channel = 9;
+        dev.blocks = serde_json::json!([{
+            "id": "blk-1",
+            "type": "cc",
+            "name": "CC",
+            // Altlasten: Ziel + Kanal am Baustein, dazu nie implementierte Felder.
+            "sourceControlId": "knob-1",
+            "channel": 2,
+            "ccNumber": 74,
+            "resolutionPerBar": 16,
+            "slewMs": 0,
+            "curve": "linear",
+            "layers": [],
+        }]);
+        let mut lane = Lane::new("cc", "Lane 1".into());
+        lane.id = "lane-1".into();
+        lane.slots = serde_json::json!([{ "id": "s1", "blockId": "blk-1" }]);
+        lane.controls = serde_json::json!([
+            { "id": "lc-1", "kind": "macroKnob", "label": "CC44", "order": 0, "ccNumber": 44, "min": 0, "max": 127, "value": 3 },
+            { "id": "lc-2", "kind": "macroKnob", "label": "CC99", "order": 1, "ccNumber": 99, "min": 0, "max": 127, "value": 0 },
+        ]);
+        dev.lanes.push(lane);
+        proj.devices.push(dev);
+        proj.controls = serde_json::json!([
+            { "id": "knob-1", "kind": "knob", "deviceId": "dev-1", "name": "f",
+              "mapping": { "kind": "cc", "channel": 1, "number": 44 } },
+        ]);
+        proj
+    }
+
+    #[test]
+    fn migration_moves_cc_target_and_channel_from_block_to_lane() {
+        let mut proj = project_with_legacy_cc_block();
+        migrate_project(&mut proj);
+
+        let lane = &proj.devices[0].lanes[0];
+        assert_eq!(lane.cc_control_id.as_deref(), Some("knob-1"));
+        assert_eq!(lane.channel, Some(2));
+
+        let block = &proj.devices[0].blocks[0];
+        for dead in ["sourceControlId", "channel", "ccNumber", "resolutionPerBar", "slewMs", "curve"] {
+            assert!(block.get(dead).is_none(), "{dead} should be stripped from the block");
+        }
+    }
+
+    #[test]
+    fn migration_drops_a_cc_target_pointing_at_another_device() {
+        let mut proj = project_with_legacy_cc_block();
+        // Knob hängt jetzt an einem anderen Gerät — es war nie ein „verbundenes" Ziel.
+        proj.controls[0]["deviceId"] = serde_json::json!("dev-other");
+        migrate_project(&mut proj);
+        assert_eq!(proj.devices[0].lanes[0].cc_control_id, None);
+    }
+
+    #[test]
+    fn migration_relinks_macro_knobs_and_drops_unmatched_ones() {
+        let mut proj = project_with_legacy_cc_block();
+        migrate_project(&mut proj);
+
+        let controls = proj.devices[0].lanes[0].controls.as_array().unwrap();
+        // CC44 findet den gelernten Knob, CC99 nicht → fliegt raus.
+        assert_eq!(controls.len(), 1);
+        assert_eq!(controls[0]["controlId"], serde_json::json!("knob-1"));
+        assert!(controls[0].get("ccNumber").is_none());
+    }
 }

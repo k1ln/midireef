@@ -4,12 +4,17 @@
 
 import { useMemo } from "react";
 import type { Block, BlockType, Device } from "../state";
-import { useSend, useStoreValue } from "./store";
+import { useSend, useStoreValue, useRuntimeBlock } from "./store";
 import { useTouchKeyboard } from "./TouchKeyboard";
 import { Button } from "./widgets/Button";
 import { TRANSPORT_H } from "./layout";
-import { MelodyEditor, BeatEditor, ChordEditor, ArpEditor, ProgramChangeEditor, PatternShiftEditor } from "./blockdetail/editors";
+import { BeatEditor, ChordEditor, ArpEditor, ProgramChangeEditor, PatternShiftEditor } from "./blockdetail/editors";
+import { MelodyEditor } from "./blockdetail/MelodyEditor";
+import type { StepFlow } from "./blockdetail/StepGrid";
+import { useLocalPref } from "./useLocalPref";
 import { CcEditor } from "./blockdetail/CcEditor";
+import { BlockLengthControls } from "./blockdetail/LengthControls";
+import { BlockRuntimeStatus } from "./blockdetail/RuntimeStatus";
 
 interface FoundBlock {
   block: Block;
@@ -71,10 +76,15 @@ function BlockDetailBody({
   send: ReturnType<typeof useSend>;
 }) {
   const { block, device } = found;
-  const chLabel = block.channel ? `Ch ${block.channel}` : `Ch: Device (${device.channel})`;
+  // Wurzel des Editors: hier hängen die Laufzeit-Klassen und -Variablen, die
+  // Status-Chip und Step-Playheads weiter unten per CSS erben (runtime.ts).
+  const runtimeRef = useRuntimeBlock(block.id);
+  // Ansichts-Vorliebe, kein Projekt-Feld: taktweise untereinander oder eine
+  // lange Reihe. Bleibt über Screen-Wechsel hinweg stehen (localStorage).
+  const [flow, setFlow] = useLocalPref<StepFlow>("blockdetail.stepFlow", "wrap");
 
   return (
-    <div>
+    <div ref={runtimeRef} className="block-detail">
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 16, margin: "16px 0" }}>
         <div
           style={{ fontSize: 26, fontWeight: 700, cursor: "pointer" }}
@@ -88,15 +98,25 @@ function BlockDetailBody({
         </div>
         <div style={{ fontSize: 13, color: "var(--pal-text-dim)", fontWeight: 600 }}>{block.type.toUpperCase()}</div>
 
-        <Button
-          style={{ width: 168, height: 30, fontSize: 13 }}
-          onClick={() => {
-            const next = block.channel === undefined ? 1 : block.channel >= 16 ? undefined : block.channel + 1;
-            send({ t: "block.setField", blockId: block.id, field: "channel", value: next ?? null });
-          }}
-        >
-          {chLabel}
-        </Button>
+        {/* Raster des Bausteins — Takte und Substeps pro Takt. Gehört zum
+            Baustein (nicht zur Lane), gilt also überall, wo er steckt. */}
+        <BlockLengthControls block={block} />
+
+        {/* Nur sinnvoll, solange es überhaupt mehr als einen Takt gibt. */}
+        {(block.lengthBars ?? 1) > 1 && (
+          <Button
+            variant="alt"
+            style={{ width: 120, height: 40, fontSize: 15 }}
+            onClick={() => setFlow(flow === "wrap" ? "scroll" : "wrap")}
+          >
+            {flow === "wrap" ? "⤶ Bars" : "⟷ One row"}
+          </Button>
+        )}
+
+        {/* Kein Kanal-Button mehr: ein Baustein ist reiner Inhalt und kann in
+            mehreren Lanes stecken — Kanal (und bei CC das Ziel) setzt die Lane
+            in der Sequencer-Übersicht, sonst würde ein Baustein-Override
+            stillschweigend auch alle anderen Lanes umbiegen. */}
 
         {/* Move — changes the block's library slot (its ID, e.g. "3-5"), so
             it hands off to the Block Library grid to pick a free target cell. */}
@@ -122,13 +142,15 @@ function BlockDetailBody({
         </Button>
       </div>
 
-      {block.type === "melody" && <MelodyEditor block={block} />}
-      {block.type === "beat" && <BeatEditor block={block} />}
-      {block.type === "chord" && <ChordEditor block={block} />}
+      <BlockRuntimeStatus block={block} />
+
+      {block.type === "melody" && <MelodyEditor block={block} flow={flow} />}
+      {block.type === "beat" && <BeatEditor block={block} flow={flow} />}
+      {block.type === "chord" && <ChordEditor block={block} flow={flow} />}
       {block.type === "arp" && <ArpEditor block={block} />}
-      {block.type === "cc" && <CcEditor block={block} />}
-      {block.type === "programChange" && <ProgramChangeEditor block={block} />}
-      {block.type === "patternShift" && <PatternShiftEditor block={block} />}
+      {block.type === "cc" && <CcEditor block={block} flow={flow} />}
+      {block.type === "programChange" && <ProgramChangeEditor block={block} flow={flow} />}
+      {block.type === "patternShift" && <PatternShiftEditor block={block} flow={flow} />}
     </div>
   );
 }

@@ -29,6 +29,12 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     let _ = sender
         .send(Message::Text(state.snapshot_event().to_string()))
         .await;
+    let list = serde_json::json!({
+        "t": "project.list",
+        "projects": state.list_projects(),
+        "currentId": state.project.lock().unwrap().id.clone(),
+    });
+    let _ = sender.send(Message::Text(list.to_string())).await;
 
     // Task: Broadcast-Events an diesen Client weiterleiten.
     let forward = tokio::spawn(async move {
@@ -76,24 +82,62 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
             if let Err(e) = state.save_project() {
                 tracing::warn!("Projekt speichern fehlgeschlagen: {e}");
             }
+            broadcast_project_list(state);
         }
+        "project.list" => broadcast_project_list(state),
         "project.create" => {
             let name = cmd
                 .get("name")
                 .and_then(|v| v.as_str())
                 .unwrap_or("Neues Projekt");
-            let proj = Project::new(name);
-            *state.project.lock().unwrap() = proj;
-            broadcast_snapshot(state);
+            switch_project(state, Project::new(name), true);
+        }
+        "project.copy" => {
+            // Dupliziert das GEÖFFNETE Projekt (nicht `sourceId` von Platte) —
+            // so wandern auch noch nicht gespeicherte Änderungen mit in die
+            // Kopie, und man landet direkt in ihr statt im Original.
+            let mut copy = state.project.lock().unwrap().clone();
+            copy.id = uuid::Uuid::new_v4().to_string();
+            copy.name = cmd
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{} Kopie", copy.name));
+            copy.created_at = crate::model::now_iso();
+            switch_project(state, copy, true);
         }
         "project.load" => {
             if let Some(id) = cmd.get("projectId").and_then(|v| v.as_str()) {
                 match state.load_project(id) {
-                    Ok(p) => {
-                        *state.project.lock().unwrap() = p;
-                        broadcast_snapshot(state);
-                    }
+                    Ok(p) => switch_project(state, p, true),
                     Err(e) => tracing::warn!("Projekt laden fehlgeschlagen: {e}"),
+                }
+            }
+        }
+        "project.rename" => {
+            if let Some(name) = str_field(&cmd, "name") {
+                state.project.lock().unwrap().name = name;
+                broadcast_snapshot(state);
+                broadcast_project_list(state);
+            }
+        }
+        "project.delete" => {
+            if let Some(id) = str_field(&cmd, "projectId") {
+                if let Err(e) = state.delete_project_file(&id) {
+                    tracing::warn!("Projekt löschen fehlgeschlagen: {e}");
+                }
+                let is_current = state.project.lock().unwrap().id == id;
+                if is_current {
+                    // Das offene Projekt wurde gelöscht — auf das nächstneuere
+                    // wechseln (sonst zeigt die UI ein Projekt, das es nicht
+                    // mehr gibt, und der nächste Auto-Save legt es wieder an).
+                    // `save_current: false`, sonst schriebe genau dieser
+                    // Auto-Save die gerade gelöschte Datei zurück.
+                    let next = crate::state::load_most_recent_project_from(&state.data_dir)
+                        .unwrap_or_else(|| Project::new("MidiReef"));
+                    switch_project(state, next, false);
+                } else {
+                    broadcast_project_list(state);
                 }
             }
         }
@@ -205,6 +249,41 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
         "lane.setMuted" => lane_bool(state, &cmd, "muted", |l, v| l.muted = v),
         "lane.setSolo" => lane_bool(state, &cmd, "solo", |l, v| l.solo = v),
         "lane.setCollapsed" => lane_bool(state, &cmd, "collapsed", |l, v| l.collapsed = v),
+        "lane.setPlayMode" => lane_str(state, &cmd, "mode", |l, v| l.play_mode = v),
+        // Kanal-Override der Lane (null → Device-Kanal). Sitzt bewusst hier und
+        // nicht am Baustein: Bausteine sind reiner Inhalt und sollen in mehreren
+        // Lanes auf verschiedenen Kanälen wiederverwendbar sein.
+        "lane.setChannel" => {
+            if let Some(lane_id) = str_field(&cmd, "laneId") {
+                let ch = cmd
+                    .get("channel")
+                    .and_then(|v| v.as_u64())
+                    .map(|c| (c as u8).clamp(1, 16));
+                with_lane(state, &lane_id, |l| l.channel = ch);
+            }
+        }
+        // Ziel-Knob einer CC-Lane setzen (controlId null → Ziel lösen). Erlaubt
+        // sind NUR gelernte Knobs, die zum Device dieser Lane gehören und ein
+        // CC-Mapping haben — alles andere hätte kein sendbares Ziel und würde
+        // in der Engine ohnehin verworfen (s. `resolve_cc_target`).
+        "lane.setCcControl" => {
+            if let Some(lane_id) = str_field(&cmd, "laneId") {
+                let control_id = str_field(&cmd, "controlId");
+                {
+                    let mut proj = state.project.lock().unwrap();
+                    let allowed = match &control_id {
+                        Some(cid) => lane_can_target_control(&proj, &lane_id, cid),
+                        None => true,
+                    };
+                    if allowed {
+                        if let Some(l) = find_lane_mut(&mut proj, &lane_id) {
+                            l.cc_control_id = control_id;
+                        }
+                    }
+                }
+                broadcast_snapshot(state);
+            }
+        }
         // ── MIDI-Learn (Startbildschirm) ──
         "learn.start" => {
             state
@@ -217,6 +296,47 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 .learn_armed
                 .store(false, std::sync::atomic::Ordering::Relaxed);
             let _ = state.events.send(serde_json::json!({ "t": "learn.armed", "armed": false }));
+        }
+        // Linkt ein gelerntes Keyboard-Control live an eine Melodie-Lane
+        // (siehe `AppState::forward_to_recorder` / `ClockCommand::RecordNoteIn`).
+        // Erneuter Aufruf mit denselben Werten hebt die Zuordnung wieder auf.
+        "record.arm" => {
+            if let (Some(control_id), Some(lane_id)) =
+                (str_field(&cmd, "controlId"), str_field(&cmd, "laneId"))
+            {
+                let channel = {
+                    let proj = state.project.lock().unwrap();
+                    find_control(&proj, &control_id).and_then(|c| {
+                        let m = c.get("mapping")?;
+                        if m.get("kind").and_then(|v| v.as_str()) != Some("note") {
+                            return None;
+                        }
+                        m.get("channel").and_then(|v| v.as_u64()).map(|v| v as u8)
+                    })
+                };
+                let Some(channel) = channel else {
+                    tracing::debug!("record.arm: Control „{control_id}“ hat kein Note-Mapping");
+                    return;
+                };
+                let mut armed = state.record_armed.lock().unwrap();
+                let now_armed = match &*armed {
+                    Some(a) if a.control_id == control_id && a.lane_id == lane_id => {
+                        *armed = None;
+                        None
+                    }
+                    _ => {
+                        let arm = crate::state::RecordArm { control_id: control_id.clone(), lane_id: lane_id.clone(), channel };
+                        *armed = Some(arm);
+                        Some((control_id, lane_id))
+                    }
+                };
+                drop(armed);
+                let _ = state.events.send(serde_json::json!({
+                    "t": "record.armState",
+                    "controlId": now_armed.as_ref().map(|(c, _)| c),
+                    "laneId": now_armed.as_ref().map(|(_, l)| l),
+                }));
+            }
         }
         "control.assignName" => {
             if let (Some(id), Some(name)) =
@@ -292,6 +412,17 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 let mut proj = state.project.lock().unwrap();
                 if let Some(c) = find_control_mut(&mut proj, &id) {
                     c["kind"] = serde_json::json!(kind);
+                    // "keyboard": kein einzelner Taster, sondern die Aktivität
+                    // des GANZEN physischen Keyboards — Mapping auf "jede Note
+                    // auf diesem Kanal" weiten, statt an der einen beim Lernen
+                    // zufällig gedrückten Taste hängen zu bleiben.
+                    if kind == "keyboard" {
+                        if let Some(m) = c.get_mut("mapping").and_then(|m| m.as_object_mut()) {
+                            if m.get("kind").and_then(|v| v.as_str()) == Some("note") {
+                                m.remove("number");
+                            }
+                        }
+                    }
                 }
                 drop(proj);
                 broadcast_snapshot(state);
@@ -307,13 +438,16 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 if let Some(c) = find_control_mut(&mut proj, &id) {
                     c["value"] = serde_json::json!(value);
                 }
-                if let Some((port, ch, num)) = control_cc(&proj, &id) {
-                    if !has_device(&proj, &id) {
-                        warn_no_device(state, &id);
+                match control_cc(&proj, &id) {
+                    Some((port, ch, num)) => {
+                        if !has_device(&proj, &id) {
+                            warn_no_device(state, &id);
+                        }
+                        state
+                            .clock
+                            .send(ClockCommand::Midi(port, vec![0xB0 | (ch - 1), num, value]));
                     }
-                    state
-                        .clock
-                        .send(ClockCommand::Midi(port, vec![0xB0 | (ch - 1), num, value]));
+                    None => warn_no_mapping(state, &id),
                 }
             }
         }
@@ -323,14 +457,24 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 (str_field(&cmd, "laneId"), cmd.get("control").cloned())
             {
                 let mut proj = state.project.lock().unwrap();
-                if let Some(lane) = find_lane_mut(&mut proj, &lane_id) {
-                    if !lane.controls.is_array() {
-                        lane.controls = serde_json::json!([]);
+                // Ein Macro-Knob fernsteuert einen gelernten Knob DIESES Devices
+                // (s. `lane_control_set_value`) — ein anderes Ziel wäre nicht
+                // verbunden und würde beim Ziehen ins Leere senden.
+                let macro_ok = control.get("kind").and_then(|v| v.as_str()) != Some("macroKnob")
+                    || control
+                        .get("controlId")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|cid| lane_can_target_control(&proj, &lane_id, cid));
+                if macro_ok {
+                    if let Some(lane) = find_lane_mut(&mut proj, &lane_id) {
+                        if !lane.controls.is_array() {
+                            lane.controls = serde_json::json!([]);
+                        }
+                        let order = lane.controls.as_array().map(|a| a.len()).unwrap_or(0);
+                        control["id"] = serde_json::json!(uuid::Uuid::new_v4().to_string());
+                        control["order"] = serde_json::json!(order);
+                        lane.controls.as_array_mut().unwrap().push(control);
                     }
-                    let order = lane.controls.as_array().map(|a| a.len()).unwrap_or(0);
-                    control["id"] = serde_json::json!(uuid::Uuid::new_v4().to_string());
-                    control["order"] = serde_json::json!(order);
-                    lane.controls.as_array_mut().unwrap().push(control);
                 }
                 drop(proj);
                 broadcast_snapshot(state);
@@ -513,7 +657,7 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
             }
         }
         // Generischer Skalarfeld-Setter für Baustein-Felder, die keine
-        // strukturelle Array-Logik brauchen (Kanal-Override, ccNumber,
+        // strukturelle Array-Logik brauchen (Kanal-Override, sourceControlId,
         // baseNote, direction, gateSteps, rateSteps, velocity, …).
         // `value: null` löscht das Feld (z.B. Kanal-Override zurücksetzen).
         "block.setField" => {
@@ -534,34 +678,171 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 broadcast_snapshot(state);
             }
         }
-        // Baustein-Detail: Note an einem Step setzen/ersetzen/löschen (note=null
-        // → löschen). Ein Step trägt genau eine Note — ersetzt eine ggf.
-        // vorhandene Note an diesem Step, statt mehrere zu stapeln (Melodie-
-        // Editor ist eine Step-Reihe + Noten-Listenauswahl, kein Piano-Roll-Grid).
-        "melody.setStepNote" => {
-            if let (Some(id), Some(step)) =
-                (str_field(&cmd, "blockId"), cmd.get("step").and_then(|v| v.as_u64()))
-            {
-                let note = cmd.get("note").and_then(|v| v.as_u64());
+        // Baustein-Raster: Länge in Takten und/oder Auflösung (Substeps pro
+        // Takt) ändern. Beides sitzt am Baustein selbst (BlockBase), gilt also
+        // für jede Lane, in der er steckt. Der Inhalt wandert mit — sonst
+        // stünden nach einem Auflösungswechsel alle Noten auf der falschen Zeit
+        // und die neuen Steps wären nicht bespielbar (`beat.toggleStep` /
+        // `cc.setStepValue` fassen nur vorhandene Array-Indizes an).
+        "block.setLength" => {
+            if let Some(id) = str_field(&cmd, "blockId") {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(b) = find_block_mut(&mut proj, &id) {
+                    let old_spb = block_u32(b, "stepsPerBar", 16).max(1);
+                    let old_bars = block_u32(b, "lengthBars", 1).max(1);
+                    let new_spb = cmd
+                        .get("stepsPerBar")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| (v as u32).clamp(MIN_STEPS_PER_BAR, MAX_STEPS_PER_BAR))
+                        .unwrap_or(old_spb);
+                    let new_bars = cmd
+                        .get("lengthBars")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| (v as u32).clamp(1, MAX_LENGTH_BARS))
+                        .unwrap_or(old_bars);
+                    if (new_spb, new_bars) != (old_spb, old_bars) {
+                        b["stepsPerBar"] = serde_json::json!(new_spb);
+                        b["lengthBars"] = serde_json::json!(new_bars);
+                        refit_block_content(b, old_spb, new_spb, new_spb * new_bars);
+                    }
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        // Baustein-Detail: neue Note an einem Step hinzufügen. Ein Step kann
+        // mehrere gleichzeitige Noten tragen (Akkord-Stack im Melodie-Editor,
+        // wächst per "+" nach unten) — Engine/`fire_step` feuert ohnehin schon
+        // alle Noten mit gleichem `step` zusammen. Adressiert wird eine Note
+        // über (step, Tonhöhe); ein Duplikat an derselben Tonhöhe wird ignoriert.
+        "melody.addNote" => {
+            if let (Some(id), Some(step), Some(note)) = (
+                str_field(&cmd, "blockId"),
+                cmd.get("step").and_then(|v| v.as_u64()),
+                cmd.get("note").and_then(|v| v.as_u64()),
+            ) {
+                let note = note.min(127);
                 let mut proj = state.project.lock().unwrap();
                 if let Some(b) = find_block_mut(&mut proj, &id) {
                     if !b["notes"].is_array() {
                         b["notes"] = serde_json::json!([]);
                     }
                     if let Some(arr) = b["notes"].as_array_mut() {
-                        let existing = arr.iter().position(|n| n.get("step").and_then(|v| v.as_u64()) == Some(step));
-                        match (existing, note) {
-                            (Some(i), Some(n)) => arr[i]["note"] = serde_json::json!(n.min(127)),
-                            (Some(i), None) => {
-                                arr.remove(i);
-                            }
-                            (None, Some(n)) => arr.push(serde_json::json!({
+                        let dup = arr.iter().any(|n| {
+                            n.get("step").and_then(|v| v.as_u64()) == Some(step)
+                                && n.get("note").and_then(|v| v.as_u64()) == Some(note)
+                        });
+                        if !dup {
+                            arr.push(serde_json::json!({
                                 "step": step,
                                 "lengthSteps": 1,
-                                "note": n.min(127),
+                                "note": note,
                                 "velocity": 100,
-                            })),
-                            (None, None) => {}
+                            }));
+                        }
+                    }
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        // Baustein-Detail: eine bestimmte Note an einem Step entfernen (Step
+        // kann mehrere Noten haben — identifiziert über step+Tonhöhe).
+        "melody.removeNote" => {
+            if let (Some(id), Some(step), Some(note)) = (
+                str_field(&cmd, "blockId"),
+                cmd.get("step").and_then(|v| v.as_u64()),
+                cmd.get("note").and_then(|v| v.as_u64()),
+            ) {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(b) = find_block_mut(&mut proj, &id) {
+                    if let Some(arr) = b["notes"].as_array_mut() {
+                        arr.retain(|n| {
+                            !(n.get("step").and_then(|v| v.as_u64()) == Some(step)
+                                && n.get("note").and_then(|v| v.as_u64()) == Some(note))
+                        });
+                    }
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        // Baustein-Detail: Tonhöhe einer bestehenden Note am Step ändern
+        // (identifiziert über die bisherige Tonhöhe). No-op, wenn die Ziel-
+        // Tonhöhe am selben Step schon durch eine andere Note belegt ist.
+        "melody.setNotePitch" => {
+            if let (Some(id), Some(step), Some(note), Some(new_note)) = (
+                str_field(&cmd, "blockId"),
+                cmd.get("step").and_then(|v| v.as_u64()),
+                cmd.get("note").and_then(|v| v.as_u64()),
+                cmd.get("newNote").and_then(|v| v.as_u64()),
+            ) {
+                let new_note = new_note.min(127);
+                let mut proj = state.project.lock().unwrap();
+                if let Some(b) = find_block_mut(&mut proj, &id) {
+                    if let Some(arr) = b["notes"].as_array_mut() {
+                        let collision = arr.iter().any(|n| {
+                            n.get("step").and_then(|v| v.as_u64()) == Some(step)
+                                && n.get("note").and_then(|v| v.as_u64()) == Some(new_note)
+                        });
+                        if !collision {
+                            if let Some(n) = arr.iter_mut().find(|n| {
+                                n.get("step").and_then(|v| v.as_u64()) == Some(step)
+                                    && n.get("note").and_then(|v| v.as_u64()) == Some(note)
+                            }) {
+                                n["note"] = serde_json::json!(new_note);
+                            }
+                        }
+                    }
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        // Baustein-Detail: Dauer (in Steps) einer bestimmten Note am Step
+        // ändern — z.B. für gehaltene Pad-/Bass-Noten statt nur kurzer
+        // Stakkato-Hits (identifiziert über step+Tonhöhe).
+        "melody.setNoteLength" => {
+            if let (Some(id), Some(step), Some(note), Some(len)) = (
+                str_field(&cmd, "blockId"),
+                cmd.get("step").and_then(|v| v.as_u64()),
+                cmd.get("note").and_then(|v| v.as_u64()),
+                cmd.get("lengthSteps").and_then(|v| v.as_u64()),
+            ) {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(b) = find_block_mut(&mut proj, &id) {
+                    if let Some(arr) = b["notes"].as_array_mut() {
+                        if let Some(n) = arr.iter_mut().find(|n| {
+                            n.get("step").and_then(|v| v.as_u64()) == Some(step)
+                                && n.get("note").and_then(|v| v.as_u64()) == Some(note)
+                        }) {
+                            n["lengthSteps"] = serde_json::json!(len.clamp(1, 512));
+                        }
+                    }
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        // Baustein-Detail: Anschlagstärke einer bestimmten Note am Step
+        // (identifiziert über step+Tonhöhe). Untergrenze 1, nicht 0: eine Note
+        // mit Velocity 0 IST auf dem Draht ein Note-Off — sie würde gar nicht
+        // klingen, und zum Entfernen gibt es `melody.removeNote`.
+        "melody.setNoteVelocity" => {
+            if let (Some(id), Some(step), Some(note), Some(vel)) = (
+                str_field(&cmd, "blockId"),
+                cmd.get("step").and_then(|v| v.as_u64()),
+                cmd.get("note").and_then(|v| v.as_u64()),
+                cmd.get("velocity").and_then(|v| v.as_u64()),
+            ) {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(b) = find_block_mut(&mut proj, &id) {
+                    if let Some(arr) = b["notes"].as_array_mut() {
+                        if let Some(n) = arr.iter_mut().find(|n| {
+                            n.get("step").and_then(|v| v.as_u64()) == Some(step)
+                                && n.get("note").and_then(|v| v.as_u64()) == Some(note)
+                        }) {
+                            n["velocity"] = serde_json::json!(vel.clamp(1, 127));
                         }
                     }
                 }
@@ -1060,6 +1341,52 @@ fn str_field(cmd: &serde_json::Value, key: &str) -> Option<String> {
     cmd.get(key).and_then(|v| v.as_str()).map(str::to_string)
 }
 
+/// Schickt die Liste aller gespeicherten Projekte (+ID des offenen) an alle
+/// Clients — Grundlage des Projekt-Menüs hinter dem Zahnrad. Bewusst nur auf
+/// Anfrage bzw. nach Projekt-Operationen statt in jedem Snapshot: dafür
+/// müsste bei JEDER Änderung das Projektverzeichnis eingelesen werden.
+fn broadcast_project_list(state: &AppState) {
+    let projects = state.list_projects();
+    let current_id = state.project.lock().unwrap().id.clone();
+    let _ = state.events.send(serde_json::json!({
+        "t": "project.list",
+        "projects": projects,
+        "currentId": current_id,
+    }));
+}
+
+/// Wechselt das geöffnete Projekt.
+///
+/// Vorher wird die Wiedergabe gestoppt und ein Panic geschickt: die Engine
+/// hält Noten und Slot-Positionen des ALTEN Projekts: ohne Stop liefen die
+/// gehaltenen Noten weiter, ohne dass es die zugehörigen Bausteine noch gibt.
+/// Ein per `record.arm` armiertes Aufnahmeziel zeigt aus demselben Grund auf
+/// eine Lane, die es nicht mehr gibt, und wird ebenfalls gelöst.
+///
+/// `save_current` sichert das bisherige Projekt zuvor auf Platte — false nur,
+/// wenn dessen Datei gerade absichtlich gelöscht wurde (`project.delete`).
+fn switch_project(state: &AppState, proj: Project, save_current: bool) {
+    if save_current {
+        if let Err(e) = state.save_project() {
+            tracing::warn!("Auto-Save vor Projektwechsel fehlgeschlagen: {e}");
+        }
+    }
+    state.clock.send(ClockCommand::Stop);
+    state.clock.send(ClockCommand::Panic);
+
+    let bpm = proj.bpm;
+    *state.project.lock().unwrap() = proj;
+    state.clock.send(ClockCommand::SetBpm(bpm));
+
+    *state.record_armed.lock().unwrap() = None;
+    let _ = state.events.send(
+        serde_json::json!({ "t": "record.armState", "controlId": null, "laneId": null }),
+    );
+
+    broadcast_snapshot(state); // legt das neue Projekt gleich auf Platte an
+    broadcast_project_list(state);
+}
+
 fn broadcast_snapshot(state: &AppState) {
     state.bump_generation();
     let _ = state.events.send(state.snapshot_event());
@@ -1134,6 +1461,131 @@ fn find_block_mut<'a>(proj: &'a mut Project, block_id: &str) -> Option<&'a mut s
     None
 }
 
+/// Grenzen für `block.setLength`. Die Auflösung bleibt bewusst grob geklemmt:
+/// die Engine rechnet `pulsesPerBar / stepsPerBar` und rundet — jenseits von 64
+/// Substeps pro Takt wird daraus bei 4/4 (96 Pulses) ohnehin nur noch Jitter.
+const MIN_STEPS_PER_BAR: u32 = 1;
+const MAX_STEPS_PER_BAR: u32 = 64;
+const MAX_LENGTH_BARS: u32 = 16;
+
+fn block_u32(b: &serde_json::Value, key: &str, default: u32) -> u32 {
+    b.get(key).and_then(|v| v.as_u64()).unwrap_or(default as u64) as u32
+}
+
+/// Passt den Inhalt eines Bausteins an ein neues Raster an.
+///
+/// Zwei verschiedene Bewegungen, je nach Art des Inhalts:
+///  • EREIGNISSE (Noten, Akkorde, Beat-Trigger, PC-/Pattern-Events) behalten
+///    ihren Zeitpunkt: ihre Step-Nummer wird mit `new_spb / old_spb` skaliert.
+///    Eine Verdopplung der Auflösung schiebt die Snare also von Step 4 auf 8 —
+///    sie klingt an derselben Stelle, nur mit feinerem Raster dazwischen.
+///  • VERLÄUFE (Stepped-CC-Werte) werden neu abgetastet (Sample & Hold), sonst
+///    stünden zwischen den alten Werten Nullen und die Kurve wäre zerhackt.
+///
+/// Alles hinter `total` (= neue Gesamt-Stepzahl) fällt weg; Beat-Arrays und
+/// Stepped-Werte werden exakt auf `total` gebracht, damit die Editoren die
+/// neuen Steps auch anfassen können.
+fn refit_block_content(b: &mut serde_json::Value, old_spb: u32, new_spb: u32, total: u32) {
+    let scale = new_spb as f64 / old_spb as f64;
+    let at = |step: u64| -> u64 { (step as f64 * scale).round() as u64 };
+    let dur = |len: u64| -> u64 { ((len as f64 * scale).round() as u64).clamp(1, total as u64) };
+
+    // Melodie / Akkorde: Position + Länge mitziehen, hinten Abgeschnittenes weg.
+    for key in ["notes", "chords"] {
+        if let Some(arr) = b.get_mut(key).and_then(|v| v.as_array_mut()) {
+            for ev in arr.iter_mut() {
+                if let Some(step) = ev.get("step").and_then(|v| v.as_u64()) {
+                    ev["step"] = serde_json::json!(at(step));
+                }
+                if let Some(len) = ev.get("lengthSteps").and_then(|v| v.as_u64()) {
+                    ev["lengthSteps"] = serde_json::json!(dur(len));
+                }
+            }
+            arr.retain(|ev| ev.get("step").and_then(|v| v.as_u64()).unwrap_or(0) < total as u64);
+        }
+    }
+
+    // Program-Change / Pattern-Shift: nur eine Position, kein Länge-Feld.
+    for key in ["events", "messages"] {
+        if let Some(arr) = b.get_mut(key).and_then(|v| v.as_array_mut()) {
+            for ev in arr.iter_mut() {
+                if let Some(step) = ev.get("atStep").and_then(|v| v.as_u64()) {
+                    ev["atStep"] = serde_json::json!(at(step));
+                }
+            }
+            arr.retain(|ev| ev.get("atStep").and_then(|v| v.as_u64()).unwrap_or(0) < total as u64);
+        }
+    }
+
+    // Beat: pro Line ein frisches Array der neuen Länge. Nur GESETZTE Steps
+    // wandern mit (velocity > 0) — beim Verkleinern der Auflösung fallen sonst
+    // Treffer auf leere Nachbarn und löschen sich gegenseitig aus.
+    if let Some(lines) = b.get_mut("lines").and_then(|v| v.as_array_mut()) {
+        for line in lines.iter_mut() {
+            let old_steps = line
+                .get("steps")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let mut new_steps: Vec<serde_json::Value> =
+                (0..total).map(|_| serde_json::json!({ "velocity": 0 })).collect();
+            for (i, s) in old_steps.iter().enumerate() {
+                let t = at(i as u64) as usize;
+                if t < new_steps.len() && s.get("velocity").and_then(|v| v.as_u64()).unwrap_or(0) > 0 {
+                    new_steps[t] = s.clone();
+                }
+            }
+            line["steps"] = serde_json::Value::Array(new_steps);
+        }
+    }
+
+    // CC-Layer: Stepped neu abtasten, Envelope-Punkte wie Ereignisse verschieben,
+    // Random-Intervall im selben Verhältnis mitziehen.
+    if let Some(layers) = b.get_mut("layers").and_then(|v| v.as_array_mut()) {
+        for layer in layers.iter_mut() {
+            match layer.get("kind").and_then(|v| v.as_str()) {
+                Some("stepped") => {
+                    let old_values: Vec<f64> = layer
+                        .get("values")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.iter().map(|v| v.as_f64().unwrap_or(0.0)).collect())
+                        .unwrap_or_default();
+                    let values: Vec<serde_json::Value> = (0..total as usize)
+                        .map(|i| {
+                            let src = (i as f64 / scale).floor() as usize;
+                            serde_json::json!(old_values.get(src).copied().unwrap_or(0.0))
+                        })
+                        .collect();
+                    layer["values"] = serde_json::Value::Array(values);
+                }
+                Some("envelope") => {
+                    if let Some(points) = layer.get_mut("points").and_then(|v| v.as_array_mut()) {
+                        for p in points.iter_mut() {
+                            if let Some(step) = p.get("step").and_then(|v| v.as_u64()) {
+                                p["step"] = serde_json::json!(at(step));
+                            }
+                        }
+                        points.retain(|p| p.get("step").and_then(|v| v.as_u64()).unwrap_or(0) < total as u64);
+                    }
+                }
+                Some("random") => {
+                    if let Some(every) = layer.get("everySteps").and_then(|v| v.as_u64()) {
+                        layer["everySteps"] = serde_json::json!(dur(every));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Arp: Gate/Rate sind Step-Längen, also ebenfalls auflösungsabhängig.
+    for key in ["gateSteps", "rateSteps"] {
+        if let Some(v) = b.get(key).and_then(|v| v.as_u64()) {
+            b[key] = serde_json::json!(dur(v));
+        }
+    }
+}
+
 fn find_beat_line_mut<'a>(block: &'a mut serde_json::Value, line_id: &str) -> Option<&'a mut serde_json::Value> {
     block
         .get_mut("lines")?
@@ -1165,7 +1617,9 @@ fn default_cc_layer(kind: &str, steps: usize) -> Option<serde_json::Value> {
     match kind {
         "lfo" => {
             layer["waveform"] = serde_json::json!("sine");
+            layer["rateMode"] = serde_json::json!("bars");
             layer["rateBars"] = serde_json::json!(1.0);
+            layer["rateHz"] = serde_json::json!(1.0);
             layer["phase"] = serde_json::json!(0.0);
         }
         "envelope" => {
@@ -1233,6 +1687,22 @@ fn find_lane_mut<'a>(proj: &'a mut Project, lane_id: &str) -> Option<&'a mut Lan
         }
     }
     None
+}
+
+/// Ob `control_id` ein zulässiges CC-Ziel für diese Lane ist: ein gelernter
+/// Knob mit CC-Mapping, der zum SELBEN Device gehört wie die Lane. Gemeinsame
+/// Regel für `lane.setCcControl` und den Macro-Knob eines Lane-Controls —
+/// „in Lanes nur CCs wählen, die auch verbunden sind".
+fn lane_can_target_control(proj: &Project, lane_id: &str, control_id: &str) -> bool {
+    let Some((dev, _)) = find_lane(proj, lane_id) else { return false };
+    let Some(ctrl) = find_control(proj, control_id) else { return false };
+    ctrl.get("kind").and_then(|v| v.as_str()) == Some("knob")
+        && ctrl.get("deviceId").and_then(|v| v.as_str()) == Some(dev.id.as_str())
+        && ctrl
+            .get("mapping")
+            .and_then(|m| m.get("kind"))
+            .and_then(|v| v.as_str())
+            == Some("cc")
 }
 
 fn find_lane_control<'a>(lane: &'a Lane, control_id: &str) -> Option<&'a serde_json::Value> {
@@ -1317,19 +1787,46 @@ fn lane_control_trigger(state: &AppState, lane_id: &str, control_id: &str, press
     }
 }
 
-/// Persistiert den Wert eines Macro-Knob-Controls und sendet den CC live.
+/// Setzt den Wert eines Macro-Knobs einer Lane. Der Macro-Knob ist nur eine
+/// Fernbedienung für einen gelernten Dashboard-Knob (`controlId`): Wert, Kanal
+/// und CC-Nummer liegen dort, damit Lane und Dashboard denselben Regler zeigen
+/// statt zwei Wahrheiten zu führen — und damit hier gar kein freies CC gewählt
+/// werden kann, das an keinem Gerät hängt.
+///
+/// Bewusst OHNE `broadcast_snapshot`: beim Ziehen kommen sehr viele Werte
+/// hintereinander: ein voller Snapshot (inkl. Autosave) pro Wert wäre unnötige
+/// Last — dieselbe Überlegung wie bei `control.setValue`.
 fn lane_control_set_value(state: &AppState, lane_id: &str, control_id: &str, value: u8) {
-    let mut proj = state.project.lock().unwrap();
-    let Some((port, ch)) = find_lane(&proj, lane_id).map(|(d, l)| lane_port_channel(d, l)) else {
-        return;
+    let target_id = {
+        let proj = state.project.lock().unwrap();
+        let Some((_, lane)) = find_lane(&proj, lane_id) else { return };
+        let Some(ctrl) = find_lane_control(lane, control_id) else { return };
+        ctrl.get("controlId")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
     };
-    let Some(lane) = find_lane_mut(&mut proj, lane_id) else { return };
-    let Some(ctrl) = find_lane_control_mut(lane, control_id) else { return };
-    ctrl["value"] = serde_json::json!(value);
-    let cc = ctrl.get("ccNumber").and_then(|v| v.as_u64()).unwrap_or(1) as u8;
+    let Some(target_id) = target_id else { return };
+
+    let mut proj = state.project.lock().unwrap();
+    if let Some(c) = find_control_mut(&mut proj, &target_id) {
+        c["value"] = serde_json::json!(value);
+    }
+    let cc = control_cc(&proj, &target_id);
     drop(proj);
-    state.clock.send(ClockCommand::Midi(port, vec![0xB0 | (ch - 1), cc, value]));
-    broadcast_snapshot(state);
+
+    match cc {
+        Some((port, ch, num)) => {
+            state
+                .clock
+                .send(ClockCommand::Midi(port, vec![0xB0 | (ch - 1), num, value]));
+            let _ = state.events.send(serde_json::json!({
+                "t": "control.valueChanged",
+                "controlId": target_id,
+                "value": value,
+            }));
+        }
+        None => warn_no_mapping(state, &target_id),
+    }
 }
 
 /// Baut MIDI-Bytes aus einer `PatternMessage` für Press/Release eines
@@ -1398,6 +1895,27 @@ fn warn_no_device(state: &AppState, control_id: &str) {
     }));
 }
 
+/// Warnt die UI, dass ein Control noch keine CC-Zuordnung hat — z.B. ein
+/// frisch angelegter Makro-Knopf, der noch nie per MIDI-Learn belegt wurde.
+/// Ohne diese Meldung verschwindet `control.setValue` sonst lautlos: der
+/// `value` im Projekt-State ändert sich (UI zeigt Bewegung), aber es geht
+/// kein einziges Byte raus, ohne dass irgendwas das meldet. Gleiches
+/// Cooldown-Timing wie `warn_no_device` (viele setValue-Events beim Ziehen).
+fn warn_no_mapping(state: &AppState, control_id: &str) {
+    const COOLDOWN: std::time::Duration = std::time::Duration::from_secs(3);
+    let mut last = state.last_device_warning.lock().unwrap();
+    let now = std::time::Instant::now();
+    if last.map(|t| now.duration_since(t) < COOLDOWN).unwrap_or(false) {
+        return;
+    }
+    *last = Some(now);
+    let _ = state.events.send(serde_json::json!({
+        "t": "control.sendError",
+        "controlId": control_id,
+        "message": "This control has no CC mapping yet — long-press it and MIDI-learn a knob/fader to send it out.",
+    }));
+}
+
 /// Ziel-Port eines Controls: Device-Port oder leer (→ virtueller Port).
 fn control_port(proj: &Project, ctrl: &serde_json::Value) -> String {
     control_device(proj, ctrl).map(|d| d.midi_out_port.clone()).unwrap_or_default()
@@ -1425,6 +1943,11 @@ fn control_device<'a>(proj: &'a Project, ctrl: &serde_json::Value) -> Option<&'a
 /// gemacht (Kanal 4 wurde durch den alten Geräte-Kanal 11 überschrieben).
 fn control_trigger(proj: &Project, id: &str, pressed: bool) -> Option<(String, Vec<u8>)> {
     let ctrl = find_control(proj, id)?;
+    // "keyboard"-Controls sind eine reine Live-Aktivitäts-Anzeige (matchen
+    // jede Note ihres Kanals) — kein einzelner Ton zum Antippen.
+    if ctrl.get("kind").and_then(|v| v.as_str()) == Some("keyboard") {
+        return None;
+    }
     let map = ctrl.get("mapping")?;
     let kind = map.get("kind").and_then(|v| v.as_str())?;
     let ch = (map.get("channel").and_then(|v| v.as_u64()).unwrap_or(1) as u8).clamp(1, 16);
@@ -1530,6 +2053,10 @@ fn blank_beat_block() -> serde_json::Value {
     })
 }
 
+/// Ein CC-Baustein beschreibt NUR die Bewegung (Layer + Wertebereich). Wohin
+/// sie geht — Gerät, Kanal, CC-Nummer — entscheidet die Lane über ihren
+/// Ziel-Knob (`Lane.ccControlId`), damit derselbe Baustein in mehreren Lanes
+/// auf unterschiedlichen CCs laufen kann.
 fn default_cc_block() -> serde_json::Value {
     serde_json::json!({
         "id": uuid::Uuid::new_v4().to_string(),
@@ -1538,12 +2065,8 @@ fn default_cc_block() -> serde_json::Value {
         "lengthBars": 1,
         "timeSignature": "4/4",
         "stepsPerBar": 16,
-        "ccNumber": 74,
         "outMin": 0,
         "outMax": 127,
-        "resolutionPerBar": 16,
-        "slewMs": 0,
-        "curve": "linear",
         "layers": [{
             "id": uuid::Uuid::new_v4().to_string(),
             "kind": "stepped",
@@ -1608,4 +2131,71 @@ fn default_pattern_shift_block() -> serde_json::Value {
         "stepsPerBar": 16,
         "messages": [],
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Auflösung verdoppeln: die Musik bleibt an derselben Stelle, nur das
+    /// Raster darum wird feiner.
+    #[test]
+    fn doubling_the_resolution_keeps_events_in_time() {
+        let mut block = serde_json::json!({
+            "type": "melody",
+            "notes": [{ "step": 0, "lengthSteps": 2, "note": 60, "velocity": 100 },
+                      { "step": 4, "lengthSteps": 1, "note": 63, "velocity": 100 }],
+        });
+        refit_block_content(&mut block, 16, 32, 32);
+        let notes = block["notes"].as_array().unwrap();
+        assert_eq!(notes[0]["step"], 0);
+        assert_eq!(notes[0]["lengthSteps"], 4);
+        assert_eq!(notes[1]["step"], 8);
+        assert_eq!(notes[1]["lengthSteps"], 2);
+    }
+
+    /// Beat-Lines bekommen exakt die neue Gesamtlänge — sonst könnten die
+    /// hinzugekommenen Steps im Editor nicht angetippt werden (`beat.toggleStep`
+    /// greift nur auf vorhandene Indizes zu).
+    #[test]
+    fn beat_lines_are_resized_and_hits_move_with_the_grid() {
+        let steps: Vec<serde_json::Value> = (0..16)
+            .map(|i| serde_json::json!({ "velocity": if i == 4 { 100 } else { 0 } }))
+            .collect();
+        let mut block = serde_json::json!({ "type": "beat", "lines": [{ "steps": steps }] });
+        refit_block_content(&mut block, 16, 32, 64); // 32 Substeps, 2 Takte
+        let out = block["lines"][0]["steps"].as_array().unwrap();
+        assert_eq!(out.len(), 64);
+        assert_eq!(out[8]["velocity"], 100);
+        assert_eq!(out[4]["velocity"], 0);
+    }
+
+    /// Kürzen (2 Takte → 1) schneidet hinten ab, statt Events auf den letzten
+    /// Step zu stapeln. Die Auflösung bleibt dabei gleich, die Positionen auch.
+    #[test]
+    fn shrinking_drops_events_past_the_new_end() {
+        let mut block = serde_json::json!({
+            "type": "programChange",
+            "events": [{ "atStep": 4, "program": 1 }, { "atStep": 20, "program": 2 }],
+        });
+        refit_block_content(&mut block, 16, 16, 16);
+        let events = block["events"].as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["atStep"], 4);
+    }
+
+    /// Stepped-CC ist ein Verlauf, kein Ereignis: neu abtasten (Sample & Hold),
+    /// damit zwischen den alten Werten keine Nullen stehen.
+    #[test]
+    fn stepped_cc_values_are_resampled() {
+        let mut block = serde_json::json!({
+            "type": "cc",
+            "layers": [{ "kind": "stepped", "values": [0.25, 0.5] }],
+        });
+        refit_block_content(&mut block, 2, 4, 4);
+        assert_eq!(
+            block["layers"][0]["values"],
+            serde_json::json!([0.25, 0.25, 0.5, 0.5])
+        );
+    }
 }

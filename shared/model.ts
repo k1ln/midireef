@@ -1,5 +1,5 @@
 /**
- * MidiDrift — verbindliches Datenmodell (Single Source of Truth).
+ * MidiReef — verbindliches Datenmodell (Single Source of Truth).
  *
  * Diese Typen werden von UI (PixiJS) und MIDI-Server (Rust, gespiegelt via serde)
  * gemeinsam genutzt. Persistenz erfolgt als JSON — jede Struktur ist JSON-serialisierbar.
@@ -181,8 +181,11 @@ export interface BlockBase {
   /** Anzahl Steps pro Takt (Auflösung im Editor, z.B. 16). */
   stepsPerBar: number;
 
-  /** Kanal-Override — überschreibt Lane-/Device-Kanal, wenn gesetzt. */
-  channel?: MidiChannel;
+  // Bewusst KEIN Kanal und kein MIDI-Ziel am Baustein: ein Baustein ist reiner
+  // Inhalt (Noten, Steps, Bewegung) und soll in mehreren Lanes — auf anderen
+  // Kanälen, anderen CCs, anderen Geräten — wiederverwendbar sein. Das Ziel
+  // legt die Lane fest: `Lane.channel` (Kanal-Override) bzw. `Lane.ccControlId`
+  // (Ziel-Knob einer CC-Lane).
 }
 
 // ── Melodie ────────────────────────────────────────────────────────────────
@@ -247,7 +250,11 @@ export type LfoWaveform =
   | "square"
   | "randomSmooth";
 
-/** Wie ein Layer mit dem Ergebnis der darunterliegenden Layer kombiniert wird. */
+/**
+ * Wie ein Layer mit dem Ergebnis der darunterliegenden Layer kombiniert wird.
+ * Für den UNTERSTEN aktiven Layer ohne Bedeutung — der ist immer die Basis
+ * (sonst ergäben "multiply"/"min" dort zwangsläufig 0, also Stille).
+ */
 export type CcCombineMode = "add" | "multiply" | "max" | "min" | "replace";
 
 export interface CcLayerBase {
@@ -255,15 +262,20 @@ export interface CcLayerBase {
   kind: CcLayerKind;
   enabled: boolean;
   combine: CcCombineMode;
-  depth: number; // 0..1 Skalierung des Layer-Beitrags
-  offset: number; // -1..1 Versatz
+  /** Beitrag = roh * depth + offset, danach auf 0..1 geklemmt. */
+  depth: number; // 0..1 Skalierung der Bewegung
+  offset: number; // -1..1 Versatz NACH der Skalierung
 }
 
 export interface CcLfoLayer extends CcLayerBase {
   kind: "lfo";
   waveform: LfoWaveform;
+  /** "bars" = tempo-synchron (rateBars), "hz" = frei laufend (rateHz), unabhängig vom Tempo. */
+  rateMode: "bars" | "hz";
   /** Rate synchron zum Takt, in Takten pro Zyklus (z.B. 1 = 1 Zyklus/Takt, 0.25 = 4/Takt). */
   rateBars: number;
+  /** Freie Rate in Hz (nur bei rateMode="hz") — für schnelle, nicht taktsynchrone LFOs. */
+  rateHz?: number;
   phase: number; // 0..1 Startphase
 }
 
@@ -302,21 +314,17 @@ export type CcLayer =
   | CcRandomLayer
   | CcSteppedLayer;
 
+/**
+ * Reine BEWEGUNG — welchen CC sie fährt, entscheidet die Lane über ihren
+ * Ziel-Knob (`Lane.ccControlId`). Derselbe Baustein kann so in mehreren Lanes
+ * auf unterschiedlichen CCs/Geräten laufen.
+ */
 export interface CcBlock extends BlockBase {
   type: "cc";
-  ccNumber: number; // 0–127
   /** Ausgabewerte in diesem Bereich (Standard 0–127). */
   outMin: Midi7Bit;
   outMax: Midi7Bit;
-  layers: CcLayer[]; // von unten nach oben kombiniert
-  /** Sende-Auflösung: wie oft pro Takt CC-Werte rausgehen. */
-  resolutionPerBar: number;
-  /** Slew/Glide in ms: glättet Wertsprünge (gegen Zipper-Noise). 0 = aus. */
-  slewMs: number;
-  /** Ausgangskurve: linear oder exponentiell/logarithmisch. */
-  curve: "linear" | "exp" | "log";
-  /** Optional: NRPN statt CC senden (14-bit). */
-  useNrpn?: boolean;
+  layers: CcLayer[]; // von unten nach oben kombiniert; der unterste ist die Basis
 }
 
 // ── Pattern-Shift (z.B. Roland Aira) ────────────────────────────────────────
@@ -464,13 +472,15 @@ export interface MidiSignalControl extends LaneControlBase {
   trigger: ControlTrigger;
 }
 
-/** CC-Lane: Macro-Knob, der einen CC live steuert. */
+/**
+ * CC-Lane: Macro-Knob — Fernbedienung für einen gelernten Dashboard-Knob
+ * (`Project.controls`, kind="knob") DESSELBEN Geräts. Wert, Kanal und
+ * CC-Nummer leben dort, damit Lane und Dashboard denselben Regler zeigen; ein
+ * freies CC ohne Gerät dahinter lässt sich hier gar nicht erst wählen.
+ */
 export interface MacroKnobControl extends LaneControlBase {
   kind: "macroKnob";
-  ccNumber: number;
-  min: Midi7Bit;
-  max: Midi7Bit;
-  value: number;
+  controlId: Id;
 }
 
 /** Löst einen Slot/Baustein der Lane per Touch aus. */
@@ -508,6 +518,16 @@ export interface Lane {
 
   /** Default-Channel dieser Lane; überschreibt den Device-Channel wenn gesetzt. */
   channel?: MidiChannel;
+
+  /**
+   * Nur für `role === "cc"`: Ziel-Knob dieser Lane — ein gelerntes Live-Control
+   * (`Project.controls`, kind="knob") DESSELBEN Geräts. Die CC-Bausteine der
+   * Lane liefern die Bewegung, der Knob die CC-NUMMER; Port und Kanal kommen
+   * wie bei jeder Lane von Lane/Device (nicht aus dem Mapping des Knobs, dessen
+   * Kanal nur den Sendekanal beim MIDI-Learn festhält).
+   * `null`/undefined = kein Ziel, die Lane spielt stumm.
+   */
+  ccControlId?: Id | null;
 
   /** Swing 0..1 nur für diese Lane (überschreibt Projekt-Swing). */
   swing?: number;
@@ -575,13 +595,24 @@ export interface MpeConfig {
 // Live-Controls (Startbildschirm)
 // ────────────────────────────────────────────────────────────────────────────
 
-export type ControlKind = "knob" | "fader" | "button" | "toggle" | "xy";
+/**
+ * "keyboard" = kein einzelner Taster, sondern eine Live-Aktivitäts-Anzeige
+ * für ein GANZES physisches Keyboard (z.B. das eingebaute Keyboard eines
+ * Mini-Synths): leuchtet, solange irgendeine Taste auf dem gelernten Kanal
+ * gehalten wird — man muss also nicht jede einzelne Taste einzeln lernen.
+ */
+export type ControlKind = "knob" | "fader" | "button" | "toggle" | "xy" | "keyboard";
 
-/** Ergebnis eines MIDI-Learn: was dieses Control sendet/empfängt. */
+/**
+ * Ergebnis eines MIDI-Learn: was dieses Control sendet/empfängt.
+ * `number` fehlt NUR bei kind="keyboard": das Mapping matcht dann jede Note
+ * auf `channel`, statt an der einen beim Lernen zufällig gedrückten Taste
+ * hängen zu bleiben (siehe `control.setKind` im Server).
+ */
 export interface MidiMapping {
   channel: MidiChannel;
   kind: MidiMessageKind;
-  number: number; // CC-/Note-/NRPN-Nr
+  number?: number; // CC-/Note-/NRPN-Nr — optional nur für kind="keyboard"-Controls
 }
 
 export interface LiveControl {
@@ -851,7 +882,13 @@ export type Command =
   | { t: "transport.setFill"; active: boolean }
   | { t: "transport.setMetronome"; enabled: boolean }
   // ── Aufnahme ──
-  | { t: "record.arm"; laneId: Id }
+  // Linkt ein gelerntes Live-Control (i.d.R. kind="keyboard", siehe oben) live
+  // an eine Melodie-Lane: solange die Wiedergabe läuft, werden Noten, die auf
+  // dem Kanal des Controls ankommen, taktgenau in den ERSTEN Slot-Baustein der
+  // Lane eingetragen (Step aus dem laufenden Clock-Puls, Note-Off setzt die
+  // tatsächlich gehaltene Länge). Erneuter Aufruf mit selben Werten hebt die
+  // Zuordnung wieder auf (Toggle) — Antwort über ServerEvent "record.armState".
+  | { t: "record.arm"; controlId: Id; laneId: Id }
   | { t: "record.start" }
   | { t: "record.stop" }
   | { t: "record.setSettings"; settings: RecordSettings }
@@ -870,7 +907,8 @@ export type Command =
   | { t: "lane.reorder"; deviceId: Id; orderedLaneIds: Id[] }
   | { t: "lane.setRole"; laneId: Id; role: LaneRole }
   | { t: "lane.setColor"; laneId: Id; color: string }
-  | { t: "lane.setChannel"; laneId: Id; channel?: MidiChannel }
+  | { t: "lane.setChannel"; laneId: Id; channel?: MidiChannel } // channel weglassen/null → zurück auf den Device-Kanal
+  | { t: "lane.setCcControl"; laneId: Id; controlId: Id | null } // CC-Lane: Ziel-Knob (nur Knobs desselben Geräts); null löst das Ziel
   | { t: "lane.setEnabled"; laneId: Id; enabled: boolean }
   | { t: "lane.setVisible"; laneId: Id; visible: boolean }
   | { t: "lane.setMuted"; laneId: Id; muted: boolean }
@@ -906,13 +944,27 @@ export type Command =
   | { t: "block.setSpeed"; laneId: Id; slotId: Id; speed: SpeedMultiplier }
   | { t: "block.setLoop"; laneId: Id; slotId: Id; loop: LoopMode; count?: number }
   | { t: "block.setStepMod"; blockId: Id; stepIndex: number; mod: StepMod }
-  // Generischer Skalarfeld-Setter (Kanal-Override, ccNumber, baseNote,
-  // direction, gateSteps, rateSteps, velocity, …) — `value: null` löscht
-  // das Feld (z.B. Kanal-Override zurück auf "geerbt").
+  // Baustein-Raster ändern: Länge in Takten (`lengthBars`) und/oder Auflösung
+  // (`stepsPerBar`, "Substeps pro Takt"). Weggelassene Felder bleiben, wie sie
+  // sind. Der Server passt den INHALT mit an:
+  //  • Auflösungswechsel skaliert Positionen und Längen mit (16→32 Steps hält
+  //    die Musik an derselben Stelle, statt sie in den halben Takt zu quetschen),
+  //  • Beat-Step-Arrays und Stepped-CC-Werte werden auf die neue Gesamtlänge
+  //    gebracht (kürzen bzw. mit leeren Steps auffüllen),
+  //  • Events hinter dem neuen Ende fallen weg.
+  | { t: "block.setLength"; blockId: Id; lengthBars?: number; stepsPerBar?: number }
+  // Generischer Skalarfeld-Setter für INHALTS-Felder eines Bausteins
+  // (baseNote, direction, gateSteps, rateSteps, velocity, outMin/outMax, …) —
+  // `value: null` löscht das Feld. Kanal/CC-Ziel gehören NICHT hierher, die
+  // sitzen an der Lane (siehe lane.setChannel / lane.setCcControl).
   | { t: "block.setField"; blockId: Id; field: string; value: unknown }
   | { t: "beat.setLineMuted"; blockId: Id; lineId: Id; muted: boolean }
   | { t: "beat.setEuclid"; blockId: Id; lineId: Id; euclid: EuclidConfig }
-  | { t: "melody.setStepNote"; blockId: Id; step: number; note: MidiNote | null } // Baustein-Detail: Note an Step setzen/ersetzen (null löscht) — ein Step trägt genau eine Note
+  | { t: "melody.addNote"; blockId: Id; step: number; note: MidiNote } // neue Note an Step hinzufügen — Steps können mehrere gleichzeitige Noten tragen (Akkord-Stack); Duplikat (gleiche Tonhöhe am Step) wird ignoriert
+  | { t: "melody.removeNote"; blockId: Id; step: number; note: MidiNote } // eine bestimmte Note an einem Step entfernen, identifiziert über (step, Tonhöhe)
+  | { t: "melody.setNotePitch"; blockId: Id; step: number; note: MidiNote; newNote: MidiNote } // Tonhöhe einer bestehenden Note ändern (identifiziert über die alte Tonhöhe)
+  | { t: "melody.setNoteLength"; blockId: Id; step: number; note: MidiNote; lengthSteps: number } // Dauer einer bestimmten Note am Step (Note-Off entsprechend später)
+  | { t: "melody.setNoteVelocity"; blockId: Id; step: number; note: MidiNote; velocity: Midi7Bit } // Anschlagstärke einer bestimmten Note am Step (1–127; 0 wäre ein Note-Off)
   | { t: "beat.toggleStep"; blockId: Id; lineId: Id; step: number } // Baustein-Detail: Step an/aus
   | { t: "chord.toggleNote"; blockId: Id; step: number; note: MidiNote } // Baustein-Detail: Note im Akkord an Step an/aus
   | { t: "arp.toggleNote"; blockId: Id; note: MidiNote } // Baustein-Detail: Note im Notenvorrat an/aus
@@ -954,6 +1006,7 @@ export type Command =
   | { t: "mod.removeRoute"; routeId: Id }
   // ── Device & Profile ──
   | { t: "device.setChannel"; deviceId: Id; channel: MidiChannel }
+  | { t: "device.setSendClock"; deviceId: Id; sendClock: boolean }
   | { t: "device.setProfile"; deviceId: Id; profileId?: Id }
   | { t: "device.setLatency"; deviceId: Id; latencyOffsetMs: number }
   | { t: "device.setTranspose"; deviceId: Id; transpose: number } // Halbtöne, live, addiert sich auf Slot-Transpose
@@ -975,9 +1028,21 @@ export type Command =
   | { t: "control.press"; controlId: Id } // Touch-Down (Note-On/Program-Change)
   | { t: "control.release"; controlId: Id } // Touch-Up (Note-Off)
   | { t: "project.create"; name: string }
-  | { t: "project.copy"; sourceId: Id; name: string }
+  | { t: "project.copy"; name: string } // dupliziert das GEÖFFNETE Projekt und wechselt hinein
   | { t: "project.load"; projectId: Id }
+  | { t: "project.rename"; name: string }
+  | { t: "project.delete"; projectId: Id }
+  | { t: "project.list" } // Antwort: ServerEvent "project.list"
   | { t: "project.save" };
+
+/** Ein gespeichertes Projekt in der Projektliste (Zahnrad-Menü). `updatedAt`
+ *  ist die Änderungszeit der Datei in Unix-Sekunden. */
+export interface ProjectSummary {
+  id: Id;
+  name: string;
+  updatedAt: number;
+  deviceCount: number;
+}
 
 /** Server → UI. */
 export type ServerEvent =
@@ -986,6 +1051,13 @@ export type ServerEvent =
   | { t: "transport.tick"; transport: TransportState }
   | { t: "learn.captured"; controlId: Id; mapping: MidiMapping }
   | { t: "record.captured"; laneId: Id; blockId: Id } // Aufnahme in Baustein geschrieben
+  | { t: "record.armState"; controlId: Id | null; laneId: Id | null } // aktueller Record-Arm-Zustand (beide null = nichts armiert)
   | { t: "routing.activity"; routeId: Id } // Route hat gerade Daten durchgeleitet (UI-Feedback)
   | { t: "midi.ports"; outputs: string[]; inputs: string[] }
-  | { t: "control.sendError"; controlId?: Id; message: string }; // MIDI konnte nicht gesendet werden (UI-Feedback)
+  | { t: "project.list"; projects: ProjectSummary[]; currentId: Id } // beim Verbinden + nach jeder Projekt-Operation
+  | { t: "control.sendError"; controlId?: Id; message: string } // MIDI konnte nicht gesendet werden (UI-Feedback)
+  // Physisch am Gerät ausgelöste MIDI-Nachricht, die zu einem gelernten
+  // Control passt — Dashboard hält Knopf/Regler live synchron (unabhängig
+  // vom einmaligen MIDI-Learn-Vorgang, der ein Control erst anlegt).
+  | { t: "control.valueChanged"; controlId: Id; value: Midi7Bit } // Regler physisch gedreht
+  | { t: "control.activity"; controlId: Id; active: boolean }; // Taster physisch gedrückt/losgelassen

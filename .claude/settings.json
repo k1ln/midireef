@@ -2,15 +2,15 @@
   "permissions": {
     "allow": [
       "Bash(python3 -c \"import websockets\")",
-      "Bash(MIDIDRIFT_DATA=/tmp/mididrift-smoketest MIDIDRIFT_PORT=8799 nohup cargo run --quiet > /tmp/mididrift-server.log 2>&1 & *)",
+      "Bash(MIDIREEF_DATA=/tmp/midireef-smoketest MIDIREEF_PORT=8799 nohup cargo run --quiet > /tmp/midireef-server.log 2>&1 & *)",
       "Bash(node --no-warnings /private/tmp/claude-501/-Users-k-projects-mididrift/d152fba5-f3eb-4a06-96dd-3bbec1850ae7/scratchpad/smoketest.mjs)",
-      "Bash(pkill -f \"target/debug/mididrift-server\")",
+      "Bash(pkill -f \"target/debug/midireef-server\")",
       "Bash(pkill -f \"cargo run\")",
-      "Bash(rm -rf /tmp/mididrift-smoketest)",
+      "Bash(rm -rf /tmp/midireef-smoketest)",
       "Bash(jobs -l)",
       "Bash(nohup cargo run --quiet)",
       "Bash(disown)",
-      "Bash(rm -rf /tmp/mididrift-smoketest3 /tmp/mididrift-server3.log)",
+      "Bash(rm -rf /tmp/midireef-smoketest3 /tmp/midireef-server3.log)",
       "Bash(cargo build *)"
     ],
     "additionalDirectories": [

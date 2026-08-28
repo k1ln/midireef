@@ -6,6 +6,7 @@
 import { useMemo, useRef, useState, type HTMLAttributes } from "react";
 import type { Block, Device, Lane, LaneControl } from "../state";
 import { useSend, useStoreValue } from "./store";
+import type { LiveControl } from "./dashboard/ControlWidget";
 import { useNotePicker, noteName } from "./NotePicker";
 import { useNumberEditor } from "./useNumberEditor";
 import { Button } from "./widgets/Button";
@@ -18,6 +19,7 @@ const TILE_H = 76;
 // Stable reference for the useSyncExternalStore selector below — see the
 // EMPTY_DEVICES comment in Dashboard.tsx.
 const EMPTY_DEVICES: Device[] = [];
+const EMPTY_CONTROLS: LiveControl[] = [];
 
 export interface LaneControlsProps {
   laneId: string;
@@ -118,6 +120,14 @@ function ControlTile({
   const send = useSend();
   const [pressed, setPressed] = useState(false);
   const dragRef = useRef<{ startY: number; startValue: number } | null>(null);
+  // Der Macro-Knob hält keinen eigenen Wert — der lebt am verknüpften
+  // Dashboard-Knob, damit beide Ansichten denselben Regler zeigen. Während des
+  // Ziehens läuft `local` vorweg, weil `laneControl.setValue` bewusst keinen
+  // Snapshot broadcastet (sonst ein Autosave pro Wert).
+  const controls = useStoreValue((s) => (s.project?.controls as LiveControl[] | undefined) ?? EMPTY_CONTROLS);
+  const target = ctrl.kind === "macroKnob" ? controls.find((c) => c.id === ctrl.controlId) : undefined;
+  const [local, setLocal] = useState<number | null>(null);
+  const macroValue = local ?? target?.value ?? 0;
 
   const isMacro = ctrl.kind === "macroKnob";
   const momentary = ctrl.kind === "macroKnob" ? false : ctrl.kind === "drumButton" ? ctrl.action === "trigger" : ctrl.trigger === "momentary";
@@ -128,12 +138,13 @@ function ControlTile({
   if (isMacro) {
     tileProps.onPointerDown = (e) => {
       e.currentTarget.setPointerCapture(e.pointerId);
-      dragRef.current = { startY: e.clientY, startValue: ctrl.value ?? 0 };
+      dragRef.current = { startY: e.clientY, startValue: macroValue };
     };
     tileProps.onPointerMove = (e) => {
       if (!dragRef.current) return;
       const dy = dragRef.current.startY - e.clientY;
       const value = Math.min(127, Math.max(0, Math.round(dragRef.current.startValue + dy * 0.7)));
+      setLocal(value);
       send({ t: "laneControl.setValue", laneId, controlId: ctrl.id, value });
     };
     const endDrag = () => {
@@ -184,7 +195,7 @@ function ControlTile({
       <span style={{ fontSize: 14, fontWeight: 600 }}>{ctrl.label || ctrl.kind}</span>
       {isMacro && (
         <span style={{ fontSize: 12, marginTop: 6, color: isActive ? "var(--pal-ink)" : "var(--pal-text-dim)" }}>
-          {ctrl.value ?? 0}
+          {target ? `${macroValue} · CC${target.mapping?.number}` : "unlinked"}
         </span>
       )}
       <button
@@ -231,6 +242,10 @@ function AddControlPicker({
   const send = useSend();
   const openNotePicker = useNotePicker();
   const numberEdit = useNumberEditor();
+  const controls = useStoreValue((s) => (s.project?.controls as LiveControl[] | undefined) ?? EMPTY_CONTROLS);
+  const deviceKnobs = controls.filter(
+    (c) => c.kind === "knob" && c.deviceId === device.id && c.mapping?.kind === "cc",
+  );
 
   const rows: { text: string; onTap: () => void }[] = [];
 
@@ -275,19 +290,23 @@ function AddControlPicker({
       break;
     }
     case "cc":
-      rows.push({
-        text: "Macro knob (CC number)",
-        onTap: () => {
-          onClose();
-          numberEdit(74, 0, 127, (ccNumber) =>
+      // Kein freies CC mehr: ein Macro-Knob fernsteuert einen gelernten Knob
+      // DIESES Geräts. Eine frei getippte CC-Nummer hing an nichts — man konnte
+      // sie am Regler ziehen und das Gerät reagierte nicht, ohne dass die UI
+      // je verriet warum.
+      for (const knob of deviceKnobs) {
+        rows.push({
+          text: `${knob.name || "(unnamed)"} — CC${knob.mapping?.number} ch${knob.mapping?.channel}`,
+          onTap: () => {
+            onClose();
             send({
               t: "laneControl.add",
               laneId: lane.id,
-              control: { kind: "macroKnob", label: `CC${ccNumber}`, ccNumber, min: 0, max: 127, value: 0 },
-            }),
-          );
-        },
-      });
+              control: { kind: "macroKnob", label: (knob.name || `CC${knob.mapping?.number}`).slice(0, 8), controlId: knob.id },
+            });
+          },
+        });
+      }
       break;
     case "programChange":
       rows.push({
@@ -334,11 +353,19 @@ function AddControlPicker({
   return (
     <Popup onClose={onClose}>
       <div className="popup-title">Add control</div>
-      {rows.map((r) => (
-        <Button key={r.text} className="popup-row" onClick={r.onTap}>
-          {r.text}
-        </Button>
-      ))}
+      {rows.length === 0 ? (
+        <div style={{ color: "var(--pal-text-dim)", fontSize: 15 }}>
+          {lane.role === "cc"
+            ? "No knobs learned for this device yet — turn one on the device with MIDI-Learn armed on the Dashboard."
+            : "Nothing to add for this lane type yet."}
+        </div>
+      ) : (
+        rows.map((r) => (
+          <Button key={r.text} className="popup-row" onClick={r.onTap}>
+            {r.text}
+          </Button>
+        ))
+      )}
     </Popup>
   );
 }

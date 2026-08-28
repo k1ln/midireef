@@ -11,7 +11,11 @@ import {
   Texture,
   Ticker,
 } from "pixi.js";
-import { PixelateFilter } from "pixi-filters";
+import {
+  AdvancedBloomFilter,
+  GodrayFilter,
+  PixelateFilter,
+} from "pixi-filters";
 import { PAL } from "../theme";
 
 export const THEME = {
@@ -35,23 +39,37 @@ function gradientTexture(w: number, h: number): Texture {
   return Texture.from(canvas);
 }
 
-/** Weiche, niederfrequente Wellen-Textur als Displacement-Map. */
-function displacementTexture(size = 128): Texture {
+/** Weiche, mehrlagige Wellen-Textur als Displacement-Map. Mehrere Oktaven
+ *  überlagerter Sinuswellen ergeben eine organischere, weniger regelmäßige
+ *  Verzerrung als eine einzelne Frequenz. */
+function displacementTexture(size = 256): Texture {
   const canvas = document.createElement("canvas");
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext("2d")!;
   const img = ctx.createImageData(size, size);
+  // Kachelbare Oktaven: ganzzahlige Frequenzen über 2π.
+  const oct = [
+    { fx: 1, fy: 1, a: 1.0, p: 0.0 },
+    { fx: 2, fy: 3, a: 0.55, p: 1.3 },
+    { fx: 5, fy: 4, a: 0.28, p: 2.7 },
+    { fx: 8, fy: 7, a: 0.14, p: 0.6 },
+  ];
+  let norm = 0;
+  for (const o of oct) norm += o.a;
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       const i = (y * size + x) * 4;
       const u = (x / size) * Math.PI * 2;
       const v = (y / size) * Math.PI * 2;
-      // Überlagerte Sinuswellen → glatte, kachelbare Verzerrung.
-      const r = 128 + 90 * Math.sin(u * 2 + Math.cos(v));
-      const g = 128 + 90 * Math.sin(v * 3 + Math.cos(u * 1.5));
-      img.data[i] = r;
-      img.data[i + 1] = g;
+      let rx = 0;
+      let ry = 0;
+      for (const o of oct) {
+        rx += o.a * Math.sin(u * o.fx + Math.cos(v * o.fy) + o.p);
+        ry += o.a * Math.sin(v * o.fy + Math.cos(u * o.fx) * 1.5 + o.p);
+      }
+      img.data[i] = 128 + (110 * rx) / norm;
+      img.data[i + 1] = 128 + (110 * ry) / norm;
       img.data[i + 2] = 128;
       img.data[i + 3] = 255;
     }
@@ -60,6 +78,50 @@ function displacementTexture(size = 128): Texture {
   const tex = Texture.from(canvas);
   tex.source.wrapMode = "repeat";
   return tex;
+}
+
+/** Weicher radialer Lichtfleck (Glow) — für Kaustik-Lichtpfützen am Boden. */
+function glowTexture(size = 128): Texture {
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  const g = ctx.createRadialGradient(
+    size / 2,
+    size / 2,
+    0,
+    size / 2,
+    size / 2,
+    size / 2,
+  );
+  g.addColorStop(0, "rgba(255,255,255,1)");
+  g.addColorStop(0.4, "rgba(255,255,255,0.35)");
+  g.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  return Texture.from(canvas);
+}
+
+/** Tiefen-Vignette: dunkelt Ränder und Boden ab → atmosphärische Tiefe. */
+function vignetteTexture(w: number, h: number): Texture {
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d")!;
+  // Radiale Vignette (Ränder abdunkeln).
+  const rad = ctx.createRadialGradient(
+    w / 2,
+    h * 0.42,
+    Math.min(w, h) * 0.2,
+    w / 2,
+    h * 0.5,
+    Math.max(w, h) * 0.75,
+  );
+  rad.addColorStop(0, "rgba(0,0,0,0)");
+  rad.addColorStop(1, "rgba(0,0,0,0.85)");
+  ctx.fillStyle = rad;
+  ctx.fillRect(0, 0, w, h);
+  return Texture.from(canvas);
 }
 
 interface Bubble {
@@ -111,6 +173,10 @@ interface Algae {
   phase: number;
   growthPhase: number; // für unregelmäßiges Wachstum
   segments: number;
+  kind: "kelp" | "grass" | "feather"; // Wuchsform
+  seed: number; // deterministische Variation innerhalb der Form
+  strands: number; // Anzahl paralleler Halme (grass) bzw. Nebenstiele
+  width: number; // Grundbreite des Stiels
 }
 
 /** Boden-Tier (Krabbe/Schnecke), das zu Algen läuft und sie abfrisst. */
@@ -128,10 +194,17 @@ interface Grazer {
 
 export class UnderwaterScene {
   readonly container = new Container();
+  private scene = new Container();
   private bg: Sprite;
   private caustics = new Container();
+  private lightPools = new Container();
   private dispSprite: Sprite;
+  private dispSprite2: Sprite;
   private dispFilter: DisplacementFilter;
+  private dispFilter2: DisplacementFilter;
+  private godray: GodrayFilter;
+  private vignette: Sprite;
+  private pools: { s: Sprite; baseX: number; baseY: number; phase: number; r: number }[] = [];
   private bubbles: Bubble[] = [];
   private plankton: Plankton[] = [];
   private fishes: Fish[] = [];
@@ -139,26 +212,75 @@ export class UnderwaterScene {
   private algae: Algae[] = [];
   private grazers: Grazer[] = [];
   private grazerCooldown = 1; // Sekunden bis das nächste Tier kommt
+  private glowTex = glowTexture(128);
   private w = 0;
   private h = 0;
   private time = 0;
 
   constructor() {
-    this.bg = new Sprite(gradientTexture(8, 256));
-    this.container.addChild(this.bg);
-    this.container.addChild(this.caustics);
+    this.container.addChild(this.scene);
 
-    // Displacement-Map (unsichtbar, dient nur dem Filter).
-    this.dispSprite = new Sprite(displacementTexture(128));
+    this.bg = new Sprite(gradientTexture(8, 256));
+    this.scene.addChild(this.bg);
+
+    // Kaustik-Lichtpfützen am Boden (unter allem Leben, additiv → weiches Glimmen).
+    this.lightPools.blendMode = "add";
+    this.scene.addChild(this.lightPools);
+    this.scene.addChild(this.caustics);
+
+    // Zwei Displacement-Ebenen mit unterschiedlicher Skalierung/Geschwindigkeit
+    // → mehrlagige, organische Wasser-Turbulenz statt einer festen Frequenz.
+    this.dispSprite = new Sprite(displacementTexture(256));
     this.dispSprite.renderable = false;
-    this.container.addChild(this.dispSprite);
+    this.dispSprite.scale.set(2.4);
+    this.scene.addChild(this.dispSprite);
     this.dispFilter = new DisplacementFilter({
       sprite: this.dispSprite,
-      scale: 14,
+      scale: 16,
     });
 
-    // Wasser-Verzerrung + harter Pixel-Look auf die gesamte Szene.
-    this.container.filters = [this.dispFilter, new PixelateFilter(3)];
+    this.dispSprite2 = new Sprite(displacementTexture(256));
+    this.dispSprite2.renderable = false;
+    this.dispSprite2.scale.set(0.9);
+    this.scene.addChild(this.dispSprite2);
+    this.dispFilter2 = new DisplacementFilter({
+      sprite: this.dispSprite2,
+      scale: 6,
+    });
+
+    // Volumetrische Lichtstrahlen von der Oberfläche (God Rays).
+    this.godray = new GodrayFilter({
+      angle: 28,
+      gain: 0.4,
+      lacunarity: 2.4,
+      alpha: 0.5,
+    });
+
+    // Dezentes Nachleuchten heller Elemente (Streulicht im Wasser) — weich,
+    // nicht flächig ausbrennend. Niedrige Qualität/Blur = weniger Blur-Pässe.
+    const bloom = new AdvancedBloomFilter({
+      threshold: 0.55,
+      bloomScale: 0.45,
+      brightness: 1.0,
+      blur: 3,
+      quality: 4,
+    });
+
+    // Filterkette: Wasser-Verzerrung (2 Lagen) → Lichtstrahlen → Bloom →
+    // harter Pixel-Look über die gesamte Szene.
+    this.scene.filters = [
+      this.dispFilter,
+      this.dispFilter2,
+      this.godray,
+      bloom,
+      new PixelateFilter(2),
+    ];
+
+    // Tiefen-Vignette liegt ÜBER der gefilterten Szene (kein Bloom/Displacement),
+    // damit die Ränder sauber ins Schwarz abtauchen.
+    this.vignette = new Sprite(Texture.WHITE);
+    this.vignette.alpha = 1;
+    this.container.addChild(this.vignette);
   }
 
   resize(w: number, h: number) {
@@ -168,12 +290,38 @@ export class UnderwaterScene {
     this.bg.height = h;
     this.dispSprite.width = w;
     this.dispSprite.height = h;
+    this.dispSprite2.width = w;
+    this.dispSprite2.height = h;
+    this.vignette.texture = vignetteTexture(Math.max(2, w), Math.max(2, h));
+    this.vignette.width = w;
+    this.vignette.height = h;
     this.buildCaustics();
+    this.buildLightPools();
     this.buildAlgae();
     this.ensureBubbles();
     this.ensurePlankton();
     this.ensureFishes();
     this.ensureJellies();
+  }
+
+  private buildLightPools() {
+    this.lightPools.removeChildren();
+    this.pools = [];
+    const count = Math.max(3, Math.floor(this.w / 320));
+    for (let i = 0; i < count; i++) {
+      const s = new Sprite(this.glowTex);
+      s.anchor.set(0.5);
+      const r = 140 + Math.random() * 220;
+      const baseX = Math.random() * this.w;
+      const baseY = this.h - 20 - Math.random() * (this.h * 0.28);
+      s.width = r * 2;
+      s.height = r * 1.1;
+      s.x = baseX;
+      s.y = baseY;
+      s.alpha = 0.05 + Math.random() * 0.05;
+      this.lightPools.addChild(s);
+      this.pools.push({ s, baseX, baseY, phase: Math.random() * Math.PI * 2, r });
+    }
   }
 
   private buildCaustics() {
@@ -194,19 +342,29 @@ export class UnderwaterScene {
     const count = Math.max(14, Math.floor(this.w / 60));
     for (let i = 0; i < count; i++) {
       const g = new Graphics();
-      this.container.addChild(g);
-      this.algae.push({
-        g,
-        baseX: Math.random() * this.w,
-        maxHeight: 70 + Math.random() * 230,
-        growth: 0.2 + Math.random() * 0.6,
-        maxGrowth: 0.65 + Math.random() * 0.35, // Obergrenze pro Pflanze
-        regrow: 0.03 + Math.random() * 0.06,
-        phase: Math.random() * Math.PI * 2,
-        growthPhase: Math.random() * Math.PI * 2,
-        segments: 5 + Math.floor(Math.random() * 4),
-      });
+      this.scene.addChild(g);
+      this.algae.push({ g, ...this.randomAlgaeTraits() });
     }
+  }
+
+  /** Zufällige Wuchs-Eigenschaften einer Pflanze (neu wachsend / nachwachsend). */
+  private randomAlgaeTraits(): Omit<Algae, "g"> {
+    const kinds: Algae["kind"][] = ["kelp", "grass", "feather"];
+    const kind = kinds[Math.floor(Math.random() * kinds.length)];
+    return {
+      baseX: Math.random() * this.w,
+      maxHeight: 70 + Math.random() * 230,
+      growth: 0.2 + Math.random() * 0.6,
+      maxGrowth: 0.65 + Math.random() * 0.35, // Obergrenze pro Pflanze
+      regrow: 0.03 + Math.random() * 0.06,
+      phase: Math.random() * Math.PI * 2,
+      growthPhase: Math.random() * Math.PI * 2,
+      segments: 6 + Math.floor(Math.random() * 5),
+      kind,
+      seed: Math.random() * 1000,
+      strands: kind === "grass" ? 3 + Math.floor(Math.random() * 4) : 1,
+      width: kind === "kelp" ? 5 + Math.random() * 3 : 2.5 + Math.random() * 2,
+    };
   }
 
   private ensurePlankton() {
@@ -221,7 +379,7 @@ export class UnderwaterScene {
     g.rect(0, 0, 1, 1).fill({ color: PAL.white, alpha: 0.5 + Math.random() * 0.4 });
     g.x = Math.random() * this.w;
     g.y = Math.random() * this.h;
-    this.container.addChild(g);
+    this.scene.addChild(g);
     const ang = Math.random() * Math.PI * 2;
     const spd = 4 + Math.random() * 10;
     return {
@@ -237,7 +395,7 @@ export class UnderwaterScene {
     const scale = 0.9 + Math.random() * 0.9;
     if (kind === "crab") drawCrab(c);
     else drawSnail(c);
-    this.container.addChild(c);
+    this.scene.addChild(c);
     // Tritt von einem Rand ein und läuft zur Zielpflanze.
     const fromLeft = Math.random() < 0.5;
     const x = fromLeft ? -20 : this.w + 20;
@@ -275,13 +433,7 @@ export class UnderwaterScene {
   private consumePlant(idx: number) {
     const a = this.algae[idx];
     if (!a) return;
-    a.baseX = Math.random() * this.w;
-    a.growth = 0;
-    a.maxHeight = 70 + Math.random() * 230;
-    a.maxGrowth = 0.65 + Math.random() * 0.35;
-    a.phase = Math.random() * Math.PI * 2;
-    a.growthPhase = Math.random() * Math.PI * 2;
-    a.segments = 5 + Math.floor(Math.random() * 4);
+    Object.assign(a, this.randomAlgaeTraits(), { growth: 0 });
   }
 
   private drawAlgae(a: Algae) {
@@ -295,32 +447,97 @@ export class UnderwaterScene {
         .stroke({ color: THEME.algae, width: 5, alpha: 0.4, cap: "round" });
       return;
     }
-    // Sehr sanftes Wiegen — die Alge bleibt aufrecht und kippt nicht um.
+    if (a.kind === "grass") this.drawGrass(a, h);
+    else if (a.kind === "feather") this.drawFeather(a, h);
+    else this.drawKelp(a, h);
+  }
+
+  /** Gemeinsamer, sanft wiegender Stiel; liefert die Punkte für Anbauten. */
+  private stalkPoints(a: Algae, h: number, xOffset = 0) {
     const sway = Math.sin(this.time * 0.9 + a.phase) * 4;
-
-    // Hauptstiel + gemerkte Punkte für die Zweige.
-    const pts: { x: number; y: number }[] = [];
-    g.moveTo(a.baseX, this.h);
-    for (let s = 1; s <= a.segments; s++) {
+    const pts: { x: number; y: number; t: number }[] = [];
+    for (let s = 0; s <= a.segments; s++) {
       const t = s / a.segments;
-      const x = a.baseX + Math.sin(this.time * 0.9 + a.phase + t * 1.5) * sway * t;
-      const y = this.h - h * t;
-      pts.push({ x, y });
-      g.lineTo(x, y);
+      // Zwei Frequenzen → organischere, sich langsam wellende Krümmung.
+      const bend =
+        Math.sin(this.time * 0.9 + a.phase + t * 1.6) * sway * t +
+        Math.sin(this.time * 0.5 + a.seed + t * 3.0) * 3 * t;
+      pts.push({ x: a.baseX + xOffset + bend, y: this.h - h * t, t });
     }
-    g.stroke({ color: THEME.algae, width: 5, alpha: 0.45, cap: "round" });
+    return pts;
+  }
 
-    // Zweige: je höher gewachsen, desto mehr Zweige, wechselnd links/rechts.
-    const branches = Math.max(1, Math.floor((a.segments - 1) * a.growth));
-    for (let i = 1; i <= branches; i++) {
+  /** Breittang: kräftiger, sich verjüngender Stiel mit gefiederten Blättern. */
+  private drawKelp(a: Algae, h: number) {
+    const g = a.g;
+    const pts = this.stalkPoints(a, h);
+    // Verjüngender Stiel: von unten (dick) nach oben (dünn) in Segmenten.
+    for (let i = 1; i < pts.length; i++) {
+      const w = a.width * (1 - pts[i].t * 0.7);
+      g.moveTo(pts[i - 1].x, pts[i - 1].y)
+        .lineTo(pts[i].x, pts[i].y)
+        .stroke({ color: THEME.algae, width: w, alpha: 0.5, cap: "round" });
+    }
+    // Blätter: an fast jedem Knoten, wechselseitig, als geschwungene Klingen.
+    const leaves = Math.max(1, Math.floor((a.segments - 1) * a.growth));
+    for (let i = 1; i <= leaves; i++) {
       const base = pts[i];
       const side = i % 2 === 0 ? 1 : -1;
-      const len = (26 - i * 2.5) * a.growth;
-      const bx = base.x + side * len + Math.sin(this.time * 1.0 + i) * 2;
-      const by = base.y - 8 - i * 2;
+      const len = (30 - i * 1.8) * a.growth;
+      const wobble = Math.sin(this.time * 1.1 + a.seed + i) * 4;
+      const midX = base.x + side * len * 0.6 + wobble;
+      const midY = base.y - 4;
+      const tipX = base.x + side * len * 0.4 + wobble * 1.5;
+      const tipY = base.y - 12 - i;
       g.moveTo(base.x, base.y)
-        .lineTo(bx, by)
-        .stroke({ color: THEME.algae, width: 3, alpha: 0.4, cap: "round" });
+        .quadraticCurveTo(midX, midY, tipX, tipY)
+        .stroke({ color: THEME.algae, width: 2.5, alpha: 0.4, cap: "round" });
+    }
+  }
+
+  /** Seegras: mehrere schlanke, unterschiedlich hohe Halme aus einem Büschel. */
+  private drawGrass(a: Algae, h: number) {
+    const g = a.g;
+    for (let s = 0; s < a.strands; s++) {
+      const off = (s - (a.strands - 1) / 2) * 4;
+      const sh = h * (0.7 + ((s * 37) % 30) / 100); // je Halm etwas andere Höhe
+      const pts = this.stalkPoints(
+        { ...a, phase: a.phase + s * 0.6, seed: a.seed + s * 13 },
+        sh,
+        off,
+      );
+      g.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y);
+      g.stroke({
+        color: THEME.algae,
+        width: a.width * (1 - s * 0.06),
+        alpha: 0.4,
+        cap: "round",
+      });
+    }
+  }
+
+  /** Federalge: Mittelrippe mit dicht stehenden, feinen Seitenfiedern. */
+  private drawFeather(a: Algae, h: number) {
+    const g = a.g;
+    const pts = this.stalkPoints(a, h);
+    // Mittelrippe.
+    g.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y);
+    g.stroke({ color: THEME.algae, width: a.width, alpha: 0.5, cap: "round" });
+    // Feine Fiedern paarweise an jedem Segment.
+    const grown = Math.floor((pts.length - 1) * a.growth);
+    for (let i = 1; i <= grown; i++) {
+      const base = pts[i];
+      const len = (14 - i * 0.8) * a.growth;
+      if (len <= 1) continue;
+      const wob = Math.sin(this.time * 1.3 + a.seed + i * 0.5) * 2;
+      const dy = -6;
+      g.moveTo(base.x, base.y)
+        .lineTo(base.x + len + wob, base.y + dy)
+        .moveTo(base.x, base.y)
+        .lineTo(base.x - len + wob, base.y + dy)
+        .stroke({ color: THEME.algae, width: 1, alpha: 0.32, cap: "round" });
     }
   }
 
@@ -336,7 +553,7 @@ export class UnderwaterScene {
         if (g.x < -60 || g.x > this.w + 60) {
           g.c.destroy();
           this.grazers.splice(i, 1);
-          this.grazerCooldown = 6 + Math.random() * 10;
+          this.grazerCooldown = 2 + Math.random() * 4;
           continue;
         }
       } else {
@@ -385,7 +602,7 @@ export class UnderwaterScene {
     });
     g.x = Math.random() * this.w;
     g.y = this.h + Math.random() * this.h;
-    this.container.addChild(g);
+    this.scene.addChild(g);
     return {
       g,
       speed: 20 + Math.random() * 45,
@@ -395,10 +612,12 @@ export class UnderwaterScene {
   }
 
   private ensureFishes() {
-    // Insgesamt etwas weniger Fische; Haie selten (keine Schildkröten).
-    const target = 5;
+    // Überwiegend Fische; Haie sehr selten (keine Schildkröten).
+    const target = 6;
     while (this.fishes.length < target) {
-      const kind: Fish["kind"] = Math.random() < 0.8 ? "fish" : "shark";
+      const sharkCount = this.fishes.filter((f) => f.kind === "shark").length;
+      const kind: Fish["kind"] =
+        sharkCount === 0 && Math.random() < 0.2 ? "shark" : "fish";
       this.fishes.push(this.makeFish(kind));
     }
   }
@@ -420,7 +639,7 @@ export class UnderwaterScene {
     c.x = x;
     c.y = y;
     c.scale.set(scaleBase);
-    this.container.addChild(c);
+    this.scene.addChild(c);
     return {
       c,
       bell,
@@ -454,7 +673,7 @@ export class UnderwaterScene {
     c.scale.set(dir * scale, scale);
     c.x = dir > 0 ? -20 : this.w + 20;
     c.y = 60 + Math.random() * (this.h - 200);
-    this.container.addChild(c);
+    this.scene.addChild(c);
 
     return {
       c,
@@ -478,13 +697,34 @@ export class UnderwaterScene {
     const dt = ticker.deltaMS / 1000;
     this.time += dt;
 
-    // Wasser-Verzerrung animieren: Displacement-Map driften lassen.
+    // Wasser-Verzerrung animieren: zwei Displacement-Ebenen gegenläufig driften
+    // lassen → sich überlagernde Wellenfronten wie an einer echten Oberfläche.
     this.dispSprite.x = Math.sin(this.time * 0.3) * 40;
     this.dispSprite.y = this.time * 12;
-    this.dispFilter.scale.x = 12 + Math.sin(this.time * 0.7) * 5;
-    this.dispFilter.scale.y = 12 + Math.cos(this.time * 0.5) * 5;
+    this.dispFilter.scale.x = 14 + Math.sin(this.time * 0.7) * 5;
+    this.dispFilter.scale.y = 14 + Math.cos(this.time * 0.5) * 5;
 
-    // Kaustik-Bänder wandern.
+    this.dispSprite2.x = -this.time * 22;
+    this.dispSprite2.y = -Math.cos(this.time * 0.4) * 30 - this.time * 6;
+    this.dispFilter2.scale.x = 6 + Math.cos(this.time * 1.1) * 3;
+    this.dispFilter2.scale.y = 6 + Math.sin(this.time * 0.9) * 3;
+
+    // Volumetrische Lichtstrahlen: lebendiger wandernder Einfallswinkel +
+    // schwankende Intensität → das Licht flackert wie an einer bewegten Oberfläche.
+    this.godray.time = this.time * 0.9;
+    this.godray.angle =
+      26 + Math.sin(this.time * 0.35) * 12 + Math.sin(this.time * 0.11) * 6;
+    this.godray.gain = 0.4 + Math.sin(this.time * 0.5) * 0.12;
+
+    // Kaustik-Lichtpfützen am Boden atmen/wandern leicht.
+    for (const p of this.pools) {
+      p.phase += dt * 0.4;
+      p.s.x = p.baseX + Math.sin(p.phase) * 30;
+      p.s.y = p.baseY + Math.cos(p.phase * 0.7) * 12;
+      p.s.alpha = 0.05 + (Math.sin(p.phase * 1.3) * 0.5 + 0.5) * 0.06;
+    }
+
+    // Kaustik-Bänder wandern (feine Lichtadern an der Oberfläche).
     for (const child of this.caustics.children) {
       const g = child as Graphics;
       const baseY = (g as any).__baseY as number;
@@ -494,7 +734,7 @@ export class UnderwaterScene {
       for (let x = 0; x <= this.w; x += 40) {
         g.lineTo(x, y + Math.sin(this.time * 1.4 + x * 0.02) * 6);
       }
-      g.stroke({ color: PAL.white, width: 2, alpha: 0.04 });
+      g.stroke({ color: PAL.white, width: 2, alpha: 0.05 });
     }
 
     // Blasen aufsteigen + wackeln.
@@ -534,20 +774,37 @@ export class UnderwaterScene {
       this.drawAlgae(a);
     }
 
-    // Boden-Tiere: selten eins; frisst eine Pflanze ganz auf und geht wieder.
+    // Boden-Tiere: mehrere gleichzeitig; frisst eine Pflanze ganz auf und geht wieder.
     this.grazerCooldown -= dt;
-    if (this.grazers.length === 0 && this.grazerCooldown <= 0) {
+    if (this.grazers.length < 3 && this.grazerCooldown <= 0) {
       const kind: Grazer["kind"] = Math.random() < 0.5 ? "crab" : "snail";
       this.grazers.push(this.makeGrazer(kind));
+      this.grazerCooldown = 2 + Math.random() * 4;
     }
     this.updateGrazers(dt);
 
-    // Fische schwimmen (mit seitlichem Wackeln) + blinzeln.
+    // Fische schwimmen (mit seitlichem Wackeln) + blinzeln + jagen.
     for (const f of this.fishes) {
+      // Fische & Haie schwimmen IMMER vorwärts (kein Wenden/Rückwärts). Beute
+      // wird nur vertikal angesteuert — liegt sie hinter dem Tier, wird sie
+      // eben verpasst.
+      const prey = this.huntTarget(f);
+
       // Vortrieb pulsiert leicht, als würde mit dem Schwanz geschlagen.
       const surge = 0.7 + 0.3 * Math.abs(Math.sin(this.time * 8 + f.phase));
       f.c.x += f.dir * f.speed * surge * dt;
-      // Seitliches Wackeln: Körper staucht/streckt sich horizontal (kein Hoch/Runter).
+
+      // Sanftes Auf und Ab; beim Jagen vertikal zur Beute steuern (nur wenn die
+      // Beute in Schwimmrichtung voraus liegt).
+      f.c.y += Math.sin(this.time * 1.1 + f.phase) * 12 * dt;
+      const preyAhead = prey ? (prey.x - f.c.x) * f.dir > 0 : false;
+      if (prey && preyAhead) {
+        const dy = prey.y - f.c.y;
+        f.c.y += Math.max(-1, Math.min(1, dy / 40)) * f.speed * 0.5 * dt;
+      }
+      f.c.y = Math.max(40, Math.min(this.h - 40, f.c.y));
+
+      // Seitliches Wackeln: Körper staucht/streckt sich horizontal.
       const wag = Math.sin(this.time * 9 + f.phase) * 0.16;
       f.c.scale.x = f.dir * f.scaleBase * (1 + wag);
       f.c.scale.y = f.scaleBase * (1 - wag * 0.35);
@@ -587,8 +844,33 @@ export class UnderwaterScene {
       j.c.y = j.y;
     }
 
-    // Fressverhalten: Haie fressen Fische, Schildkröten fressen Quallen.
+    // Fressverhalten: Haie fressen Fische, Fische fressen Quallen.
     this.updatePredation();
+  }
+
+  /** Nächste Beute in Sichtweite: Haie jagen Fische, Fische jagen Quallen. */
+  private huntTarget(f: Fish): { x: number; y: number } | null {
+    let best: { x: number; y: number } | null = null;
+    let bestD = 260 * 260;
+    if (f.kind === "shark") {
+      for (const prey of this.fishes) {
+        if (prey.kind !== "fish") continue;
+        const d = dist2(f.c.x, f.c.y, prey.c.x, prey.c.y);
+        if (d < bestD) {
+          bestD = d;
+          best = { x: prey.c.x, y: prey.c.y };
+        }
+      }
+    } else if (f.kind === "fish") {
+      for (const j of this.jellies) {
+        const d = dist2(f.c.x, f.c.y, j.x, j.y);
+        if (d < bestD) {
+          bestD = d;
+          best = { x: j.x, y: j.y };
+        }
+      }
+    }
+    return best;
   }
 
   private updatePredation() {
@@ -598,9 +880,9 @@ export class UnderwaterScene {
           if (prey.kind !== "fish") continue;
           if (near(pred.c, prey.c, 26)) this.respawnFish(prey);
         }
-      } else if (pred.kind === "turtle") {
+      } else if (pred.kind === "fish") {
         for (const j of this.jellies) {
-          if (near(pred.c, j.c, 26)) this.respawnJelly(j);
+          if (near(pred.c, j.c, 22)) this.respawnJelly(j);
         }
       }
     }
@@ -622,6 +904,13 @@ function near(a: Container, b: Container, r: number): boolean {
   const dx = a.x - b.x;
   const dy = a.y - b.y;
   return dx * dx + dy * dy < r * r;
+}
+
+/** Quadratische Distanz zwischen zwei Punkten. */
+function dist2(ax: number, ay: number, bx: number, by: number): number {
+  const dx = ax - bx;
+  const dy = ay - by;
+  return dx * dx + dy * dy;
 }
 
 /** Qualle (Blickrichtung egal): Glocke + Tentakel, monochrom. */

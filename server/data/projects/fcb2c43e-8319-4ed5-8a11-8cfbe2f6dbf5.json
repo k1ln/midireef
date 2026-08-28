@@ -1,7 +1,7 @@
 {
   "id": "fcb2c43e-8319-4ed5-8a11-8cfbe2f6dbf5",
-  "name": "MidiDrift",
-  "bpm": 168.0,
+  "name": "MidiReef",
+  "bpm": 94.0,
   "timeSignature": "4/4",
   "scale": {
     "root": "C",
@@ -10,90 +10,210 @@
   "swing": 0.0,
   "devices": [
     {
-      "id": "b2753c3d-b523-4ef2-b2a4-cd242b4c05bd",
-      "name": "P-6 MIDI IN",
-      "midiOutPort": "P-6 MIDI IN",
-      "channel": 11,
+      "id": "915d962e-eab1-4786-9d97-4b474213b246",
+      "name": "J-6 MIDI IN",
+      "midiOutPort": "J-6 MIDI IN",
+      "channel": 1,
       "transpose": 0,
       "sendClock": true,
       "latencyOffsetMs": 0.0,
       "blocks": [
         {
-          "events": [],
-          "id": "5f6e39b7-b3f3-44ea-93e8-1725752e7659",
+          "baseNote": 62,
+          "id": "ad2949cc-2a4d-4996-9290-90710fd2f563",
           "lengthBars": 1,
-          "name": "PC",
+          "name": "Mel",
+          "notes": [
+            {
+              "lengthSteps": 1,
+              "note": 60,
+              "step": 0,
+              "velocity": 100
+            },
+            {
+              "lengthSteps": 1,
+              "note": 71,
+              "step": 4,
+              "velocity": 100
+            },
+            {
+              "lengthSteps": 1,
+              "note": 64,
+              "step": 8,
+              "velocity": 100
+            },
+            {
+              "lengthSteps": 1,
+              "note": 67,
+              "step": 12,
+              "velocity": 100
+            },
+            {
+              "lengthSteps": 1,
+              "note": 64,
+              "step": 5,
+              "velocity": 100
+            },
+            {
+              "lengthSteps": 1,
+              "note": 67,
+              "step": 6,
+              "velocity": 100
+            },
+            {
+              "lengthSteps": 1,
+              "note": 69,
+              "step": 7,
+              "velocity": 100
+            }
+          ],
           "slot": {
             "col": 1,
             "row": 1,
-            "type": "programChange"
+            "type": "melody"
           },
           "stepsPerBar": 16,
           "timeSignature": "4/4",
-          "type": "programChange"
+          "type": "melody"
         },
         {
-          "events": [
-            {
-              "atStep": 4,
-              "program": 0
-            },
-            {
-              "atStep": 3,
-              "program": 5
-            }
-          ],
-          "id": "182d4acf-fe45-45f1-8646-39ade125ce1f",
+          "baseNote": 60,
+          "id": "192a0c03-e77a-4aa6-a07e-d201ec995c36",
           "lengthBars": 1,
-          "name": "PC",
+          "name": "Mel",
+          "notes": [],
           "slot": {
             "col": 2,
             "row": 1,
-            "type": "programChange"
+            "type": "melody"
           },
           "stepsPerBar": 16,
           "timeSignature": "4/4",
-          "type": "programChange"
-        },
+          "type": "melody"
+        }
+      ],
+      "lanes": [
         {
-          "ccNumber": 45,
-          "channel": 3,
-          "curve": "linear",
-          "id": "2657a7d9-feff-4df0-a94c-daf59cd9a0e1",
+          "id": "20733b43-1b2b-4621-bb2e-f742c705d3a7",
+          "name": "Lane 1",
+          "role": "melody",
+          "color": "#4fd1c5",
+          "enabled": false,
+          "visible": true,
+          "muted": false,
+          "solo": false,
+          "collapsed": false,
+          "height": 64.0,
+          "playMode": "manual",
+          "triggerQuantize": "nextBar",
+          "slots": [
+            {
+              "blockId": "ad2949cc-2a4d-4996-9290-90710fd2f563",
+              "id": "78e85bed-bb5f-4956-99e2-1496fb28b3f0",
+              "loopCount": 4,
+              "loopMode": "count",
+              "speed": 1.0,
+              "transpose": 0
+            },
+            {
+              "blockId": "192a0c03-e77a-4aa6-a07e-d201ec995c36",
+              "id": "b4d9966c-e6eb-401f-b08c-5bedf6a7fc59",
+              "loopCount": 2,
+              "loopMode": "count",
+              "speed": 1,
+              "transpose": 0
+            }
+          ],
+          "controls": []
+        }
+      ]
+    },
+    {
+      "id": "d0c12f7d-5de4-48eb-a206-da9a261e5574",
+      "name": "D MINI",
+      "midiOutPort": "D MINI",
+      "channel": 1,
+      "transpose": 0,
+      "sendClock": false,
+      "latencyOffsetMs": 0.0,
+      "blocks": [
+        {
+          "id": "7bb29112-af39-4d0f-afbf-58aab07849a7",
           "layers": [
             {
-              "combine": "max",
+              "combine": "replace",
               "depth": 1.0,
               "enabled": true,
-              "id": "ade22bc6-fea0-4850-9f8d-c91909ea5ff2",
+              "id": "6ea20a4a-e182-43e6-bf1a-ad41259c111e",
               "kind": "stepped",
-              "offset": 0,
+              "offset": 0.0,
               "values": [
+                1.0,
+                0.2440944881889764,
+                0.5433070866141733,
+                0.7401574803149606,
+                0.16535433070866143,
+                1.0,
+                0.2047244094488189,
                 0.0,
+                0.49606299212598426,
+                1.0,
+                0.30708661417322836,
+                0.5039370078740157,
+                0.7637795275590551,
                 0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
+                1.0,
                 0.0
               ]
+            },
+            {
+              "combine": "add",
+              "depth": 1.0,
+              "enabled": false,
+              "id": "22b66423-6033-41a2-ad2d-d29cba8a0bfc",
+              "kind": "lfo",
+              "offset": 0.0,
+              "phase": 0.3,
+              "rateBars": 1.0,
+              "rateHz": 10,
+              "rateMode": "hz",
+              "waveform": "square"
+            },
+            {
+              "combine": "add",
+              "depth": 1.0,
+              "enabled": false,
+              "everySteps": 1,
+              "id": "721a8f49-7fb0-4dd7-8ff7-0f0bd0466cf4",
+              "kind": "random",
+              "offset": 0.0,
+              "smooth": false
+            },
+            {
+              "combine": "add",
+              "depth": 1.0,
+              "enabled": false,
+              "everySteps": 1,
+              "id": "209f8149-900d-44ee-aae6-6e1e79a0d6aa",
+              "kind": "random",
+              "offset": 0.0,
+              "smooth": false
+            },
+            {
+              "combine": "add",
+              "depth": 1.0,
+              "enabled": false,
+              "everySteps": 1,
+              "id": "638310ca-b8d0-4a0b-8b01-f3d84572f7c8",
+              "kind": "random",
+              "offset": 0.0,
+              "smooth": false
             }
           ],
           "lengthBars": 1,
           "name": "CC",
           "outMax": 127,
-          "outMin": 50,
-          "resolutionPerBar": 16,
-          "slewMs": 0,
+          "outMin": 0,
           "slot": {
             "col": 1,
             "row": 1,
@@ -104,65 +224,173 @@
           "type": "cc"
         },
         {
-          "baseNote": 60,
-          "id": "ac5996b3-9484-4507-a753-3206784f693b",
+          "id": "826f97f0-f46a-4304-92f8-e7a2288ed2b3",
+          "layers": [
+            {
+              "combine": "replace",
+              "depth": 1.0,
+              "enabled": true,
+              "id": "c133fae9-99f8-46d5-a53b-cecc3e5b9dd9",
+              "kind": "stepped",
+              "offset": 0.0,
+              "values": [
+                0.5118110236220472,
+                0.8976377952755905,
+                0.4645669291338583,
+                0.5669291338582677,
+                0.8110236220472441,
+                0.30708661417322836,
+                0.984251968503937,
+                0.7086614173228346
+              ]
+            }
+          ],
           "lengthBars": 1,
+          "name": "CC",
+          "outMax": 127,
+          "outMin": 0,
+          "slot": {
+            "col": 2,
+            "row": 1,
+            "type": "cc"
+          },
+          "stepsPerBar": 8,
+          "timeSignature": "4/4",
+          "type": "cc"
+        },
+        {
+          "baseNote": 60,
+          "id": "f037bf3e-2f01-4dbe-8b3d-81576b14e84a",
+          "lengthBars": 2,
           "name": "Mel",
-          "notes": [],
+          "notes": [
+            {
+              "lengthSteps": 1,
+              "note": 60,
+              "step": 0,
+              "velocity": 100
+            },
+            {
+              "lengthSteps": 2,
+              "note": 55,
+              "step": 1,
+              "velocity": 100
+            },
+            {
+              "lengthSteps": 1,
+              "note": 59,
+              "step": 3,
+              "velocity": 100
+            },
+            {
+              "lengthSteps": 1,
+              "note": 60,
+              "step": 4,
+              "velocity": 100
+            },
+            {
+              "lengthSteps": 1,
+              "note": 62,
+              "step": 5,
+              "velocity": 100
+            },
+            {
+              "lengthSteps": 1,
+              "note": 64,
+              "step": 6,
+              "velocity": 100
+            },
+            {
+              "lengthSteps": 1,
+              "note": 52,
+              "step": 7,
+              "velocity": 100
+            },
+            {
+              "lengthSteps": 1,
+              "note": 60,
+              "step": 2,
+              "velocity": 100
+            }
+          ],
           "slot": {
             "col": 1,
             "row": 1,
             "type": "melody"
           },
-          "stepsPerBar": 16,
+          "stepsPerBar": 4,
           "timeSignature": "4/4",
           "type": "melody"
         },
         {
           "baseNote": 60,
-          "id": "c4cc2bc9-b4a6-49bb-b47e-f4b3d261a981",
+          "id": "0e7bd5a7-e5d0-42bf-91b3-e1ac95b4b33b",
           "lengthBars": 1,
           "name": "Mel",
-          "notes": [],
+          "notes": [
+            {
+              "lengthSteps": 1,
+              "note": 60,
+              "step": 0,
+              "velocity": 100
+            },
+            {
+              "lengthSteps": 1,
+              "note": 50,
+              "step": 1,
+              "velocity": 100
+            },
+            {
+              "lengthSteps": 1,
+              "note": 64,
+              "step": 2,
+              "velocity": 100
+            },
+            {
+              "lengthSteps": 1,
+              "note": 60,
+              "step": 3,
+              "velocity": 100
+            },
+            {
+              "lengthSteps": 1,
+              "note": 65,
+              "step": 4,
+              "velocity": 100
+            },
+            {
+              "lengthSteps": 1,
+              "note": 62,
+              "step": 5,
+              "velocity": 100
+            },
+            {
+              "lengthSteps": 1,
+              "note": 64,
+              "step": 6,
+              "velocity": 100
+            },
+            {
+              "lengthSteps": 1,
+              "note": 62,
+              "step": 7,
+              "velocity": 100
+            }
+          ],
           "slot": {
             "col": 2,
             "row": 1,
             "type": "melody"
           },
-          "stepsPerBar": 16,
+          "stepsPerBar": 8,
           "timeSignature": "4/4",
           "type": "melody"
         }
       ],
       "lanes": [
         {
-          "id": "52380ca0-1a03-4aaa-9839-760f92421393",
+          "id": "189a75b2-2ceb-4add-b140-c44346c58917",
           "name": "Lane 1",
-          "role": "melody",
-          "color": "#4fd1c5",
-          "enabled": true,
-          "visible": true,
-          "muted": false,
-          "solo": false,
-          "collapsed": false,
-          "height": 64.0,
-          "playMode": "sequential",
-          "triggerQuantize": "nextBar",
-          "slots": [
-            {
-              "blockId": "c4cc2bc9-b4a6-49bb-b47e-f4b3d261a981",
-              "id": "585abd59-79fe-471f-8fa1-9676af990add",
-              "loopCount": 0,
-              "loopMode": "loop",
-              "speed": 1,
-              "transpose": 0
-            }
-          ],
-          "controls": []
-        },
-        {
-          "id": "a60dd357-a2f0-4bc7-80b6-fe6d5c436786",
-          "name": "Lane 2",
           "role": "cc",
           "color": "#63b3ed",
           "enabled": true,
@@ -173,834 +401,56 @@
           "height": 64.0,
           "playMode": "sequential",
           "triggerQuantize": "nextBar",
+          "channel": 1,
+          "ccControlId": "efabe12f-1892-4fa3-a92d-4541d637b097",
           "slots": [
             {
-              "blockId": "2657a7d9-feff-4df0-a94c-daf59cd9a0e1",
-              "id": "1183817b-2958-42b3-a8f3-711971c4325c",
-              "loopCount": 0,
-              "loopMode": "loop",
-              "speed": 1,
+              "blockId": "7bb29112-af39-4d0f-afbf-58aab07849a7",
+              "id": "b46cc9da-43d1-4a6f-ab26-d630b5a2c458",
+              "loopCount": 2,
+              "loopMode": "count",
+              "speed": 0.25,
+              "transpose": 0
+            },
+            {
+              "blockId": "826f97f0-f46a-4304-92f8-e7a2288ed2b3",
+              "id": "540bbb1f-f0f4-430b-a5d9-2c0074c32adb",
+              "loopCount": 2,
+              "loopMode": "count",
+              "speed": 0.25,
               "transpose": 0
             }
           ],
           "controls": []
-        }
-      ]
-    },
-    {
-      "id": "f841ea66-62fa-4422-9420-29ee5b839a46",
-      "name": "P-6 MIDI IN",
-      "midiOutPort": "P-6 MIDI IN",
-      "channel": 4,
-      "transpose": 0,
-      "sendClock": true,
-      "latencyOffsetMs": 0.0,
-      "blocks": [
-        {
-          "id": "bc04eee1-cc60-4f29-876b-16dc2fbb3f99",
-          "lengthBars": 1,
-          "lines": [
-            {
-              "id": "ee9c4785-fb91-43b4-a621-830c96451435",
-              "muted": false,
-              "name": "Kick",
-              "note": 36,
-              "steps": [
-                {
-                  "velocity": 110
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 110
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 110
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 110
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                }
-              ]
-            },
-            {
-              "id": "9985298d-b390-4e6b-a0c6-5d9161442983",
-              "muted": false,
-              "name": "Snare",
-              "note": 38,
-              "steps": [
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 100
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 100
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                }
-              ]
-            },
-            {
-              "id": "1b36023b-a324-404b-97b6-f69a9475b0d1",
-              "muted": false,
-              "name": "Hat",
-              "note": 42,
-              "steps": [
-                {
-                  "velocity": 70
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 60
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 70
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 60
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 70
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 60
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 70
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 60
-                },
-                {
-                  "velocity": 0
-                }
-              ]
-            }
-          ],
-          "name": "Beat",
-          "slot": {
-            "col": 1,
-            "row": 1,
-            "type": "beat"
-          },
-          "stepsPerBar": 16,
-          "timeSignature": "4/4",
-          "type": "beat"
         },
         {
-          "id": "68efa661-fe5d-4af0-8486-74f61d00fc60",
-          "lengthBars": 1,
-          "lines": [
-            {
-              "id": "3231e66e-69e6-484f-bfe9-0da8516cfd8d",
-              "muted": false,
-              "name": "Kick",
-              "note": 36,
-              "steps": [
-                {
-                  "velocity": 110
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 110
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 110
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 110
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                }
-              ]
-            },
-            {
-              "id": "b740e1e5-016f-486f-bff0-f3d7bacbfd4d",
-              "muted": false,
-              "name": "Snare",
-              "note": 38,
-              "steps": [
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 100
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 100
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                }
-              ]
-            },
-            {
-              "id": "cdaefdeb-42c4-4425-94b3-b1c4ccbe6bf0",
-              "muted": false,
-              "name": "Hat",
-              "note": 42,
-              "steps": [
-                {
-                  "velocity": 70
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 60
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 70
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 60
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 70
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 60
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 70
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 60
-                },
-                {
-                  "velocity": 0
-                }
-              ]
-            }
-          ],
-          "name": "Beat",
-          "slot": {
-            "col": 1,
-            "row": 1,
-            "type": "beat"
-          },
-          "stepsPerBar": 16,
-          "timeSignature": "4/4",
-          "type": "beat"
-        },
-        {
-          "id": "97cd7bae-5ce9-4dfe-a3d8-c35accd7cbe3",
-          "lengthBars": 1,
-          "lines": [
-            {
-              "id": "ddeadb02-8155-4f6e-afd5-982c7c23487d",
-              "muted": false,
-              "name": "Kick",
-              "note": 36,
-              "steps": [
-                {
-                  "velocity": 110
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 110
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 110
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 110
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                }
-              ]
-            },
-            {
-              "id": "af039e46-6501-4e8d-a194-8281e3d407f3",
-              "muted": false,
-              "name": "Snare",
-              "note": 38,
-              "steps": [
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 100
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 100
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                }
-              ]
-            },
-            {
-              "id": "842673d7-9c09-4e1c-9b8e-b811ea2c7194",
-              "muted": false,
-              "name": "Hat",
-              "note": 42,
-              "steps": [
-                {
-                  "velocity": 70
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 60
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 70
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 60
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 70
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 60
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 70
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 60
-                },
-                {
-                  "velocity": 0
-                }
-              ]
-            }
-          ],
-          "name": "Beat",
-          "slot": {
-            "col": 2,
-            "row": 1,
-            "type": "beat"
-          },
-          "stepsPerBar": 16,
-          "timeSignature": "4/4",
-          "type": "beat"
-        },
-        {
-          "channel": 2,
-          "id": "8a608175-bb23-44fb-8714-56e9a2a53d8d",
-          "lengthBars": 1,
-          "lines": [
-            {
-              "id": "ff8cd38a-6a91-4584-b9d5-d5c0ee54be4f",
-              "muted": false,
-              "name": "Kick",
-              "note": 36,
-              "steps": [
-                {
-                  "velocity": 110
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 110
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 110
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 110
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                }
-              ]
-            },
-            {
-              "id": "4ffb70ed-e1a5-4727-8212-3330e87c23b1",
-              "muted": false,
-              "name": "Snare",
-              "note": 38,
-              "steps": [
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 100
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 100
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 0
-                }
-              ]
-            },
-            {
-              "id": "61c40291-3c06-4f65-ac9c-d76887337be2",
-              "muted": false,
-              "name": "Hat",
-              "note": 42,
-              "steps": [
-                {
-                  "velocity": 70
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 60
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 70
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 60
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 70
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 60
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 70
-                },
-                {
-                  "velocity": 0
-                },
-                {
-                  "velocity": 60
-                },
-                {
-                  "velocity": 0
-                }
-              ]
-            }
-          ],
-          "name": "Beat",
-          "slot": {
-            "col": 3,
-            "row": 1,
-            "type": "beat"
-          },
-          "stepsPerBar": 16,
-          "timeSignature": "4/4",
-          "type": "beat"
-        },
-        {
-          "baseNote": 60,
-          "id": "d1f0e991-2229-4445-adce-8ec459496488",
-          "lengthBars": 1,
-          "name": "Mel",
-          "notes": [
-            {
-              "lengthSteps": 1,
-              "note": 66,
-              "step": 3,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 1,
-              "note": 66,
-              "step": 0,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 1,
-              "note": 70,
-              "step": 1,
-              "velocity": 100
-            }
-          ],
-          "slot": {
-            "col": 1,
-            "row": 1,
-            "type": "melody"
-          },
-          "stepsPerBar": 16,
-          "timeSignature": "4/4",
-          "type": "melody"
-        }
-      ],
-      "lanes": [
-        {
-          "id": "932ae094-2a4c-4fba-9629-edb20ba2ebca",
-          "name": "Lane 1",
-          "role": "beat",
-          "color": "#f6ad55",
+          "id": "2c531a99-6f0c-4e54-b6ce-faaaf45227be",
+          "name": "Lane 2",
+          "role": "melody",
+          "color": "#4fd1c5",
           "enabled": true,
           "visible": true,
           "muted": false,
           "solo": false,
           "collapsed": false,
           "height": 64.0,
-          "playMode": "sequential",
+          "playMode": "manual",
           "triggerQuantize": "nextBar",
           "slots": [
             {
-              "blockId": "bc04eee1-cc60-4f29-876b-16dc2fbb3f99",
-              "id": "f387b89e-2208-4b40-a196-ca8a46dfb0d2",
-              "loopCount": 0,
-              "loopMode": "loop",
-              "speed": 1,
-              "transpose": 0
+              "blockId": "f037bf3e-2f01-4dbe-8b3d-81576b14e84a",
+              "id": "61235676-c096-46f1-a0f6-79ed4baa42ad",
+              "loopCount": 2,
+              "loopMode": "count",
+              "speed": 1.0,
+              "transpose": -6
             },
             {
-              "blockId": "68efa661-fe5d-4af0-8486-74f61d00fc60",
-              "id": "1d63884c-a9bb-4054-9a68-22b18ccdd176",
-              "loopCount": 0,
-              "loopMode": "loop",
-              "speed": 1,
-              "transpose": 0
-            },
-            {
-              "blockId": "8a608175-bb23-44fb-8714-56e9a2a53d8d",
-              "id": "508eadc4-de2c-4cc5-a180-2978cbc150d9",
-              "loopCount": 0,
-              "loopMode": "loop",
-              "speed": 1,
+              "blockId": "0e7bd5a7-e5d0-42bf-91b3-e1ac95b4b33b",
+              "id": "44b1044f-8689-4001-b6d5-d87b40035e36",
+              "loopCount": 2,
+              "loopMode": "count",
+              "speed": 0.25,
               "transpose": 0
             }
           ],
@@ -1012,194 +462,99 @@
   "deviceProfiles": [],
   "controls": [
     {
-      "deviceId": "f841ea66-62fa-4422-9420-29ee5b839a46",
-      "h": 130,
-      "id": "62e06f5b-6167-414f-8e61-0e4c950a5fd1",
-      "kind": "button",
-      "mapping": {
-        "channel": 11,
-        "kind": "note",
-        "number": 51
-      },
-      "max": 127,
-      "min": 0,
-      "name": "4",
-      "screenId": "main",
-      "value": 0,
-      "w": 130,
-      "x": 60,
-      "y": 60
-    },
-    {
-      "deviceId": "e55101c5-35b4-40db-9a7c-62eb2e0c278f",
+      "deviceId": "915d962e-eab1-4786-9d97-4b474213b246",
       "h": 78.0,
-      "id": "ae90a9c7-e146-4512-99e7-58ddd3f129f9",
+      "id": "df32fb8f-4383-452d-9517-1256bd053a34",
       "kind": "button",
       "mapping": {
-        "channel": 11,
+        "channel": 1,
         "kind": "note",
-        "number": 51
+        "number": 48
       },
       "max": 127,
       "min": 0,
-      "name": "d",
+      "name": "c",
       "screenId": "main",
       "value": 0,
       "w": 78.0,
-      "x": 61.0,
-      "y": 289.0
+      "x": 111.0,
+      "y": 132.0
     },
     {
-      "deviceId": "e55101c5-35b4-40db-9a7c-62eb2e0c278f",
+      "deviceId": "e5deea06-76b5-4918-a3c1-f32859a23873",
       "h": 78.0,
-      "id": "6f3ae006-e7ca-40bd-afcf-075ccb145df6",
-      "kind": "button",
+      "id": "216b2669-9557-44a0-a70b-48cf7a30a52a",
+      "kind": "knob",
       "mapping": {
-        "channel": 11,
-        "kind": "note",
-        "number": 50
-      },
-      "max": 127,
-      "min": 0,
-      "name": "3",
-      "screenId": "main",
-      "value": 0,
-      "w": 78.0,
-      "x": 494.0,
-      "y": 24.0
-    },
-    {
-      "deviceId": "e55101c5-35b4-40db-9a7c-62eb2e0c278f",
-      "h": 78.0,
-      "id": "571e7ef8-604b-4725-90b5-3c1d95c9c759",
-      "kind": "button",
-      "mapping": {
-        "channel": 11,
-        "kind": "note",
-        "number": 53
-      },
-      "max": 127,
-      "min": 0,
-      "name": "g",
-      "screenId": "main",
-      "value": 0,
-      "w": 78.0,
-      "x": 588.0,
-      "y": 24.0
-    },
-    {
-      "deviceId": "e55101c5-35b4-40db-9a7c-62eb2e0c278f",
-      "h": 78.0,
-      "id": "bbe10387-7a29-4d98-ad43-48ffa1d54e81",
-      "kind": "button",
-      "mapping": {
-        "channel": 4,
-        "kind": "note",
-        "number": 60
-      },
-      "max": 127,
-      "min": 0,
-      "name": "gr",
-      "screenId": "main",
-      "value": 0,
-      "w": 78.0,
-      "x": 212.0,
-      "y": 24.0
-    },
-    {
-      "deviceId": "e55101c5-35b4-40db-9a7c-62eb2e0c278f",
-      "h": 78.0,
-      "id": "209d416c-62d2-4d90-9bf3-13ee274783d7",
-      "kind": "button",
-      "mapping": {
-        "channel": 4,
-        "kind": "note",
+        "channel": 1,
+        "kind": "cc",
         "number": 42
       },
       "max": 127,
       "min": 0,
-      "name": "g",
+      "name": "detune",
+      "screenId": "main",
+      "value": 67,
+      "w": 78.0,
+      "x": 389.0,
+      "y": 121.0
+    },
+    {
+      "deviceId": "e5deea06-76b5-4918-a3c1-f32859a23873",
+      "h": 78.0,
+      "id": "237b5968-fb12-4054-a902-d9b699713503",
+      "kind": "button",
+      "mapping": {
+        "channel": 1,
+        "kind": "note",
+        "number": 59
+      },
+      "max": 127,
+      "min": 0,
+      "name": "filter",
       "screenId": "main",
       "value": 0,
       "w": 78.0,
-      "x": 306.0,
+      "x": 24.0,
       "y": 24.0
     },
     {
-      "deviceId": "e55101c5-35b4-40db-9a7c-62eb2e0c278f",
+      "deviceId": "d0c12f7d-5de4-48eb-a206-da9a261e5574",
       "h": 78.0,
-      "id": "79778f3c-610b-412b-b454-a83993f0fba8",
-      "kind": "button",
+      "id": "1c800dbd-13b1-4d91-803c-1e3dd6c8b2b0",
+      "kind": "knob",
       "mapping": {
-        "channel": 4,
-        "kind": "note",
+        "channel": 1,
+        "kind": "cc",
         "number": 44
       },
       "max": 127,
       "min": 0,
-      "name": "gg",
+      "name": "f",
       "screenId": "main",
-      "value": 0,
+      "value": 19,
       "w": 78.0,
-      "x": 400.0,
-      "y": 24.0
+      "x": 541.0,
+      "y": 103.0
     },
     {
-      "deviceId": "e55101c5-35b4-40db-9a7c-62eb2e0c278f",
+      "deviceId": "d0c12f7d-5de4-48eb-a206-da9a261e5574",
       "h": 78.0,
-      "id": "229d3abe-aaa7-43b9-a18c-33323dd74018",
-      "kind": "button",
+      "id": "efabe12f-1892-4fa3-a92d-4541d637b097",
+      "kind": "knob",
       "mapping": {
-        "channel": 4,
-        "kind": "note",
-        "number": 47
+        "channel": 1,
+        "kind": "cc",
+        "number": 44
       },
       "max": 127,
       "min": 0,
-      "name": "hhhh",
+      "name": "filter",
       "screenId": "main",
-      "value": 0,
-      "w": 78.0,
-      "x": 682.0,
-      "y": 24.0
-    },
-    {
-      "deviceId": "e55101c5-35b4-40db-9a7c-62eb2e0c278f",
-      "h": 78.0,
-      "id": "46d7c903-3774-4d04-b124-2dcc1e4f6acf",
-      "kind": "button",
-      "mapping": {
-        "channel": 11,
-        "kind": "note",
-        "number": 50
-      },
-      "max": 127,
-      "min": 0,
-      "name": "",
-      "screenId": "main",
-      "value": 0,
+      "value": 38,
       "w": 78.0,
       "x": 212.0,
-      "y": 214.0
-    },
-    {
-      "deviceId": "b2753c3d-b523-4ef2-b2a4-cd242b4c05bd",
-      "h": 78.0,
-      "id": "999fbeb7-b5ab-4077-a7fd-9b0480f6b469",
-      "kind": "button",
-      "mapping": {
-        "channel": 11,
-        "kind": "note",
-        "number": 53
-      },
-      "max": 127,
-      "min": 0,
-      "name": "6",
-      "screenId": "main",
-      "value": 0,
-      "w": 78.0,
-      "x": 306.0,
-      "y": 214.0
+      "y": 24.0
     }
   ],
   "controlScreens": [],
