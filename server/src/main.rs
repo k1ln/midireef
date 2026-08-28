@@ -3,6 +3,8 @@
 //! Startet Clock-Engine, WebSocket-Server und lädt/erzeugt ein Default-Projekt.
 
 mod clock;
+#[cfg(target_os = "macos")]
+mod coremidi_hotplug;
 mod engine;
 mod midi;
 mod model;
@@ -18,6 +20,23 @@ use tokio::sync::broadcast;
 
 use crate::model::{Project, TransportState};
 use crate::state::AppState;
+
+/// Muss als allererster CoreMIDI-Kontakt im Prozess laufen — vor jedem
+/// `midi::`-Aufruf. Siehe `coremidi_hotplug`-Moduldoku für das Warum.
+#[cfg(target_os = "macos")]
+fn init_coremidi_hotplug() {
+    if let Err(e) = coremidi_hotplug::init() {
+        tracing::warn!(
+            "CoreMIDI-Hotplug-Notification konnte nicht initialisiert werden ({e}) — \
+             nach Prozessstart angeschlossene MIDI-Geräte werden dann nicht erkannt"
+        );
+    } else {
+        tracing::info!("CoreMIDI-Hotplug-Notification aktiv");
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn init_coremidi_hotplug() {}
 
 #[tokio::main]
 async fn main() {
@@ -36,6 +55,8 @@ async fn main() {
         midi::MIDI_LOG.store(true, Ordering::Relaxed);
         tracing::info!("Debug-Modus aktiv: jede MIDI IN/OUT-Nachricht wird geloggt");
     }
+
+    init_coremidi_hotplug();
 
     let data_dir = AppState::data_dir();
 
@@ -128,11 +149,13 @@ fn spawn_midi_learn(state: &AppState) {
                         if !state.learn_armed.load(Ordering::Relaxed) {
                             // Nicht im Lern-Modus: trotzdem prüfen, ob die Nachricht zu
                             // einem bereits gelernten Control passt (physisch bedienter
-                            // Regler/Taster → Dashboard live nachführen).
+                            // Regler/Taster → Dashboard live nachführen). Bewusst KEIN
+                            // `continue` hier: ein bereits verbundenes Gerät, das laufend
+                            // sendet (MIDI-Clock, Active-Sensing 0xFE) würde sonst den
+                            // Hotplug-Rescan unten dauerhaft überspringen, sodass ein
+                            // nach Serverstart angeschlossenes Gerät nie geöffnet wird.
                             state.handle_midi_feedback(&msg);
-                            continue;
-                        }
-                        if let Some(mapping) = midi::parse_mapping(&msg) {
+                        } else if let Some(mapping) = midi::parse_mapping(&msg) {
                             state.learn_armed.store(false, Ordering::Relaxed);
                             // Gerät automatisch aus der Quelle ableiten: passendes Device
                             // wiederverwenden oder — falls ein gleichnamiger MIDI-Ausgang

@@ -532,7 +532,7 @@
       "min": 0,
       "name": "f",
       "screenId": "main",
-      "value": 19,
+      "value": 106,
       "w": 78.0,
       "x": 541.0,
       "y": 103.0
@@ -551,7 +551,7 @@
       "min": 0,
       "name": "filter",
       "screenId": "main",
-      "value": 38,
+      "value": 3,
       "w": 78.0,
       "x": 212.0,
       "y": 24.0

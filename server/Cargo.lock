@@ -510,6 +510,8 @@ name = "midireef-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "core-foundation",
+ "coremidi",
  "futures-util",
  "midir",
  "serde",

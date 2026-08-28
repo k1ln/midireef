@@ -63,11 +63,19 @@ pub fn list_ports() -> (Vec<String>, Vec<String>) {
 /// (nach Namens-Substring geöffnet, lazy). Leerer Portname → virtueller Port.
 pub struct MidiOutManager {
     virt: Option<MidiOutputConnection>,
-    named: HashMap<String, MidiOutputConnection>,
+    /// Portname (Projekt-Substring) → (System-ID des zuletzt aufgelösten
+    /// Ports, Verbindung). Die ID erlaubt, eine nach Systemschlaf verwaiste
+    /// Verbindung zu erkennen (s. `revalidate`).
+    named: HashMap<String, (String, MidiOutputConnection)>,
     /// Ports, die bereits als unerreichbar gemeldet wurden — verhindert, dass
     /// jeder Clock-Tick/jede Note dieselbe Warnung erneut ausgibt.
     unreachable: HashSet<String>,
+    last_revalidate: std::time::Instant,
 }
+
+/// Intervall, in dem gecachte Ausgangs-Verbindungen gegen die aktuell vom OS
+/// gemeldete Port-ID geprüft werden — s. `MidiOutManager::revalidate`.
+const OUT_REVALIDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl MidiOutManager {
     pub fn new() -> Self {
@@ -82,6 +90,7 @@ impl MidiOutManager {
             virt,
             named: HashMap::new(),
             unreachable: HashSet::new(),
+            last_revalidate: std::time::Instant::now(),
         }
     }
 
@@ -91,11 +100,11 @@ impl MidiOutManager {
             return self.virt.as_mut();
         }
         if !self.named.contains_key(port) {
-            if let Some(conn) = open_matching(port) {
-                self.named.insert(port.to_string(), conn);
+            if let Some((id, conn)) = open_matching(port) {
+                self.named.insert(port.to_string(), (id, conn));
             }
         }
-        self.named.get_mut(port)
+        self.named.get_mut(port).map(|(_, conn)| conn)
     }
 
     /// Versucht einmal zu senden — über die (ggf. gecachte) Verbindung.
@@ -106,9 +115,30 @@ impl MidiOutManager {
         }
     }
 
+    /// Prüft periodisch, ob ein gecachter Port noch dieselbe System-ID hat wie
+    /// beim Öffnen. Nach macOS-Systemschlaf (CoreMIDI-Server-Neustart) oder
+    /// Unplug/Replug behält ein Gerät oft denselben Namen, bekommt vom OS aber
+    /// eine neue interne Referenz — `send()` auf die alte Verbindung schlägt
+    /// dabei nicht zuverlässig fehl (CoreMIDI verwirft still), daher reicht der
+    /// Fehlschlag-Retry in `send` allein nicht. Weicht die ID ab oder ist der
+    /// Port verschwunden, wird die Verbindung verworfen; `conn_for` öffnet sie
+    /// beim nächsten Sendeversuch frisch.
+    fn revalidate(&mut self) {
+        if self.named.is_empty() || self.last_revalidate.elapsed() < OUT_REVALIDATE_INTERVAL {
+            return;
+        }
+        self.last_revalidate = std::time::Instant::now();
+        let Ok(out) = MidiOutput::new("midireef-out-check") else { return };
+        self.named.retain(|needle, (id, _)| {
+            let Some(p) = find_port(&out, needle) else { return false };
+            out.port_name(&p).map(|_| p.id() == *id).unwrap_or(false)
+        });
+    }
+
     /// Sendet MIDI-Bytes; liefert `false`, wenn kein Ausgang (virtuell oder
     /// namentlich passend) erreichbar war — der Aufrufer kann das der UI melden.
     pub fn send(&mut self, port: &str, bytes: &[u8]) -> bool {
+        self.revalidate();
         let target = if port.is_empty() { "MidiReef Out (virtuell)" } else { port };
 
         let mut ok = self.try_send(port, bytes);
@@ -130,10 +160,16 @@ impl MidiOutManager {
         } else if self.unreachable.insert(port.to_string()) {
             // Nur beim ersten Fehlschlag warnen; erneut erst, wenn der Port
             // zwischenzeitlich wieder erreichbar war (s. `unreachable.remove`).
+            // Die aktuell sichtbaren Ausgänge mitloggen, da Fehlschläge in der
+            // Praxis fast immer ein Namens-Mismatch sind (gespeicherter
+            // Projekt-Name vs. tatsächlicher OS-Portname).
+            let visible = MidiOutput::new("midireef-out-list")
+                .map(|o| o.ports().iter().filter_map(|p| o.port_name(p).ok()).collect::<Vec<_>>())
+                .unwrap_or_default();
             tracing::warn!(
                 "{}",
                 tag_out(&format!(
-                    " {ANSI_DIM}→{ANSI_RESET} „{port}“ nicht erreichbar — verworfen (weitere unterdrückt): {}",
+                    " {ANSI_DIM}→{ANSI_RESET} „{port}“ nicht erreichbar — verworfen (weitere unterdrückt): {}. Sichtbare Ausgänge: {visible:?}",
                     describe(bytes)
                 ))
             );
@@ -143,10 +179,11 @@ impl MidiOutManager {
 
     /// Clock/Transport-Bytes an alle offenen Ausgänge (virtuell + real).
     pub fn broadcast(&mut self, bytes: &[u8]) {
+        self.revalidate();
         if let Some(v) = self.virt.as_mut() {
             let _ = v.send(bytes);
         }
-        for c in self.named.values_mut() {
+        for (_, c) in self.named.values_mut() {
             let _ = c.send(bytes);
         }
     }
@@ -160,13 +197,14 @@ impl MidiOutManager {
     }
 }
 
-fn open_matching(needle: &str) -> Option<MidiOutputConnection> {
-    let out = MidiOutput::new("midireef-out").ok()?;
+/// Sucht unter den aktuell sichtbaren Ausgängen von `out` den zu `needle`
+/// passenden Port. Zuerst exakter Substring-Match; schlägt der fehl, tolerant
+/// vergleichen (Groß/Klein + Leer-/Sonderzeichen ignorieren), da das OS
+/// denselben Port oft leicht anders benennt als im Projekt gespeichert
+/// ("D mini" vs "Dmini").
+fn find_port(out: &MidiOutput, needle: &str) -> Option<midir::MidiOutputPort> {
     let ports = out.ports();
-    // Zuerst exakter Substring-Match; schlägt der fehl, tolerant vergleichen
-    // (Groß/Klein + Leer-/Sonderzeichen ignorieren), da das OS denselben Port
-    // oft leicht anders benennt als im Projekt gespeichert ("D mini" vs "Dmini").
-    let p = ports
+    ports
         .iter()
         .find(|p| out.port_name(p).map(|n| n.contains(needle)).unwrap_or(false))
         .or_else(|| {
@@ -176,8 +214,16 @@ fn open_matching(needle: &str) -> Option<MidiOutputConnection> {
                     .map(|n| normalize_port_name(&n).contains(&needle_norm))
                     .unwrap_or(false)
             })
-        })?;
-    out.connect(p, "midireef-out").ok()
+        })
+        .cloned()
+}
+
+fn open_matching(needle: &str) -> Option<(String, MidiOutputConnection)> {
+    let out = MidiOutput::new("midireef-out").ok()?;
+    let p = find_port(&out, needle)?;
+    let id = p.id();
+    let conn = out.connect(&p, "midireef-out").ok()?;
+    Some((id, conn))
 }
 
 /// Normalisiert einen Portnamen für toleranten Vergleich: Kleinbuchstaben,
@@ -193,7 +239,10 @@ fn normalize_port_name(name: &str) -> String {
 /// per periodischem [`rescan`](Self::rescan) neu angeschlossene oder getrennte
 /// Geräte (Hotplug) — `midir` selbst hat dafür keine Callback-API.
 pub struct MidiInManager {
-    conns: HashMap<String, MidiInputConnection<()>>,
+    /// Portname → (System-ID des Ports beim Öffnen, Verbindung). Die ID
+    /// erlaubt, eine nach Systemschlaf verwaiste Verbindung zu erkennen —
+    /// s. `rescan`.
+    conns: HashMap<String, (String, MidiInputConnection<()>)>,
     tx: std::sync::mpsc::Sender<(String, Vec<u8>)>,
 }
 
@@ -227,16 +276,27 @@ impl MidiInManager {
     /// verbindet neu aufgetauchte Ports, trennt verschwundene. Sollte
     /// regelmäßig (z.B. alle paar Sekunden) aufgerufen werden, da `midir`
     /// keine Hotplug-Benachrichtigung bietet.
+    ///
+    /// Vergleicht dabei auch die System-ID jedes Ports, nicht nur den Namen:
+    /// nach macOS-Systemschlaf (CoreMIDI-Server-Neustart) oder Unplug/Replug
+    /// behält ein Gerät oft denselben Namen, bekommt vom OS aber eine neue
+    /// interne Referenz. Eine gecachte Verbindung auf die alte Referenz
+    /// bleibt "offen", liefert aber nie wieder Nachrichten — daher wird eine
+    /// solche Verbindung hier als getrennt behandelt und im selben Rescan neu
+    /// geöffnet, statt sie anhand des (weiterhin passenden) Namens zu behalten.
     pub fn rescan(&mut self) -> HotplugDelta {
         let Ok(scan) = MidiInput::new("midireef-in-scan") else {
             return HotplugDelta { connected: Vec::new(), disconnected: Vec::new() };
         };
         let ports = scan.ports();
-        let current: Vec<String> = ports.iter().filter_map(|p| scan.port_name(p).ok()).collect();
+        let current: HashMap<String, String> = ports
+            .iter()
+            .filter_map(|p| scan.port_name(p).ok().map(|name| (name, p.id())))
+            .collect();
 
         let mut disconnected = Vec::new();
-        self.conns.retain(|name, _| {
-            let keep = current.contains(name);
+        self.conns.retain(|name, (id, _)| {
+            let keep = current.get(name).map(|live_id| live_id == id).unwrap_or(false);
             if !keep {
                 disconnected.push(name.clone());
             }
@@ -256,6 +316,7 @@ impl MidiInManager {
             };
             let key_name = port_name.clone();
             let log_name = port_name.clone();
+            let port_id = p.id();
             let txc = self.tx.clone();
             if let Ok(conn) = input.connect(
                 p,
@@ -271,7 +332,7 @@ impl MidiInManager {
                 },
                 (),
             ) {
-                self.conns.insert(key_name.clone(), conn);
+                self.conns.insert(key_name.clone(), (port_id, conn));
                 connected.push(key_name);
             }
         }
