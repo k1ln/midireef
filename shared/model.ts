@@ -122,7 +122,9 @@ export type TriggerQuantize =
 export type LanePlayMode =
   | "sequential" // hintereinander
   | "random" // randomisiert
-  | "manual"; // nur per Touch ausgelöst
+  | "manual" // nur per Touch ausgelöst, wiederholt den aktuellen Baustein
+  | "hold" // stumm bis gedrückt; spielt nur solange die Kachel gehalten wird
+  | "oneShot"; // stumm; ein Tap spielt den Baustein einmal durch, dann wieder still
 
 /** Verhalten am Baustein-Ende. */
 export type LoopMode =
@@ -184,7 +186,7 @@ export interface BlockBase {
   // Bewusst KEIN Kanal und kein MIDI-Ziel am Baustein: ein Baustein ist reiner
   // Inhalt (Noten, Steps, Bewegung) und soll in mehreren Lanes — auf anderen
   // Kanälen, anderen CCs, anderen Geräten — wiederverwendbar sein. Das Ziel
-  // legt die Lane fest: `Lane.channel` (Kanal-Override) bzw. `Lane.ccControlId`
+  // legt die Lane fest: `Lane.channel` (MIDI-Kanal) bzw. `Lane.ccControlId`
   // (Ziel-Knob einer CC-Lane).
 }
 
@@ -516,8 +518,8 @@ export interface Lane {
   playMode: LanePlayMode;
   triggerQuantize: TriggerQuantize;
 
-  /** Default-Channel dieser Lane; überschreibt den Device-Channel wenn gesetzt. */
-  channel?: MidiChannel;
+  /** MIDI-Kanal dieser Lane (1–16). Der Kanal sitzt ausschließlich an der Lane. */
+  channel: MidiChannel;
 
   /**
    * Nur für `role === "cc"`: Ziel-Knob dieser Lane — ein gelerntes Live-Control
@@ -560,14 +562,6 @@ export interface Device {
   name: string; // per Touch-Keyboard benennbar
   midiOutPort: string; // Portname
   midiInPort?: string;
-  channel: MidiChannel; // Default-Kanal
-  /**
-   * Globaler Halbton-Versatz, live verstellbar — addiert sich auf den
-   * Per-Slot-Transpose obendrauf. Damit lassen sich mehrere Lanes eines
-   * Devices zur Laufzeit gemeinsam in eine andere Tonart schieben, ohne
-   * die Bausteine selbst zu editieren.
-   */
-  transpose: number;
   sendClock: boolean; // erhält dieses Device die MIDI-Clock?
 
   /** Verknüpftes Geräte-Profil (benannte CC/PC-Maps). */
@@ -907,7 +901,7 @@ export type Command =
   | { t: "lane.reorder"; deviceId: Id; orderedLaneIds: Id[] }
   | { t: "lane.setRole"; laneId: Id; role: LaneRole }
   | { t: "lane.setColor"; laneId: Id; color: string }
-  | { t: "lane.setChannel"; laneId: Id; channel?: MidiChannel } // channel weglassen/null → zurück auf den Device-Kanal
+  | { t: "lane.setChannel"; laneId: Id; channel: MidiChannel } // MIDI-Kanal 1–16 dieser Lane
   | { t: "lane.setCcControl"; laneId: Id; controlId: Id | null } // CC-Lane: Ziel-Knob (nur Knobs desselben Geräts); null löst das Ziel
   | { t: "lane.setEnabled"; laneId: Id; enabled: boolean }
   | { t: "lane.setVisible"; laneId: Id; visible: boolean }
@@ -936,6 +930,8 @@ export type Command =
   | { t: "laneSlot.reorder"; laneId: Id; orderedSlotIds: Id[] }
   // ── Bausteine ──
   | { t: "block.trigger"; laneId: Id; slotId: Id }
+  | { t: "block.press"; laneId: Id; slotId: Id } // Touch-Down bei playMode "hold"/"oneShot": Baustein starten
+  | { t: "block.release"; laneId: Id; slotId: Id } // Touch-Up bei playMode "hold": Baustein stoppen + Noten aus
   | { t: "block.rename"; blockId: Id; name: string } // max. 6 Zeichen (BLOCK_NAME_MAX_LENGTH)
   | { t: "block.createAt"; deviceId: Id; blockType: BlockType; row: number; col: number } // Baustein-Bibliothek: an gewählter Zelle anlegen (no-op falls belegt)
   | { t: "block.delete"; blockId: Id } // entfernt Baustein + räumt dangling Lane-Slot-Referenzen auf
@@ -965,6 +961,7 @@ export type Command =
   | { t: "melody.setNotePitch"; blockId: Id; step: number; note: MidiNote; newNote: MidiNote } // Tonhöhe einer bestehenden Note ändern (identifiziert über die alte Tonhöhe)
   | { t: "melody.setNoteLength"; blockId: Id; step: number; note: MidiNote; lengthSteps: number } // Dauer einer bestimmten Note am Step (Note-Off entsprechend später)
   | { t: "melody.setNoteVelocity"; blockId: Id; step: number; note: MidiNote; velocity: Midi7Bit } // Anschlagstärke einer bestimmten Note am Step (1–127; 0 wäre ein Note-Off)
+  | { t: "block.previewNote"; blockId: Id; note: MidiNote; on: boolean; velocity?: Midi7Bit } // Baustein-Detail: Tonhöhe live anspielen (Klaviatur der Piano-Rolle). Ändert NICHTS am Projekt; Ziel ist die erste Lane, die den Baustein verwendet. on=false ist das zugehörige Note-Off
   | { t: "beat.toggleStep"; blockId: Id; lineId: Id; step: number } // Baustein-Detail: Step an/aus
   | { t: "chord.toggleNote"; blockId: Id; step: number; note: MidiNote } // Baustein-Detail: Note im Akkord an Step an/aus
   | { t: "arp.toggleNote"; blockId: Id; note: MidiNote } // Baustein-Detail: Note im Notenvorrat an/aus
@@ -1005,11 +1002,9 @@ export type Command =
   | { t: "mod.addRoute"; route: ModRoute }
   | { t: "mod.removeRoute"; routeId: Id }
   // ── Device & Profile ──
-  | { t: "device.setChannel"; deviceId: Id; channel: MidiChannel }
   | { t: "device.setSendClock"; deviceId: Id; sendClock: boolean }
   | { t: "device.setProfile"; deviceId: Id; profileId?: Id }
   | { t: "device.setLatency"; deviceId: Id; latencyOffsetMs: number }
-  | { t: "device.setTranspose"; deviceId: Id; transpose: number } // Halbtöne, live, addiert sich auf Slot-Transpose
   | { t: "profile.create"; profile: DeviceProfile }
   | { t: "profile.update"; profile: DeviceProfile }
   | { t: "profile.delete"; profileId: Id }

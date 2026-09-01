@@ -176,11 +176,13 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, onContextMenu,
         <div style={{ fontSize: 16, fontWeight: 600 }}>{ctrl.name || "(new)"}</div>
         {ctrl.mapping && (
           <>
-            <div style={{ fontSize: 11, color: "var(--pal-text-dim)" }}>
+            <div className="mono" style={{ fontSize: 11, color: "var(--pal-text-dim)" }}>
               {isKeyboard ? "KEYBOARD (any key)" : `${ctrl.mapping.kind.toUpperCase()} ${ctrl.mapping.number}`} · Ch{ctrl.mapping.channel}
             </div>
             {ctrl.mapping.kind === "note" && !isKeyboard && ctrl.mapping.number != null && (
-              <div style={{ fontSize: 11, color: "var(--pal-text-dim)" }}>{noteToFreq(ctrl.mapping.number).toFixed(1)} Hz</div>
+              <div className="mono" style={{ fontSize: 11, color: "var(--pal-text-dim)" }}>
+                {noteToFreq(ctrl.mapping.number).toFixed(1)} Hz
+              </div>
             )}
           </>
         )}

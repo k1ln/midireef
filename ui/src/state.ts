@@ -172,7 +172,7 @@ export interface Lane {
   height: number;
   playMode: string;
   triggerQuantize: string;
-  channel?: number; // Kanal-Override, sonst Device-Kanal
+  channel: number; // MIDI-Kanal 1–16 dieser Lane
   ccControlId?: string | null; // cc-Lane: Ziel-Knob (LiveControl-Id desselben Geräts)
   slots: Slot[];
   controls: LaneControl[];
@@ -182,12 +182,9 @@ export interface Device {
   id: string;
   name: string;
   midiOutPort: string;
-  channel: number;
-  transpose: number;
   sendClock: boolean;
   latencyOffsetMs: number;
   lanes: Lane[];
-  blocks: Block[];
 }
 
 export interface Project {
@@ -195,6 +192,9 @@ export interface Project {
   name: string;
   bpm: number;
   devices: Device[];
+  /** Projektweite Baustein-Bibliothek (9×9-Raster pro Typ). Bausteine sind
+   *  reiner Inhalt und in jeder Lane jedes Geräts einsetzbar. */
+  blocks: Block[];
   [key: string]: unknown;
 }
 

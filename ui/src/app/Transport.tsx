@@ -18,29 +18,40 @@ import { useEffect, useRef, useState } from "react";
 import type { TransportState } from "../net";
 import { useNet, useSend } from "./store";
 import { Button } from "./widgets/Button";
+import { FpsMeter } from "./FpsMeter";
 import { TRANSPORT_H } from "./layout";
+import { getBgConfig, BG_CONFIG_EVENT } from "./bgConfig";
 
 const BTN = 50;
 /** BPM-Wippe: kleiner als die Transport-Tasten, aber noch fingerbreit. */
 const NUDGE = 46;
 
+export type TransportView = "start" | "seq" | "library" | "settings";
+
 export interface TransportProps {
-  view: "start" | "seq";
-  onNav: (view: "start" | "seq") => void;
-  /** Zahnrad → Projekt-Menü. Der Dialog selbst hängt in App.tsx neben den
-   *  Screens: diese Leiste ist `position: fixed` und damit ein eigener
-   *  Stacking-Context, in dem ein Overlay unter den Screens landen könnte. */
-  onOpenSettings: () => void;
-  settingsOpen: boolean;
+  /** Which top-level page is showing — every one of them is reached from
+   *  this bar (⌂ Dashboard, SQ Sequencer, ▤ Library, ⚙ Projects), so the
+   *  matching button lights up rather than opening a modal. */
+  view: TransportView;
+  onNav: (view: TransportView) => void;
 }
 
-export function Transport({ view, onNav, onOpenSettings, settingsOpen }: TransportProps) {
+export function Transport({ view, onNav }: TransportProps) {
   const net = useNet();
   const send = useSend();
   const [t, setT] = useState<TransportState | null>(null);
   const [ports, setPorts] = useState<string[]>([]);
   const bpmRef = useRef(120);
   const [bpmDisplay, setBpmDisplay] = useState(120);
+  /** Optionale FPS-Anzeige (⚙ → Background scene). Nur der Schalter landet
+   *  hier — den Rest der Szenen-Konfiguration liest background.ts selbst. */
+  const [showFps, setShowFps] = useState(() => getBgConfig().showFps);
+
+  useEffect(() => {
+    const sync = () => setShowFps(getBgConfig().showFps);
+    window.addEventListener(BG_CONFIG_EVENT, sync);
+    return () => window.removeEventListener(BG_CONFIG_EVENT, sync);
+  }, []);
 
   useEffect(() => {
     const off = net.onEvent((evt) => {
@@ -66,6 +77,7 @@ export function Transport({ view, onNav, onOpenSettings, settingsOpen }: Transpo
 
   return (
     <div
+      className="hifi-rail"
       style={{
         position: "fixed",
         top: 0,
@@ -76,7 +88,9 @@ export function Transport({ view, onNav, onOpenSettings, settingsOpen }: Transpo
         alignItems: "center",
         gap: 10,
         padding: "0 16px",
-        background: "rgba(17, 17, 17, 0.82)",
+        // Nur die Farbe hier — den Glas-Verlauf (background-image) und die
+        // Fase liefert .hifi-rail in theme.css.
+        backgroundColor: "rgba(17, 17, 17, 0.82)",
         borderBottom: "2px solid rgba(255, 255, 255, 0.25)",
       }}
     >
@@ -110,10 +124,18 @@ export function Transport({ view, onNav, onOpenSettings, settingsOpen }: Transpo
         ⌂
       </Button>
       <Button
-        className={settingsOpen ? "transport-nav on" : "transport-nav"}
+        className={view === "library" ? "transport-nav on" : "transport-nav"}
+        style={{ width: BTN, height: BTN, fontSize: 22 }}
+        title="Block library"
+        onClick={() => onNav("library")}
+      >
+        ▤
+      </Button>
+      <Button
+        className={view === "settings" ? "transport-nav on" : "transport-nav"}
         style={{ width: BTN, height: BTN, fontSize: 26, marginRight: 16 }}
         title="Projects"
-        onClick={onOpenSettings}
+        onClick={() => onNav("settings")}
       >
         ⚙
       </Button>
@@ -121,7 +143,7 @@ export function Transport({ view, onNav, onOpenSettings, settingsOpen }: Transpo
       <RepeatButton width={NUDGE} height={NUDGE} onFire={() => nudgeBpm(-1)}>
         −
       </RepeatButton>
-      <div style={{ width: 84, textAlign: "center", fontSize: 18, fontWeight: 700 }}>
+      <div className="mono" style={{ width: 84, textAlign: "center", fontSize: 18, fontWeight: 700 }}>
         {bpmDisplay}
         <span style={{ fontSize: 11, color: "var(--pal-text-dim)", marginLeft: 3 }}>BPM</span>
       </div>
@@ -131,17 +153,18 @@ export function Transport({ view, onNav, onOpenSettings, settingsOpen }: Transpo
 
       <div style={{ marginLeft: "auto", textAlign: "right" }}>
         <div
+          className="mono"
           style={{
             display: "flex",
             alignItems: "center",
             justifyContent: "flex-end",
             gap: 10,
-            fontFamily: "ui-monospace, monospace",
             fontSize: 24,
             fontWeight: 700,
             color: "var(--pal-white)",
           }}
         >
+          {showFps && <FpsMeter />}
           {/* Metronom-Punkt: der `key` wechselt mit jedem Beat, React montiert
               das Element also neu — dadurch startet die CSS-Animation von
               vorn, ohne dass hier ein Timer oder eine Klasse verwaltet wird.
@@ -156,6 +179,14 @@ export function Transport({ view, onNav, onOpenSettings, settingsOpen }: Transpo
           {posText}
         </div>
         <div style={{ fontSize: 12, color: "var(--pal-text-dim)" }}>{portText}</div>
+      </div>
+
+      {/* Wortmarke ganz rechts: "MIDI" über "REEF", zwei Zeilen, bewusst klein.
+          Gleiche Schrift wie die BPM-Anzeige (system-ui, fett), aber mit
+          gebürstetem-Metall-Schimmer — s. .hifi-mark in theme.css. */}
+      <div className="hifi-mark" aria-label="MIDI REEF" title="MIDI REEF">
+        <span>MIDI</span>
+        <span>REEF</span>
       </div>
     </div>
   );

@@ -20,6 +20,7 @@ const TILE_H = 76;
 // EMPTY_DEVICES comment in Dashboard.tsx.
 const EMPTY_DEVICES: Device[] = [];
 const EMPTY_CONTROLS: LiveControl[] = [];
+const EMPTY_BLOCKS: Block[] = [];
 
 export interface LaneControlsProps {
   laneId: string;
@@ -98,7 +99,7 @@ export function LaneControls({ laneId, onClose }: LaneControlsProps) {
           )}
 
           {muteTargetPicker && (
-            <MuteTargetPicker lane={found.lane} device={found.device} onClose={() => setMuteTargetPicker(false)} />
+            <MuteTargetPicker lane={found.lane} onClose={() => setMuteTargetPicker(false)} />
           )}
         </>
       )}
@@ -243,6 +244,7 @@ function AddControlPicker({
   const openNotePicker = useNotePicker();
   const numberEdit = useNumberEditor();
   const controls = useStoreValue((s) => (s.project?.controls as LiveControl[] | undefined) ?? EMPTY_CONTROLS);
+  const projectBlocks = useStoreValue((s) => (s.project?.blocks as Block[] | undefined) ?? EMPTY_BLOCKS);
   const deviceKnobs = controls.filter(
     (c) => c.kind === "knob" && c.deviceId === device.id && c.mapping?.kind === "cc",
   );
@@ -281,7 +283,7 @@ function AddControlPicker({
           );
         },
       });
-      const beatBlocks = (device.blocks ?? []).filter(
+      const beatBlocks = projectBlocks.filter(
         (b: Block) => b.type === "beat" && lane.slots.some((s) => s.blockId === b.id),
       );
       if (beatBlocks.length > 0) {
@@ -370,9 +372,10 @@ function AddControlPicker({
   );
 }
 
-function MuteTargetPicker({ lane, device, onClose }: { lane: Lane; device: Device; onClose: () => void }) {
+function MuteTargetPicker({ lane, onClose }: { lane: Lane; onClose: () => void }) {
   const send = useSend();
-  const beatBlocks = (device.blocks ?? []).filter(
+  const projectBlocks = useStoreValue((s) => (s.project?.blocks as Block[] | undefined) ?? EMPTY_BLOCKS);
+  const beatBlocks = projectBlocks.filter(
     (b: Block) => b.type === "beat" && lane.slots.some((s) => s.blockId === b.id),
   );
 

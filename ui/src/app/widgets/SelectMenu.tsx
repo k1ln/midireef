@@ -3,7 +3,7 @@
 //! (die laufende ist hervorgehoben). So trifft man auf dem Touchdisplay gezielt
 //! einen Wert, statt sich durch einen Zyklus zu tippen.
 
-import { useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useState, type CSSProperties, type ReactNode } from "react";
 import { Button, type ButtonProps } from "./Button";
 import { Popup } from "./Popup";
 
@@ -42,6 +42,13 @@ export function SelectMenu<T extends string | number>({
   const [open, setOpen] = useState(false);
   const current = options.find((o) => o.value === value);
 
+  // Beim Öffnen bei der LAUFENDEN Option stehen — bei langen Listen
+  // (Transpose ±36) sonst immer ganz oben, und man scrollt jedes Mal von Hand
+  // dorthin zurück, wo man gerade ist.
+  const activeRef = useCallback((el: HTMLButtonElement | null) => {
+    el?.scrollIntoView({ block: "center" });
+  }, []);
+
   return (
     <>
       <Button
@@ -60,6 +67,7 @@ export function SelectMenu<T extends string | number>({
           {options.map((o) => (
             <Button
               key={String(o.value)}
+              ref={o.value === value ? activeRef : undefined}
               className="popup-row"
               variant={o.value === value ? "active" : "default"}
               onClick={() => {

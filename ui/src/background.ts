@@ -8,12 +8,13 @@
 import { Application } from "pixi.js";
 import { UnderwaterScene } from "./scene/underwater";
 import { wireGlobalRipples } from "./ui/ripple";
+import { getUiScale, UI_SCALE_EVENT } from "./app/uiScale";
+import { getBgConfig, bgEnabled, BG_CONFIG_EVENT } from "./app/bgConfig";
 
 export async function mountBackground(host: HTMLElement) {
   const app = new Application();
   await app.init({
     background: 0x000000,
-    resizeTo: window,
     antialias: false, // harte Kanten / Pixel-Look
     // Interne Auflösung bewusst UNTER der Anzeige halten: jeder (füllraten-
     // schwere) Shader-Pass verarbeitet dann deutlich weniger Fragmente. Der
@@ -25,13 +26,31 @@ export async function mountBackground(host: HTMLElement) {
   app.canvas.style.pointerEvents = "none";
   host.appendChild(app.canvas);
 
-  const scene = new UnderwaterScene();
+  // Nutzer-Konfiguration lokal halten (nicht bei jedem Noten-Event neu aus
+  // localStorage lesen) und bei BG_CONFIG_EVENT auffrischen.
+  let cfg = getBgConfig();
+
+  const scene = new UnderwaterScene(cfg);
   app.stage.addChild(scene.container);
   wireGlobalRipples(app.stage);
 
-  const resize = () => scene.resize(app.screen.width, app.screen.height);
+  // Die App skaliert ihre GESAMTE Oberfläche über CSS `zoom` auf <html>
+  // (s. uiScale.ts) — das streckt/staucht auch dieses Canvas mit. Würden wir
+  // in Fenstergröße rendern, bliebe bei scale < 1 ein Rand ums Canvas frei.
+  // Also in der *logischen* Größe (Fenster / Skalierung) rendern: nach dem
+  // `zoom` landet das Canvas exakt auf dem Viewport, und die Ripple-Koordinaten
+  // (die in der gezoomten Einheit ankommen) passen weiterhin 1:1.
+  const resize = () => {
+    const scale = getUiScale();
+    app.renderer.resize(window.innerWidth / scale, window.innerHeight / scale);
+    scene.resize(app.screen.width, app.screen.height);
+    // Bei angehaltener Szene rendert der Ticker nicht mehr nach — nach dem
+    // Resize einmal von Hand einen schwarzen Frame zeichnen.
+    if (!bgEnabled(cfg)) app.renderer.render(app.stage);
+  };
   resize();
   window.addEventListener("resize", resize);
+  window.addEventListener(UI_SCALE_EVENT, resize);
 
   // Umgebungs-Animation auf 30 fps deckeln: halbiert die (füllraten-schwere)
   // Shader-Last auf schwacher Hardware wie dem Raspberry Pi und passt zum
@@ -40,4 +59,42 @@ export async function mountBackground(host: HTMLElement) {
   app.ticker.maxFPS = 30;
 
   app.ticker.add((ticker) => scene.update(ticker));
+
+  // ── Preset "off" = Szene aus ──────────────────────────────────────────
+  // Aus: Szene ausblenden, EINEN schwarzen Frame zeichnen (Clear-Farbe
+  // 0x000000) und dann den Ticker ganz anhalten — kein Render-, kein Shader-
+  // Pass mehr. An: Szene wieder zeigen, Ticker läuft weiter (Pixi rendert
+  // über denselben Ticker, s. TickerPlugin).
+  const applyEnabled = (on: boolean) => {
+    scene.container.visible = on;
+    if (on) {
+      app.ticker.start();
+    } else {
+      app.renderer.render(app.stage);
+      app.ticker.stop();
+    }
+  };
+  applyEnabled(bgEnabled(cfg));
+
+  // Einstellungen geändert (ProjectSettings → Background): Kreaturenzahl live
+  // nachziehen und ggf. Ticker starten/stoppen.
+  window.addEventListener(BG_CONFIG_EVENT, () => {
+    cfg = getBgConfig();
+    scene.setConfig(cfg);
+    applyEnabled(bgEnabled(cfg));
+  });
+
+  // ── Wiedergabe-Reaktivität ───────────────────────────────────────────
+  // RuntimeFeed (app/runtime.ts) feuert diese Fensterevents bei jedem
+  // Snapshot bzw. jeder Notensendung. Ohne laufende Wiedergabe kommt nichts.
+  window.addEventListener("mr-runtime", (e) => {
+    const d = (e as CustomEvent).detail ?? {};
+    // pulsesPerSec 48 ≈ 120 BPM (24 PPQN) → Faktor 1.0.
+    const factor = cfg.reactBpm && d.playing ? (d.pulsesPerSec ?? 48) / 48 : 1;
+    scene.setTempo(factor);
+  });
+  window.addEventListener("mr-note", (e) => {
+    if (!cfg.reactNotes) return;
+    scene.pulse((e as CustomEvent).detail?.strength ?? 1);
+  });
 }

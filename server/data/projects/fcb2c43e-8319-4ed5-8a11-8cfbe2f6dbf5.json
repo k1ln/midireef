@@ -1,7 +1,7 @@
 {
   "id": "fcb2c43e-8319-4ed5-8a11-8cfbe2f6dbf5",
-  "name": "MidiReef",
-  "bpm": 94.0,
+  "name": "song1",
+  "bpm": 120.0,
   "timeSignature": "4/4",
   "scale": {
     "root": "C",
@@ -10,389 +10,17 @@
   "swing": 0.0,
   "devices": [
     {
-      "id": "915d962e-eab1-4786-9d97-4b474213b246",
+      "id": "324a8ef6-b5b9-4b71-87f8-ceaee153dc01",
       "name": "J-6 MIDI IN",
       "midiOutPort": "J-6 MIDI IN",
-      "channel": 1,
-      "transpose": 0,
       "sendClock": true,
       "latencyOffsetMs": 0.0,
-      "blocks": [
-        {
-          "baseNote": 62,
-          "id": "ad2949cc-2a4d-4996-9290-90710fd2f563",
-          "lengthBars": 1,
-          "name": "Mel",
-          "notes": [
-            {
-              "lengthSteps": 1,
-              "note": 60,
-              "step": 0,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 1,
-              "note": 71,
-              "step": 4,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 1,
-              "note": 64,
-              "step": 8,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 1,
-              "note": 67,
-              "step": 12,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 1,
-              "note": 64,
-              "step": 5,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 1,
-              "note": 67,
-              "step": 6,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 1,
-              "note": 69,
-              "step": 7,
-              "velocity": 100
-            }
-          ],
-          "slot": {
-            "col": 1,
-            "row": 1,
-            "type": "melody"
-          },
-          "stepsPerBar": 16,
-          "timeSignature": "4/4",
-          "type": "melody"
-        },
-        {
-          "baseNote": 60,
-          "id": "192a0c03-e77a-4aa6-a07e-d201ec995c36",
-          "lengthBars": 1,
-          "name": "Mel",
-          "notes": [],
-          "slot": {
-            "col": 2,
-            "row": 1,
-            "type": "melody"
-          },
-          "stepsPerBar": 16,
-          "timeSignature": "4/4",
-          "type": "melody"
-        }
-      ],
       "lanes": [
         {
-          "id": "20733b43-1b2b-4621-bb2e-f742c705d3a7",
+          "id": "3e59c122-e971-43d9-84ba-6728cd3ba095",
           "name": "Lane 1",
           "role": "melody",
           "color": "#4fd1c5",
-          "enabled": false,
-          "visible": true,
-          "muted": false,
-          "solo": false,
-          "collapsed": false,
-          "height": 64.0,
-          "playMode": "manual",
-          "triggerQuantize": "nextBar",
-          "slots": [
-            {
-              "blockId": "ad2949cc-2a4d-4996-9290-90710fd2f563",
-              "id": "78e85bed-bb5f-4956-99e2-1496fb28b3f0",
-              "loopCount": 4,
-              "loopMode": "count",
-              "speed": 1.0,
-              "transpose": 0
-            },
-            {
-              "blockId": "192a0c03-e77a-4aa6-a07e-d201ec995c36",
-              "id": "b4d9966c-e6eb-401f-b08c-5bedf6a7fc59",
-              "loopCount": 2,
-              "loopMode": "count",
-              "speed": 1,
-              "transpose": 0
-            }
-          ],
-          "controls": []
-        }
-      ]
-    },
-    {
-      "id": "d0c12f7d-5de4-48eb-a206-da9a261e5574",
-      "name": "D MINI",
-      "midiOutPort": "D MINI",
-      "channel": 1,
-      "transpose": 0,
-      "sendClock": false,
-      "latencyOffsetMs": 0.0,
-      "blocks": [
-        {
-          "id": "7bb29112-af39-4d0f-afbf-58aab07849a7",
-          "layers": [
-            {
-              "combine": "replace",
-              "depth": 1.0,
-              "enabled": true,
-              "id": "6ea20a4a-e182-43e6-bf1a-ad41259c111e",
-              "kind": "stepped",
-              "offset": 0.0,
-              "values": [
-                1.0,
-                0.2440944881889764,
-                0.5433070866141733,
-                0.7401574803149606,
-                0.16535433070866143,
-                1.0,
-                0.2047244094488189,
-                0.0,
-                0.49606299212598426,
-                1.0,
-                0.30708661417322836,
-                0.5039370078740157,
-                0.7637795275590551,
-                0.0,
-                1.0,
-                0.0
-              ]
-            },
-            {
-              "combine": "add",
-              "depth": 1.0,
-              "enabled": false,
-              "id": "22b66423-6033-41a2-ad2d-d29cba8a0bfc",
-              "kind": "lfo",
-              "offset": 0.0,
-              "phase": 0.3,
-              "rateBars": 1.0,
-              "rateHz": 10,
-              "rateMode": "hz",
-              "waveform": "square"
-            },
-            {
-              "combine": "add",
-              "depth": 1.0,
-              "enabled": false,
-              "everySteps": 1,
-              "id": "721a8f49-7fb0-4dd7-8ff7-0f0bd0466cf4",
-              "kind": "random",
-              "offset": 0.0,
-              "smooth": false
-            },
-            {
-              "combine": "add",
-              "depth": 1.0,
-              "enabled": false,
-              "everySteps": 1,
-              "id": "209f8149-900d-44ee-aae6-6e1e79a0d6aa",
-              "kind": "random",
-              "offset": 0.0,
-              "smooth": false
-            },
-            {
-              "combine": "add",
-              "depth": 1.0,
-              "enabled": false,
-              "everySteps": 1,
-              "id": "638310ca-b8d0-4a0b-8b01-f3d84572f7c8",
-              "kind": "random",
-              "offset": 0.0,
-              "smooth": false
-            }
-          ],
-          "lengthBars": 1,
-          "name": "CC",
-          "outMax": 127,
-          "outMin": 0,
-          "slot": {
-            "col": 1,
-            "row": 1,
-            "type": "cc"
-          },
-          "stepsPerBar": 16,
-          "timeSignature": "4/4",
-          "type": "cc"
-        },
-        {
-          "id": "826f97f0-f46a-4304-92f8-e7a2288ed2b3",
-          "layers": [
-            {
-              "combine": "replace",
-              "depth": 1.0,
-              "enabled": true,
-              "id": "c133fae9-99f8-46d5-a53b-cecc3e5b9dd9",
-              "kind": "stepped",
-              "offset": 0.0,
-              "values": [
-                0.5118110236220472,
-                0.8976377952755905,
-                0.4645669291338583,
-                0.5669291338582677,
-                0.8110236220472441,
-                0.30708661417322836,
-                0.984251968503937,
-                0.7086614173228346
-              ]
-            }
-          ],
-          "lengthBars": 1,
-          "name": "CC",
-          "outMax": 127,
-          "outMin": 0,
-          "slot": {
-            "col": 2,
-            "row": 1,
-            "type": "cc"
-          },
-          "stepsPerBar": 8,
-          "timeSignature": "4/4",
-          "type": "cc"
-        },
-        {
-          "baseNote": 60,
-          "id": "f037bf3e-2f01-4dbe-8b3d-81576b14e84a",
-          "lengthBars": 2,
-          "name": "Mel",
-          "notes": [
-            {
-              "lengthSteps": 1,
-              "note": 60,
-              "step": 0,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 2,
-              "note": 55,
-              "step": 1,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 1,
-              "note": 59,
-              "step": 3,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 1,
-              "note": 60,
-              "step": 4,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 1,
-              "note": 62,
-              "step": 5,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 1,
-              "note": 64,
-              "step": 6,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 1,
-              "note": 52,
-              "step": 7,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 1,
-              "note": 60,
-              "step": 2,
-              "velocity": 100
-            }
-          ],
-          "slot": {
-            "col": 1,
-            "row": 1,
-            "type": "melody"
-          },
-          "stepsPerBar": 4,
-          "timeSignature": "4/4",
-          "type": "melody"
-        },
-        {
-          "baseNote": 60,
-          "id": "0e7bd5a7-e5d0-42bf-91b3-e1ac95b4b33b",
-          "lengthBars": 1,
-          "name": "Mel",
-          "notes": [
-            {
-              "lengthSteps": 1,
-              "note": 60,
-              "step": 0,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 1,
-              "note": 50,
-              "step": 1,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 1,
-              "note": 64,
-              "step": 2,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 1,
-              "note": 60,
-              "step": 3,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 1,
-              "note": 65,
-              "step": 4,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 1,
-              "note": 62,
-              "step": 5,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 1,
-              "note": 64,
-              "step": 6,
-              "velocity": 100
-            },
-            {
-              "lengthSteps": 1,
-              "note": 62,
-              "step": 7,
-              "velocity": 100
-            }
-          ],
-          "slot": {
-            "col": 2,
-            "row": 1,
-            "type": "melody"
-          },
-          "stepsPerBar": 8,
-          "timeSignature": "4/4",
-          "type": "melody"
-        }
-      ],
-      "lanes": [
-        {
-          "id": "189a75b2-2ceb-4add-b140-c44346c58917",
-          "name": "Lane 1",
-          "role": "cc",
-          "color": "#63b3ed",
           "enabled": true,
           "visible": true,
           "muted": false,
@@ -402,61 +30,104 @@
           "playMode": "sequential",
           "triggerQuantize": "nextBar",
           "channel": 1,
-          "ccControlId": "efabe12f-1892-4fa3-a92d-4541d637b097",
           "slots": [
             {
-              "blockId": "7bb29112-af39-4d0f-afbf-58aab07849a7",
-              "id": "b46cc9da-43d1-4a6f-ab26-d630b5a2c458",
-              "loopCount": 2,
-              "loopMode": "count",
-              "speed": 0.25,
-              "transpose": 0
-            },
-            {
-              "blockId": "826f97f0-f46a-4304-92f8-e7a2288ed2b3",
-              "id": "540bbb1f-f0f4-430b-a5d9-2c0074c32adb",
-              "loopCount": 2,
-              "loopMode": "count",
-              "speed": 0.25,
-              "transpose": 0
-            }
-          ],
-          "controls": []
-        },
-        {
-          "id": "2c531a99-6f0c-4e54-b6ce-faaaf45227be",
-          "name": "Lane 2",
-          "role": "melody",
-          "color": "#4fd1c5",
-          "enabled": true,
-          "visible": true,
-          "muted": false,
-          "solo": false,
-          "collapsed": false,
-          "height": 64.0,
-          "playMode": "manual",
-          "triggerQuantize": "nextBar",
-          "slots": [
-            {
-              "blockId": "f037bf3e-2f01-4dbe-8b3d-81576b14e84a",
-              "id": "61235676-c096-46f1-a0f6-79ed4baa42ad",
-              "loopCount": 2,
-              "loopMode": "count",
+              "blockId": "0b55b0e4-ee81-41b9-856e-f63de4e72219",
+              "id": "cb41eb80-f298-4618-a6a6-4a6832c743d4",
+              "loopCount": 24,
+              "loopMode": "loop",
               "speed": 1.0,
-              "transpose": -6
+              "transpose": 0
             },
             {
-              "blockId": "0e7bd5a7-e5d0-42bf-91b3-e1ac95b4b33b",
-              "id": "44b1044f-8689-4001-b6d5-d87b40035e36",
-              "loopCount": 2,
-              "loopMode": "count",
-              "speed": 0.25,
+              "blockId": "b9045d6e-2050-432e-920b-0dfda61c3e11",
+              "id": "dc196733-89ac-4710-a2e4-763677c91b3c",
+              "loopCount": 0,
+              "loopMode": "loop",
+              "speed": 1,
               "transpose": 0
             }
           ],
           "controls": []
         }
       ]
+    }
+  ],
+  "blocks": [
+    {
+      "baseNote": 60,
+      "id": "528dabed-53cc-40c7-baba-8235d7100495",
+      "lengthBars": 1,
+      "name": "Mel",
+      "notes": [],
+      "slot": {
+        "col": 1,
+        "row": 1,
+        "type": "melody"
+      },
+      "stepsPerBar": 16,
+      "timeSignature": "4/4",
+      "type": "melody"
+    },
+    {
+      "baseNote": 60,
+      "id": "99ebbdad-2ebb-4740-8271-2996785d960f",
+      "lengthBars": 1,
+      "name": "Mel",
+      "notes": [],
+      "slot": {
+        "col": 2,
+        "row": 1,
+        "type": "melody"
+      },
+      "stepsPerBar": 16,
+      "timeSignature": "4/4",
+      "type": "melody"
+    },
+    {
+      "baseNote": 60,
+      "id": "b78168b7-3371-449c-84f2-7f841ba01041",
+      "lengthBars": 1,
+      "name": "Mel",
+      "notes": [],
+      "slot": {
+        "col": 3,
+        "row": 1,
+        "type": "melody"
+      },
+      "stepsPerBar": 16,
+      "timeSignature": "4/4",
+      "type": "melody"
+    },
+    {
+      "baseNote": 60,
+      "id": "0b55b0e4-ee81-41b9-856e-f63de4e72219",
+      "lengthBars": 1,
+      "name": "Mel",
+      "notes": [],
+      "slot": {
+        "col": 4,
+        "row": 1,
+        "type": "melody"
+      },
+      "stepsPerBar": 16,
+      "timeSignature": "4/4",
+      "type": "melody"
+    },
+    {
+      "baseNote": 60,
+      "id": "b9045d6e-2050-432e-920b-0dfda61c3e11",
+      "lengthBars": 1,
+      "name": "Mel",
+      "notes": [],
+      "slot": {
+        "col": 5,
+        "row": 1,
+        "type": "melody"
+      },
+      "stepsPerBar": 16,
+      "timeSignature": "4/4",
+      "type": "melody"
     }
   ],
   "deviceProfiles": [],
@@ -494,7 +165,7 @@
       "min": 0,
       "name": "detune",
       "screenId": "main",
-      "value": 67,
+      "value": 65,
       "w": 78.0,
       "x": 389.0,
       "y": 121.0
@@ -532,7 +203,7 @@
       "min": 0,
       "name": "f",
       "screenId": "main",
-      "value": 106,
+      "value": 60,
       "w": 78.0,
       "x": 541.0,
       "y": 103.0
@@ -551,10 +222,29 @@
       "min": 0,
       "name": "filter",
       "screenId": "main",
-      "value": 3,
+      "value": 76,
       "w": 78.0,
       "x": 212.0,
       "y": 24.0
+    },
+    {
+      "deviceId": "5a0c71ea-1db4-4903-9f76-fd5fa3f35228",
+      "h": 78.0,
+      "id": "f82ba0fa-85f8-4265-8d21-3069473a8364",
+      "kind": "button",
+      "mapping": {
+        "channel": 11,
+        "kind": "note",
+        "number": 72
+      },
+      "max": 127,
+      "min": 0,
+      "name": "1",
+      "screenId": "main",
+      "value": 0,
+      "w": 78.0,
+      "x": 22.0,
+      "y": 301.0
     }
   ],
   "controlScreens": [],

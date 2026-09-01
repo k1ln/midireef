@@ -12,56 +12,82 @@
 //! Beide Ansichten sprechen dieselben Kommandos (melody.addNote/removeNote/
 //! setNotePitch/setNoteLength) — es ist wirklich nur die Darstellung.
 //!
-//! In BEIDEN öffnet ein Tipper auf eine gesetzte Note denselben `NoteEditor`
-//! (Tonhöhe + Länge in einem Popup, s. dort) — Länge einstellen ist damit
-//! überall gleich weit weg, nicht nur in der Spalten-Ansicht.
+//! Die Geste ist in BEIDEN Ansichten dieselbe — und bewusst die, die sich auf
+//! Step-Sequencern durchgesetzt hat (Elektron, Push, FL Studio Mobile):
+//!
+//!   kurzer Tipper  = Note setzen bzw. entfernen (ein Klick, kein Umweg)
+//!   langes Drücken = `NoteEditor` für DIESE Note (Tonhöhe, Länge, Velocity)
+//!
+//! Bewusst KEIN Umschalt-Modus („jetzt löschen"): ein Modus ist auf einem
+//! Touchdisplay ohne Mauszeiger nicht zu sehen, solange man ihn nicht bemerkt
+//! hat — und dann löscht der nächste Tipper etwas, das man setzen wollte. Das
+//! lange Drücken hängt dagegen an der Note selbst und kann nicht „anbleiben".
 
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import type { Block } from "../../state";
 import { useSend } from "../store";
 import { useNotePicker, noteName } from "../NotePicker";
 import { Button } from "../widgets/Button";
-import { StepBars, StepCell, type StepFlow } from "./StepGrid";
+import { StepBars, StepCell, RollKey, ROLL_LOW_NOTE, ROLL_HIGH_NOTE, ROLL_MAX_H, type StepFlow } from "./StepGrid";
 import { useSetField } from "../useNumberEditor";
-import { useLocalPref } from "../useLocalPref";
 import { useLongPress } from "../useLongPress";
 import { NoteEditorPopup, type NoteRef } from "./NoteEditor";
 
 export type MelodyLayout = "stack" | "grid";
 
-export function MelodyEditor({ block, flow }: { block: Block; flow: StepFlow }) {
+/** Grundnote und Ansichts-Umschalter. Sitzt NICHT über dem Raster, sondern in
+ *  der Kopfzeile des Baustein-Details (s. BlockDetail) — zwei Leisten
+ *  übereinander kosteten auf dem kleinen Display eine Rasterzeile, und die
+ *  Kopfzeile ist ohnehin die Stelle, an der man nach Schaltern sucht. Der
+ *  Zustand liegt deshalb dort und kommt als Prop zurück. */
+export function MelodyToolbar({
+  block,
+  layout,
+  setLayout,
+}: {
+  block: Block;
+  layout: MelodyLayout;
+  setLayout: (v: MelodyLayout) => void;
+}) {
   const openNotePicker = useNotePicker();
   const setField = useSetField();
-  const [layout, setLayout] = useLocalPref<MelodyLayout>("blockdetail.melodyLayout", "stack");
   const base = block.baseNote ?? 60;
 
   return (
-    <div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 16 }}>
-        <Button
-          style={{ width: 150, height: 34, fontSize: 13 }}
-          onClick={() => openNotePicker(base, (n) => setField(block.id, "baseNote", n))}
-        >
-          Base {noteName(base)} ({base})
-        </Button>
-        <Button
-          variant="alt"
-          style={{ width: 130, height: 34, fontSize: 13 }}
-          onClick={() => setLayout(layout === "stack" ? "grid" : "stack")}
-        >
-          {layout === "stack" ? "▤ Columns" : "▦ Piano roll"}
-        </Button>
-      </div>
-
-      {layout === "stack" ? <MelodyStack block={block} flow={flow} /> : <MelodyGrid block={block} flow={flow} />}
-    </div>
+    <>
+      <Button
+        style={{ width: 150, height: 40, fontSize: 14 }}
+        onClick={() => openNotePicker(base, (n) => setField(block.id, "baseNote", n))}
+      >
+        Base {noteName(base)} ({base})
+      </Button>
+      <Button
+        variant="alt"
+        style={{ width: 130, height: 40, fontSize: 14 }}
+        onClick={() => setLayout(layout === "stack" ? "grid" : "stack")}
+      >
+        {layout === "stack" ? "▤ Columns" : "▦ Piano roll"}
+      </Button>
+    </>
   );
+}
+
+export function MelodyEditor({ block, flow, layout }: { block: Block; flow: StepFlow; layout: MelodyLayout }) {
+  return layout === "stack" ? <MelodyStack block={block} flow={flow} /> : <MelodyGrid block={block} flow={flow} />;
 }
 
 // ── Spalten-Ansicht ─────────────────────────────────────────────────────────
 // Jeder Step ist eine eigene Spalte, die nach unten wächst: eine Note antippen
-// öffnet Tonhöhe UND Länge, lang drücken entfernt sie; "+" am Fuß der Spalte
-// fügt eine weitere Note am selben Step hinzu (gleichzeitiger Akkord-Stack).
+// entfernt sie, lang drücken öffnet ihren Editor; "+" am Fuß der Spalte fügt
+// eine weitere Note am selben Step hinzu (gleichzeitiger Akkord-Stack).
+
+/** Notenfeld der Spalten-Ansicht: QUADRATISCH. Vorher war es 44×28 mit einer
+ *  14px-Leiste für die Länge darunter — zwei schmale Streifen übereinander,
+ *  die man auf dem Touchdisplay beide verfehlt bzw. verwechselt. Ein Quadrat
+ *  von Fingerbreite trifft man, und Tonhöhe und Länge stehen darin. */
+const STACK_CELL = 44;
+/** Spaltenbreite = Zelle + 1px Rand auf jeder Seite. */
+const STACK_COL = STACK_CELL + 2;
 
 function MelodyStack({ block, flow }: { block: Block; flow: StepFlow }) {
   const send = useSend();
@@ -74,46 +100,44 @@ function MelodyStack({ block, flow }: { block: Block; flow: StepFlow }) {
 
   return (
     <div>
-      <StepBars totalSteps={totalSteps} stepsPerBar={stepsPerBar} cellW={46} flow={flow}>
+      <StepBars totalSteps={totalSteps} stepsPerBar={stepsPerBar} cellW={STACK_COL} flow={flow}>
         {(steps) => (
           <div style={{ display: "flex" }}>
             {steps.map((step) => {
               // Höchste Note oben, "+" wächst die Spalte nach unten weiter.
               const stepNotes = notes.filter((n) => n.step === step).sort((a, b) => b.note - a.note);
               return (
-                <div key={step} style={{ width: 44, flexShrink: 0, margin: 1, display: "flex", flexDirection: "column", gap: 2 }}>
-                  {stepNotes.map((n) => (
-                    <div key={n.note}>
+                <div
+                  key={step}
+                  style={{
+                    width: STACK_CELL,
+                    flexShrink: 0,
+                    margin: 1,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 2,
+                  }}
+                >
+                  {stepNotes.map((n) => {
+                    const len = Math.max(1, n.lengthSteps ?? 1);
+                    return (
                       <StepCell
-                        width={44}
-                        height={28}
+                        key={n.note}
+                        width={STACK_CELL}
+                        height={STACK_CELL}
                         active
-                        onClick={() => setEditing({ step, note: n.note })}
-                        onHoldClear={() => send({ t: "melody.removeNote", blockId: block.id, step, note: n.note })}
+                        onClick={() => send({ t: "melody.removeNote", blockId: block.id, step, note: n.note })}
+                        onHold={() => setEditing({ step, note: n.note })}
                       >
-                        {noteName(n.note)}
-                        <span style={{ fontSize: 9, color: "var(--pal-step-label)", marginLeft: 3 }}>{n.note}</span>
+                        {/* Tonhöhe groß, Länge klein darunter — beides IM
+                            Quadrat, damit es nur ein Ziel für den Finger gibt. */}
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", lineHeight: 1.1 }}>
+                          <span style={{ fontSize: 14, fontWeight: 700 }}>{noteName(n.note)}</span>
+                          <span style={{ fontSize: 10, color: "var(--pal-step-label)" }}>len {len}</span>
+                        </div>
                       </StepCell>
-                      <div
-                        onClick={() => setEditing({ step, note: n.note })}
-                        style={{
-                          height: 14,
-                          marginTop: 1,
-                          borderRadius: 2,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          fontSize: 9,
-                          fontWeight: 700,
-                          cursor: "pointer",
-                          color: "var(--pal-text-dim)",
-                          background: "var(--pal-panel-deep)",
-                        }}
-                      >
-                        len {n.lengthSteps ?? 1}
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                   <div
                     onClick={() =>
                       openNotePicker(stepNotes[stepNotes.length - 1]?.note ?? base, (n) =>
@@ -121,13 +145,13 @@ function MelodyStack({ block, flow }: { block: Block; flow: StepFlow }) {
                       )
                     }
                     style={{
-                      height: 22,
+                      height: 34,
                       borderRadius: 2,
                       border: "1px dashed var(--pal-text-dim)",
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
-                      fontSize: 14,
+                      fontSize: 18,
                       fontWeight: 700,
                       cursor: "pointer",
                       color: "var(--pal-text-dim)",
@@ -143,7 +167,8 @@ function MelodyStack({ block, flow }: { block: Block; flow: StepFlow }) {
       </StepBars>
 
       <div style={{ marginTop: 10, fontSize: 12, color: "var(--pal-text-dim)" }}>
-        Tap "+" to stack another note on a step (chord). Tap a note (or its "len" strip) to set pitch and length, long-press to remove it.
+        Tap a note to remove it, long-press it for pitch, length and velocity. Tap "+" at the foot of a column to add a note
+        (again for a chord on the same step).
       </div>
 
       {editing && (
@@ -155,12 +180,11 @@ function MelodyStack({ block, flow }: { block: Block; flow: StepFlow }) {
 
 // ── Piano-Roll-Ansicht ──────────────────────────────────────────────────────
 
-const ROW_H = 20;
-const CELL_W = 34;
-/** Höhe eines Piano-Roll-Ausschnitts: gut zwei Handbreit, damit auf dem
- *  Pi-Display auch bei taktweisem Layout mehr als ein Takt aufs Bild passt.
- *  Der Rest ist im Raster selbst scrollbar (senkrecht). */
-const ROLL_MAX_H = 300;
+// Quadratische Zellen: eine 34×20-Zelle ist mit dem Finger senkrecht kaum zu
+// treffen — daneben liegt sofort die nächste Tonhöhe. Gleich hoch wie breit
+// kostet Sichtfeld (der Ausschnitt scrollt ohnehin), trifft dafür.
+const ROW_H = 32;
+const CELL_W = 32;
 
 function MelodyGrid({ block, flow }: { block: Block; flow: StepFlow }) {
   const send = useSend();
@@ -170,20 +194,27 @@ function MelodyGrid({ block, flow }: { block: Block; flow: StepFlow }) {
   const base = block.baseNote ?? 60;
   const notes = block.notes ?? [];
 
-  // Tonumfang: eine Oktave um die Basis, aber immer weit genug, dass KEINE
-  // vorhandene Note aus dem Bild fällt — sonst wäre sie im Grid unsichtbar
-  // und (anders als in der Spalten-Ansicht) auch nicht mehr löschbar.
-  const pitches = notes.map((n) => n.note);
-  const low = Math.min(base - 6, ...pitches);
-  const high = Math.max(base + 18, ...pitches);
+  // Tonumfang: die volle MIDI-Skala von C0 bis G9. Kein Fenster um die
+  // Grundnote mehr — jede Tonhöhe, die ein Gerät spielen kann, soll auch im
+  // Raster setzbar sein; gescrollt wird ohnehin (Start s. data-roll-center).
   const rows: number[] = [];
-  for (let note = high; note >= low; note--) rows.push(note);
+  for (let note = ROLL_HIGH_NOTE; note >= ROLL_LOW_NOTE; note--) rows.push(note);
+
+  // Noten nach Tonhöhe vorsortiert: über 116 Zeilen × Steps würde ein
+  // `notes.find()` über ALLE Noten je Zelle spürbar bremsen, ein Blick in die
+  // Noten DIESER Zeile (meist keine oder eine) nicht.
+  const byPitch = new Map<number, typeof notes>();
+  for (const n of notes) {
+    const list = byPitch.get(n.note);
+    if (list) list.push(n);
+    else byPitch.set(n.note, [n]);
+  }
 
   /** Note, die an diesem Step ANFÄNGT. */
-  const noteAt = (step: number, pitch: number) => notes.find((n) => n.step === step && n.note === pitch);
+  const noteAt = (step: number, pitch: number) => byPitch.get(pitch)?.find((n) => n.step === step);
   /** Note, die über diesen Step hinweg KLINGT (Halten sichtbar machen). */
   const heldAt = (step: number, pitch: number) =>
-    notes.find((n) => n.note === pitch && n.step < step && n.step + Math.max(1, n.lengthSteps ?? 1) > step);
+    byPitch.get(pitch)?.find((n) => n.step < step && n.step + Math.max(1, n.lengthSteps ?? 1) > step);
 
   return (
     <div>
@@ -192,7 +223,19 @@ function MelodyGrid({ block, flow }: { block: Block; flow: StepFlow }) {
           rows.map((note) => {
             const isC = ((note % 12) + 12) % 12 === 0;
             return (
-              <div key={note} className="step-row" style={{ background: isC ? "var(--pal-panel-deep)" : "var(--pal-panel)" }}>
+              <div
+                key={note}
+                className="step-row roll-row"
+                // Anker für den Start-Scroll des Ausschnitts (s. StepScroller).
+                data-roll-center={note === base ? "" : undefined}
+                style={
+                  {
+                    background: isC ? "var(--pal-panel-deep)" : "var(--pal-panel)",
+                    // Platzhalterhöhe der ausgeblendeten Zeilen (s. .roll-row).
+                    "--roll-row-h": `${ROW_H}px`,
+                  } as CSSProperties
+                }
+              >
                 {steps.map((step) => {
                   const start = noteAt(step, note);
                   const held = !start ? heldAt(step, note) : undefined;
@@ -206,11 +249,13 @@ function MelodyGrid({ block, flow }: { block: Block; flow: StepFlow }) {
                         start ? "var(--pal-btn-active)" : held ? "var(--pal-step-held)" : "var(--pal-step-off)"
                       }
                       onTap={() => {
-                        // Auf dem Anfang: Tonhöhe/Länge im Popup. Auf dem
+                        // Auf dem Anfang: Note wieder weg — derselbe Tipper,
+                        // der sie gesetzt hat, nimmt sie zurück. Auf dem
                         // Halte-Schweif: Note bis GENAU hierher kürzen — das
                         // ist die schnelle Länge direkt im Raster, ohne Umweg.
-                        // Leere Zelle: neue Note (bleibt ein Tipper).
-                        if (start) setEditing({ step, note });
+                        // Leere Zelle: neue Note.
+                        if (start)
+                          send({ t: "melody.removeNote", blockId: block.id, step, note });
                         else if (held)
                           send({
                             t: "melody.setNoteLength",
@@ -221,25 +266,27 @@ function MelodyGrid({ block, flow }: { block: Block; flow: StepFlow }) {
                           });
                         else send({ t: "melody.addNote", blockId: block.id, step, note });
                       }}
+                      // Lang drücken öffnet den Editor dieser Note — auch vom
+                      // Halte-Schweif aus, der gehört ja zur selben Note.
                       onLongPress={
                         start || held
-                          ? () =>
-                              send({
-                                t: "melody.removeNote",
-                                blockId: block.id,
-                                step: (start ?? held)!.step,
-                                note,
-                              })
+                          ? () => setEditing({ step: (start ?? held)!.step, note })
                           : undefined
                       }
                     />
                   );
                 })}
-                {/* Notennamen am Zeilenende — im Grid gibt es sonst keinen
-                    Anhaltspunkt, auf welcher Tonhöhe man tippt. */}
-                <div style={{ paddingLeft: 6, fontSize: 9, lineHeight: `${ROW_H}px`, color: isC ? "var(--pal-text)" : "var(--pal-text-dim)" }}>
-                  {noteName(note)}
-                </div>
+                {/* Klaviatur am Zeilenende: sie sagt (wie die frühere reine
+                    Beschriftung), auf welcher Tonhöhe man tippt — und spielt
+                    sie beim Drücken an, damit man eine Note hören kann, bevor
+                    man sie setzt. Gedrückt halten = Ton hält (s. RollKey). */}
+                <RollKey
+                  note={note}
+                  label={noteName(note)}
+                  height={ROW_H}
+                  onPress={() => send({ t: "block.previewNote", blockId: block.id, note, on: true })}
+                  onRelease={() => send({ t: "block.previewNote", blockId: block.id, note, on: false })}
+                />
               </div>
             );
           })
@@ -247,8 +294,8 @@ function MelodyGrid({ block, flow }: { block: Block; flow: StepFlow }) {
       </StepBars>
 
       <div style={{ marginTop: 10, fontSize: 12, color: "var(--pal-text-dim)" }}>
-        Tap an empty cell to place a note, tap the note itself for pitch and length, tap its trail to end it there. Long-press
-        removes.
+        Tap an empty cell to place a note, tap the note again to remove it, tap its trail to end it there. Long-press a note for
+        pitch, length and velocity. Hold a key at the end of a row to hear that pitch.
       </div>
 
       {editing && (

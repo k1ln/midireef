@@ -196,6 +196,9 @@ Navigation: Overview → Device → Lane → Baustein (immer tiefer, immer touch
 - **Dev:** macOS (CoreMIDI). Server + UI lokal, Browser im Fenster.
 - **Deploy:** Raspberry Pi 5, Chromium im Kiosk-Modus (`--kiosk`), Server als `systemd`-Service, MIDI über ALSA.
 - Ein virtuelles Touch-Keyboard wird in der UI implementiert (nicht das OS-Keyboard), damit alles im Look bleibt.
+- **Ein Dienst, ein Port:** der Rust-Server liefert unter demselben Port (8787) sowohl `/ws` als auch das gebaute UI aus (`MIDIREEF_UI_DIR`, Default `./ui`) — kein nginx, kein zweiter Dienst, der Kiosk zeigt schlicht `http://localhost:8787`.
+- **Selbst-Reload nach Deploy:** der Server schickt beim Verbinden `server.hello` mit der Build-Kennung aus `<ui-dir>/.build-id`. Weil `net.ts` nach einem Dienst-Neustart ohnehin reconnected, erkennt die UI eine geänderte Kennung und lädt sich selbst neu — auf einem Kiosk ohne Tastatur die einzige Möglichkeit, an eine neue Version zu kommen. Chromium muss dafür nicht neu starten.
+- **Werkzeuge:** Ersteinrichtung und beide Deploy-Wege (schneller Watch-Loop vs. Release aus Git) stehen in [`deploy/README.md`](../deploy/README.md); Einstieg über das `Makefile` im Repo-Wurzelverzeichnis.
 
 ---
 

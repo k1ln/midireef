@@ -1,44 +1,27 @@
-//! Quadratische Slot-Kachel — React-Port des slotTile() aus ui/overview.ts.
-//! Oberer Streifen = Tap (trigger) / Long-Press (Kontextmenü, via onLongPress
-//! an Overview delegiert); darunter Transpose-Stepper, Speed (links) und
-//! Repeat + Delete (rechts) — alles per Slot, direkt in der Lane bedienbar.
+//! Slot-Kachel — zwei Zonen (Ableton-„Session"-Prinzip):
 //!
-//! Laufzeit-Feedback (`play-fill`/`play-glow`, Klassen + `--play`) kommt nicht
-//! aus dem Render, sondern wird von der RuntimeFeed pro Frame direkt ins DOM
-//! geschrieben — siehe app/runtime.ts.
+//!   • KÖRPER (oben, ~60 %): Antippen WÄHLT den Baustein aus (kein Ton) und
+//!     lädt ihn in das rechte Andock-Feld (BlockDock). Zeigt Id, Name und
+//!     schreibgeschützte Status-Chips (Transpose / Loop / Speed).
+//!   • TRIGGER-LEISTE (unten, ~40 %): Antippen löst den Baustein aus. Bei den
+//!     Lane-Play-Modes „hold"/„oneShot" per Touch-Down/-Up
+//!     (`block.press` / `block.release`), sonst per Klick (`block.trigger`).
+//!
+//! Im Sperr-Modus (lane-lock) fällt der Körper weg — die ganze Kachel ist dann
+//! nur noch Trigger. Alle Bearbeitungs-Aktionen (Transpose, Speed, Loop, nach
+//! links/rechts schieben, tauschen, editieren, entfernen) sitzen im BlockDock.
+//!
+//! Laufzeit-Feedback (`play-fill`/`play-glow`, Klassen + `--play`) schreibt die
+//! RuntimeFeed pro Frame direkt ins DOM — siehe app/runtime.ts.
 
+import { useEffect, useRef } from "react";
 import type { Lane, Block, Slot } from "../../state";
 import { useRuntimeTile, useSend } from "../store";
-import { Button } from "../widgets/Button";
-import { SelectMenu, type SelectOption } from "../widgets/SelectMenu";
-import { useLongPress } from "../useLongPress";
 
-const SPEED_PRESETS = [0.25, 0.5, 1, 2, 4, 8, 16, 32, 64, 128];
-const SPEED_OPTIONS: SelectOption<number>[] = SPEED_PRESETS.map((s) => ({ value: s, label: `×${s}` }));
-
-// Repeat-Zyklus: 1× (kein Loop) → ∞ (endlos) → ×2…×8 (Zähl-Loop). Deckt sich
-// mit LoopMode/loopCount im Modell.
-const LOOP_STEPS: { mode: string; count?: number; label: string }[] = [
-  { mode: "off", label: "1×" },
-  { mode: "loop", label: "∞" },
-  { mode: "count", count: 2, label: "×2" },
-  { mode: "count", count: 3, label: "×3" },
-  { mode: "count", count: 4, label: "×4" },
-  { mode: "count", count: 8, label: "×8" },
-];
-const LOOP_OPTIONS: SelectOption<number>[] = LOOP_STEPS.map((s, i) => ({ value: i, label: s.label }));
-
-function loopLabel(slot: Slot): string {
+function loopBadge(slot: Slot): string | null {
   if (slot.loopMode === "loop") return "∞";
   if (slot.loopMode === "count") return `×${slot.loopCount ?? 2}`;
-  return "1×";
-}
-
-function currentLoopIndex(slot: Slot): number {
-  const i = LOOP_STEPS.findIndex(
-    (s) => s.mode === slot.loopMode && (s.mode !== "count" || s.count === (slot.loopCount ?? 2)),
-  );
-  return i < 0 ? 0 : i;
+  return null;
 }
 
 export interface SlotTileProps {
@@ -46,92 +29,88 @@ export interface SlotTileProps {
   slot: Slot;
   blk: Block | undefined;
   locked: boolean;
-  onLongPress: () => void;
+  selected: boolean;
+  onSelect: () => void;
 }
 
-export function SlotTile({ lane, slot, blk, locked, onLongPress }: SlotTileProps) {
+export function SlotTile({ lane, slot, blk, locked, selected, onSelect }: SlotTileProps) {
   const send = useSend();
   const runtimeRef = useRuntimeTile(lane.id, slot.id);
   const transpose = slot.transpose ?? 0;
   const speed = slot.speed ?? 1;
 
-  // Im Sperr-Modus bleibt nur das Antippen (Block auslösen) übrig — das lange
-  // Drücken (Kontextmenü mit Löschen/Tauschen) ist aus, damit während einer
-  // Live-Performance kein Fehlgriff etwas verstellt.
-  const idStripProps = useLongPress(
-    locked ? () => {} : onLongPress,
-    () => send({ t: "block.trigger", laneId: lane.id, slotId: slot.id }),
-  );
+  // „hold" / „oneShot": die Trigger-Leiste schaltet die (sonst stumme) Lane per
+  // Touch scharf. hold hält nur solange gedrückt, oneShot spielt einmal durch.
+  const gated = lane.playMode === "hold" || lane.playMode === "oneShot";
+  const isHold = lane.playMode === "hold";
+  const press = () => send({ t: "block.press", laneId: lane.id, slotId: slot.id });
+  const release = () => send({ t: "block.release", laneId: lane.id, slotId: slot.id });
+
+  // Sicherheitsnetz: wird die Kachel gehalten und dann abgeräumt (Screen-Wechsel,
+  // Lane gelöscht), sonst bliebe eine "hold"-Lane hängen und würde weiterklingen.
+  const heldRef = useRef(false);
+  useEffect(() => () => {
+    if (heldRef.current) release();
+  }, []);
+
+  const endHold = () => {
+    if (heldRef.current) {
+      heldRef.current = false;
+      release();
+    }
+  };
+  const triggerProps = gated
+    ? {
+        onPointerDown: () => {
+          heldRef.current = isHold;
+          press();
+        },
+        onPointerUp: isHold ? endHold : undefined,
+        onPointerCancel: isHold ? endHold : undefined,
+        onPointerLeave: isHold ? endHold : undefined,
+      }
+    : { onClick: () => send({ t: "block.trigger", laneId: lane.id, slotId: slot.id }) };
+
+  const idLabel = blk?.slot ? `${blk.slot.row}-${blk.slot.col}` : "?";
+  const loop = loopBadge(slot);
+  const triggerLabel = gated ? (isHold ? "◉ HOLD" : "▶ ONCE") : "▶";
+  const cls = ["slot-tile", locked ? "locked" : "", selected ? "selected" : ""].filter(Boolean).join(" ");
 
   return (
-    <div className="slot-tile" ref={runtimeRef}>
-      {/* Wiedergabe-Anzeige: Fortschritts-Sweep + Playhead, darüber der Rahmen,
-          der am Blockstart anblitzt und am Blockende ausblendet. */}
+    <div className={cls} ref={runtimeRef}>
+      {/* Wiedergabe-Anzeige: Fortschritts-Sweep + Playhead. */}
       <div className="play-fill" aria-hidden="true" />
       <div className="play-glow" aria-hidden="true" />
 
+      {/* ── Körper: auswählen (kein Ton) ── */}
       {!locked && (
-        <Button
-          variant="danger"
-          className="delete-badge"
-          onClick={() => {
-            if (blk) send({ t: "block.delete", blockId: blk.id });
-            else send({ t: "laneSlot.remove", laneId: lane.id, slotId: slot.id });
-          }}
+        <button
+          type="button"
+          className="slot-body"
+          style={{ color: lane.color || undefined }}
+          title="Select — load this block into the dock (no sound)"
+          onClick={onSelect}
         >
-          ✕
-        </Button>
+          <span className="slot-id">{idLabel}</span>
+          {blk?.name ? <span className="slot-name">{blk.name}</span> : null}
+          <span className="slot-badges">
+            {transpose !== 0 && <span className="slot-badge">{transpose > 0 ? `▲+${transpose}` : `▼${transpose}`}</span>}
+            {loop && <span className="slot-badge">{loop}</span>}
+            {speed !== 1 && <span className="slot-badge">×{speed}</span>}
+          </span>
+        </button>
       )}
 
-      <div className="id-strip" style={{ color: lane.color || undefined }} {...idStripProps}>
-        {blk?.slot ? `${blk.slot.row}-${blk.slot.col}` : "?"}
-      </div>
-
-      <div className="transpose-row">
-        <Button
-          style={{ width: 52, height: 52, fontSize: 22 }}
-          disabled={locked}
-          onClick={() => send({ t: "block.setTranspose", laneId: lane.id, slotId: slot.id, transpose: transpose - 1 })}
-        >
-          –
-        </Button>
-        <span className="transpose-value">{transpose > 0 ? `+${transpose}` : transpose}</span>
-        <Button
-          style={{ width: 52, height: 52, fontSize: 22 }}
-          disabled={locked}
-          onClick={() => send({ t: "block.setTranspose", laneId: lane.id, slotId: slot.id, transpose: transpose + 1 })}
-        >
-          +
-        </Button>
-      </div>
-
-      <div className="bottom-row">
-        <SelectMenu
-          variant="alt"
-          className="speed-btn"
-          title="Speed"
-          buttonLabel={`×${speed}`}
-          buttonTitle="Playback speed of this block"
-          disabled={locked}
-          value={speed}
-          options={SPEED_OPTIONS}
-          onChange={(next) => send({ t: "block.setSpeed", laneId: lane.id, slotId: slot.id, speed: next })}
-        />
-        <SelectMenu
-          variant="alt"
-          className={slot.loopMode === "loop" ? "loop-btn loop-on" : "loop-btn"}
-          title="Repeat"
-          buttonLabel={loopLabel(slot)}
-          buttonTitle="How often this block repeats before the lane moves on"
-          disabled={locked}
-          value={currentLoopIndex(slot)}
-          options={LOOP_OPTIONS}
-          onChange={(i) => {
-            const step = LOOP_STEPS[i];
-            send({ t: "block.setLoop", laneId: lane.id, slotId: slot.id, loop: step.mode, count: step.count });
-          }}
-        />
-      </div>
+      {/* ── Trigger-Leiste: auslösen ── */}
+      <button
+        type="button"
+        className="slot-trigger"
+        style={{ color: lane.color || undefined }}
+        title={gated ? (isHold ? "Hold to play" : "Tap to play once") : "Tap to trigger"}
+        {...triggerProps}
+      >
+        {triggerLabel}
+      </button>
     </div>
   );
 }

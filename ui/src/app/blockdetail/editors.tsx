@@ -12,7 +12,7 @@ import { useSend } from "../store";
 import { noteName } from "../NotePicker";
 import { Button } from "../widgets/Button";
 import { Popup } from "../widgets/Popup";
-import { StepScroller, StepBars, StepCell, type StepFlow } from "./StepGrid";
+import { StepScroller, StepBars, StepCell, ROLL_LOW_NOTE, ROLL_HIGH_NOTE, ROLL_MAX_H, type StepFlow } from "./StepGrid";
 import { useNumberEditor, useSetField } from "../useNumberEditor";
 
 const DIRECTIONS = ["up", "down", "upDown", "random", "asPlayed"];
@@ -93,13 +93,13 @@ export function ChordEditor({ block, flow }: { block: Block; flow: StepFlow }) {
   const stepsPerBar = block.stepsPerBar ?? 16;
   const totalSteps = stepsPerBar * (block.lengthBars ?? 1);
   const base = block.baseNote ?? 60;
-  const low = base - 6;
-  const high = base + 18;
   const chords = block.chords ?? [];
   const hasNote = (step: number, note: number) => chords.some((c) => c.step === step && c.notes.includes(note));
 
+  // Volle MIDI-Skala wie in der Melodie-Rolle (s. MelodyGrid), gedeckelt und
+  // senkrecht scrollbar — der Ausschnitt startet auf der Grundnote.
   const rows: number[] = [];
-  for (let note = high; note >= low; note--) rows.push(note);
+  for (let note = ROLL_HIGH_NOTE; note >= ROLL_LOW_NOTE; note--) rows.push(note);
 
   return (
     <div>
@@ -110,12 +110,17 @@ export function ChordEditor({ block, flow }: { block: Block; flow: StepFlow }) {
         Base {noteName(base)}
       </Button>
 
-      <StepBars totalSteps={totalSteps} stepsPerBar={stepsPerBar} cellW={34} flow={flow}>
+      <StepBars totalSteps={totalSteps} stepsPerBar={stepsPerBar} cellW={34} flow={flow} maxHeight={ROLL_MAX_H}>
         {(steps) =>
           rows.map((note) => {
             const isC = ((note % 12) + 12) % 12 === 0;
             return (
-              <div key={note} className="step-row" style={{ background: isC ? "var(--pal-panel-deep)" : "var(--pal-panel)" }}>
+              <div
+                key={note}
+                className="step-row roll-row"
+                data-roll-center={note === base ? "" : undefined}
+                style={{ background: isC ? "var(--pal-panel-deep)" : "var(--pal-panel)" }}
+              >
                 {steps.map((step) => {
                   const on = hasNote(step, note);
                   return (
@@ -227,7 +232,7 @@ export function ProgramChangeEditor({ block, flow }: { block: Block; flow: StepF
                 onClick={() =>
                   numberEdit(evt?.program ?? 0, 0, 127, (n) => send({ t: "programChange.setEvent", blockId: block.id, step, program: n }))
                 }
-                onHoldClear={evt ? () => send({ t: "programChange.setEvent", blockId: block.id, step, program: null }) : undefined}
+                onHold={evt ? () => send({ t: "programChange.setEvent", blockId: block.id, step, program: null }) : undefined}
               >
                 {evt ? `PC${evt.program}` : ""}
               </StepCell>
@@ -265,7 +270,7 @@ export function PatternShiftEditor({ block, flow }: { block: Block; flow: StepFl
                   height={40}
                   active={!!msg}
                   onClick={() => setPickerStep(step)}
-                  onHoldClear={msg ? () => send({ t: "patternShift.setEvent", blockId: block.id, step, kind: null }) : undefined}
+                  onHold={msg ? () => send({ t: "patternShift.setEvent", blockId: block.id, step, kind: null }) : undefined}
                 >
                   {short}
                 </StepCell>

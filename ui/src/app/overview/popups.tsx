@@ -11,6 +11,7 @@ import { Button } from "../widgets/Button";
 // Stable reference for the useSyncExternalStore selector — see the
 // EMPTY_DEVICES comment in Dashboard.tsx.
 const EMPTY_CONTROLS: LiveControl[] = [];
+const EMPTY_BLOCKS: Block[] = [];
 
 export const ROLES: { role: string; label: string }[] = [
   { role: "melody", label: "Melody" },
@@ -91,7 +92,7 @@ export function CcTargetPickerPopup({ lane, dev, onClose }: { lane: Lane; dev: D
       <div className="popup-title">CC target — {dev.name}</div>
       <div style={{ fontSize: 13, color: "var(--pal-text-dim)", marginBottom: 12 }}>
         The blocks in this lane supply the movement; this knob picks the CC number. The channel comes from the
-        lane (currently {lane.channel ?? dev.channel}).
+        lane (currently Ch {lane.channel}).
       </div>
       {knobs.length === 0 ? (
         <div style={{ color: "var(--pal-text-dim)", fontSize: 15 }}>
@@ -131,9 +132,10 @@ export function CcTargetPickerPopup({ lane, dev, onClose }: { lane: Lane; dev: D
 
 /** "＋" auf einer Lane: neu anlegen ODER einen vorhandenen Baustein
  *  (gleicher Typ, noch nicht in dieser Lane) per ID auswählen. */
-export function AddBlockPickerPopup({ lane, dev, onClose }: { lane: Lane; dev: Device; onClose: () => void }) {
+export function AddBlockPickerPopup({ lane, onClose }: { lane: Lane; onClose: () => void }) {
   const send = useSend();
-  const existing = (dev.blocks ?? []).filter(
+  const blocks = useStoreValue((s) => (s.project?.blocks as Block[] | undefined) ?? EMPTY_BLOCKS);
+  const existing = blocks.filter(
     (b) => b.type === lane.role && !lane.slots.some((s) => s.blockId === b.id),
   );
   return (
@@ -172,19 +174,18 @@ export function AddBlockPickerPopup({ lane, dev, onClose }: { lane: Lane; dev: D
  *  Baustein — der Slot selbst (Transpose/Speed/Loop-Mode) bleibt erhalten. */
 export function SwapPickerPopup({
   lane,
-  dev,
   slotId,
   currentBlockId,
   onClose,
 }: {
   lane: Lane;
-  dev: Device;
   slotId: string;
   currentBlockId: string;
   onClose: () => void;
 }) {
   const send = useSend();
-  const candidates = (dev.blocks ?? []).filter(
+  const blocks = useStoreValue((s) => (s.project?.blocks as Block[] | undefined) ?? EMPTY_BLOCKS);
+  const candidates = blocks.filter(
     (b) => b.type === lane.role && b.id !== currentBlockId && !lane.slots.some((s) => s.blockId === b.id),
   );
   return (
@@ -212,64 +213,3 @@ export function SwapPickerPopup({
   );
 }
 
-/** Long-Press auf eine Slot-Kachel: Kontextmenü statt Direkt-Aktion. */
-export function BlockContextMenuPopup({
-  lane,
-  slotId,
-  blk,
-  onClose,
-  onOpenBlock,
-  onSwap,
-}: {
-  lane: Lane;
-  slotId: string;
-  blk: Block | undefined;
-  onClose: () => void;
-  onOpenBlock: (blockId: string) => void;
-  onSwap: () => void;
-}) {
-  const send = useSend();
-  const title = blk ? `Block ${blk.slot ? `${blk.slot.row}-${blk.slot.col}` : blk.name || "?"}` : "Block";
-  return (
-    <Popup onClose={onClose}>
-      <div className="popup-title">{title}</div>
-      {blk ? (
-        <>
-          <Button
-            className="popup-row"
-            onClick={() => {
-              onClose();
-              onOpenBlock(blk.id);
-            }}
-          >
-            Edit
-          </Button>
-          <Button className="popup-row" onClick={onSwap}>
-            Swap block
-          </Button>
-          <Button
-            variant="danger"
-            className="popup-row"
-            onClick={() => {
-              onClose();
-              send({ t: "block.delete", blockId: blk.id });
-            }}
-          >
-            Delete
-          </Button>
-        </>
-      ) : (
-        <Button
-          variant="danger"
-          className="popup-row"
-          onClick={() => {
-            onClose();
-            send({ t: "laneSlot.remove", laneId: lane.id, slotId });
-          }}
-        >
-          Remove from lane
-        </Button>
-      )}
-    </Popup>
-  );
-}

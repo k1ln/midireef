@@ -2,90 +2,85 @@
 //! Steps (Beat/CC/…) editieren. Geöffnet von der Sequencer-Übersicht per
 //! langem Druck auf eine Slot-Kachel.
 
-import { useMemo } from "react";
-import type { Block, BlockType, Device } from "../state";
+import type { Block, BlockType } from "../state";
 import { useSend, useStoreValue, useRuntimeBlock } from "./store";
 import { useTouchKeyboard } from "./TouchKeyboard";
 import { Button } from "./widgets/Button";
 import { TRANSPORT_H } from "./layout";
 import { BeatEditor, ChordEditor, ArpEditor, ProgramChangeEditor, PatternShiftEditor } from "./blockdetail/editors";
-import { MelodyEditor } from "./blockdetail/MelodyEditor";
+import { MelodyEditor, MelodyToolbar, type MelodyLayout } from "./blockdetail/MelodyEditor";
 import type { StepFlow } from "./blockdetail/StepGrid";
 import { useLocalPref } from "./useLocalPref";
 import { CcEditor } from "./blockdetail/CcEditor";
 import { BlockLengthControls } from "./blockdetail/LengthControls";
 import { BlockRuntimeStatus } from "./blockdetail/RuntimeStatus";
 
-interface FoundBlock {
-  block: Block;
-  device: Device;
-}
-
 // Stable reference for the useSyncExternalStore selector below — see the
 // EMPTY_DEVICES comment in Dashboard.tsx.
-const EMPTY_DEVICES: Device[] = [];
+const EMPTY_BLOCKS: Block[] = [];
 
 export interface BlockDetailProps {
   blockId: string;
   onClose: () => void;
-  onMove: (deviceId: string, blockId: string, blockType: BlockType) => void;
+  onMove: (blockId: string, blockType: BlockType) => void;
 }
 
 export function BlockDetail({ blockId, onClose, onMove }: BlockDetailProps) {
   const send = useSend();
   const openKeyboard = useTouchKeyboard();
-  const devices = useStoreValue((s) => s.project?.devices ?? EMPTY_DEVICES);
-  // Derived via useMemo (not directly in the useSyncExternalStore selector)
-  // because constructing a fresh `{ block, device }` object on every
-  // getSnapshot call would never satisfy Object.is and spin React into an
-  // infinite update loop.
-  const found = useMemo<FoundBlock | undefined>(() => {
-    for (const dev of devices) {
-      const block = dev.blocks?.find((b) => b.id === blockId);
-      if (block) return { block, device: dev };
-    }
-    return undefined;
-  }, [devices, blockId]);
+  const blocks = useStoreValue((s) => (s.project?.blocks as Block[] | undefined) ?? EMPTY_BLOCKS);
+  const block = blocks.find((b) => b.id === blockId);
 
   return (
     <div style={{ position: "fixed", inset: 0, top: TRANSPORT_H, background: "var(--pal-water-deep)", overflowY: "auto", padding: 16 }}>
-      <Button variant="alt" style={{ width: 130, height: 40, fontSize: 17 }} onClick={onClose}>
-        ← Back
-      </Button>
-
-      {!found ? (
-        <div style={{ marginTop: 24, color: "var(--pal-text-dim)", fontSize: 18 }}>Block no longer exists.</div>
+      {!block ? (
+        <>
+          {/* Ohne Baustein gibt es keine Kopfzeile, die das Zurück tragen
+              könnte — hier steht der Pfeil deshalb für sich. */}
+          <Button variant="alt" style={{ width: 56, height: 40, fontSize: 20 }} title="Back" onClick={onClose}>
+            ←
+          </Button>
+          <div style={{ marginTop: 24, color: "var(--pal-text-dim)", fontSize: 18 }}>Block no longer exists.</div>
+        </>
       ) : (
-        <BlockDetailBody found={found} onClose={onClose} onMove={onMove} openKeyboard={openKeyboard} send={send} />
+        <BlockDetailBody block={block} onClose={onClose} onMove={onMove} openKeyboard={openKeyboard} send={send} />
       )}
     </div>
   );
 }
 
 function BlockDetailBody({
-  found,
+  block,
   onClose,
   onMove,
   openKeyboard,
   send,
 }: {
-  found: FoundBlock;
+  block: Block;
   onClose: () => void;
-  onMove: (deviceId: string, blockId: string, blockType: BlockType) => void;
+  onMove: (blockId: string, blockType: BlockType) => void;
   openKeyboard: ReturnType<typeof useTouchKeyboard>;
   send: ReturnType<typeof useSend>;
 }) {
-  const { block, device } = found;
   // Wurzel des Editors: hier hängen die Laufzeit-Klassen und -Variablen, die
   // Status-Chip und Step-Playheads weiter unten per CSS erben (runtime.ts).
   const runtimeRef = useRuntimeBlock(block.id);
   // Ansichts-Vorliebe, kein Projekt-Feld: taktweise untereinander oder eine
   // lange Reihe. Bleibt über Screen-Wechsel hinweg stehen (localStorage).
   const [flow, setFlow] = useLocalPref<StepFlow>("blockdetail.stepFlow", "wrap");
+  // Wie `flow` eine reine Ansichtssache — sie liegt hier, weil ihr Schalter in
+  // der Kopfzeile sitzt (s. MelodyToolbar) und das Raster darunter.
+  const [melodyLayout, setMelodyLayout] = useLocalPref<MelodyLayout>("blockdetail.melodyLayout", "stack");
 
   return (
     <div ref={runtimeRef} className="block-detail">
-      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 16, margin: "16px 0" }}>
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        {/* Zurück als reiner Pfeil und IN der Kopfzeile: die eigene Zeile
+            darüber kostete auf dem kleinen Display nur Höhe, und "Back" neben
+            dem Pfeil sagt nichts, was der Pfeil nicht schon sagt. */}
+        <Button variant="alt" style={{ width: 56, height: 40, fontSize: 20 }} title="Back" onClick={onClose}>
+          ←
+        </Button>
         <div
           style={{ fontSize: 26, fontWeight: 700, cursor: "pointer" }}
           onClick={() =>
@@ -101,6 +96,12 @@ function BlockDetailBody({
         {/* Raster des Bausteins — Takte und Substeps pro Takt. Gehört zum
             Baustein (nicht zur Lane), gilt also überall, wo er steckt. */}
         <BlockLengthControls block={block} />
+
+        {/* Grundnote und Spalten/Piano-Roll — die Schalter der Melodie gehören
+            in dieselbe Leiste wie Länge und Raster, nicht in eine zweite. */}
+        {block.type === "melody" && (
+          <MelodyToolbar block={block} layout={melodyLayout} setLayout={setMelodyLayout} />
+        )}
 
         {/* Nur sinnvoll, solange es überhaupt mehr als einen Takt gibt. */}
         {(block.lengthBars ?? 1) > 1 && (
@@ -125,7 +126,7 @@ function BlockDetailBody({
           style={{ width: 100, height: 40, fontSize: 15, marginLeft: "auto" }}
           onClick={() => {
             onClose();
-            onMove(device.id, block.id, block.type as BlockType);
+            onMove(block.id, block.type as BlockType);
           }}
         >
           ⇄ Move
@@ -144,7 +145,7 @@ function BlockDetailBody({
 
       <BlockRuntimeStatus block={block} />
 
-      {block.type === "melody" && <MelodyEditor block={block} flow={flow} />}
+      {block.type === "melody" && <MelodyEditor block={block} flow={flow} layout={melodyLayout} />}
       {block.type === "beat" && <BeatEditor block={block} flow={flow} />}
       {block.type === "chord" && <ChordEditor block={block} flow={flow} />}
       {block.type === "arp" && <ArpEditor block={block} />}

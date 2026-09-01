@@ -7,6 +7,9 @@
 //! als `transform: scale`, dem genau diese fixierten Ebenen entkämen.
 
 const KEY = "ui.scale";
+// Feuert nach jeder Skalierungs-Änderung — der Pixi-Hintergrund (background.ts)
+// hört mit, um sein Canvas neu zu bemessen (es lebt im gezoomten <html> mit).
+export const UI_SCALE_EVENT = "ui-scale-change";
 export const UI_SCALE_MIN = 0.6;
 export const UI_SCALE_MAX = 1.8;
 export const UI_SCALE_STEP = 0.1;
@@ -28,6 +31,7 @@ export function getUiScale(): number {
 export function applyUiScale(scale: number): void {
   // `zoom` ist kein Standard-CSSStyleDeclaration-Feld → als Zeichenkette setzen.
   (document.documentElement.style as unknown as Record<string, string>).zoom = String(scale);
+  window.dispatchEvent(new Event(UI_SCALE_EVENT));
 }
 
 export function setUiScale(scale: number): number {

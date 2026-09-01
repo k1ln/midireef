@@ -6,6 +6,14 @@
 //! Schnell-Längen zum Antippen und einen ±-Stepper; das Keyboard braucht die
 //! Notenlänge gar nicht mehr.
 //!
+//! Erreichbar ist er über LANGES Drücken auf eine Note (in beiden Ansichten) —
+//! der kurze Tipper setzt bzw. entfernt sie, s. MelodyEditor.
+//!
+//! Bewusst breit (POPUP_W): auf 320px brachen die Längen- und Velocity-Presets
+//! auf vier Zeilen um, das Popup wurde höher als der Bildschirm und musste
+//! gescrollt werden. In der Breite steht alles nebeneinander und die Tasten
+//! dürfen fingergerecht groß sein.
+//!
 //! Der Editor hält KEINEN eigenen Zustand: er liest die Note bei jedem Render
 //! frisch aus dem Baustein und schickt pro Änderung ein Kommando. So zeigt er
 //! immer das, was der Server wirklich gespeichert hat (der z.B. eine Tonhöhe
@@ -23,6 +31,10 @@ const LENGTH_PRESETS = [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64];
 /** Schnell-Anschlagstärken — grob von „gerade noch da" bis Vollgas. 0 fehlt
  *  absichtlich: das wäre auf dem Draht ein Note-Off (s. `melody.setNoteVelocity`). */
 const VELOCITY_PRESETS = [20, 40, 60, 80, 100, 127];
+
+/** Breite des Popups. Deckelt sich auf schmalen Displays selbst
+ *  (`.modal-box { max-width: calc(100vw - 40px) }` in theme.css). */
+const POPUP_W = 560;
 
 /** Schrittweite der ±-Tasten für die Velocity — 1 wäre auf dem Touchdisplay
  *  nicht zu treffen, und hörbar wird ohnehin erst ein größerer Sprung. */
@@ -90,7 +102,7 @@ export function NoteEditorPopup({
   const presets = LENGTH_PRESETS.filter((n) => n <= totalSteps);
 
   return (
-    <Popup onClose={onClose} boxStyle={{ width: 320 }}>
+    <Popup onClose={onClose} boxStyle={{ width: POPUP_W }}>
       <div className="popup-title">Note · step {target.step + 1}</div>
 
       {/* ── Tonhöhe ── */}
@@ -102,7 +114,7 @@ export function NoteEditorPopup({
           −1
         </Button>
         <Button
-          style={{ flex: 1, height: 46, fontSize: 17, fontWeight: 700 }}
+          style={{ flex: 1, height: 50, fontSize: 18, fontWeight: 700 }}
           onClick={() => openNotePicker(note.note, setPitch)}
         >
           {noteName(note.note)} ({note.note})
@@ -124,7 +136,7 @@ export function NoteEditorPopup({
           <Button
             key={n}
             variant={n === len ? "active" : "alt"}
-            style={{ width: 46, height: 40, fontSize: 15 }}
+            style={{ width: 58, height: 46, fontSize: 16 }}
             onClick={() => setLength(n)}
           >
             {n}
@@ -140,7 +152,7 @@ export function NoteEditorPopup({
         </Button>
         <Button
           variant="alt"
-          style={{ flex: 1, height: 46, fontSize: 14 }}
+          style={{ flex: 1, height: 50, fontSize: 15 }}
           disabled={len >= totalSteps - target.step}
           onClick={() => setLength(totalSteps - target.step)}
         >
@@ -155,7 +167,7 @@ export function NoteEditorPopup({
           <Button
             key={n}
             variant={n === vel ? "active" : "alt"}
-            style={{ width: 46, height: 40, fontSize: 15 }}
+            style={{ width: 58, height: 46, fontSize: 16 }}
             onClick={() => setVelocity(n)}
           >
             {n}
@@ -179,7 +191,7 @@ export function NoteEditorPopup({
       <div style={{ display: "flex", gap: 8 }}>
         <Button
           variant="danger"
-          style={{ flex: 1, height: 46, fontSize: 15 }}
+          style={{ flex: 1, height: 50, fontSize: 16 }}
           onClick={() => {
             send({ t: "melody.removeNote", blockId: block.id, step: target.step, note: note.note });
             onClose();
@@ -187,7 +199,7 @@ export function NoteEditorPopup({
         >
           Remove
         </Button>
-        <Button variant="active" style={{ flex: 1, height: 46, fontSize: 15 }} onClick={onClose}>
+        <Button variant="active" style={{ flex: 1, height: 50, fontSize: 16 }} onClick={onClose}>
           Done
         </Button>
       </div>
@@ -195,7 +207,7 @@ export function NoteEditorPopup({
   );
 }
 
-const STEP_BTN = { width: 52, height: 46, fontSize: 15 } as const;
+const STEP_BTN = { width: 62, height: 50, fontSize: 16 } as const;
 
 /** Länge zusätzlich in Takten ausdrücken — „4 steps" sagt bei 16/Takt wenig,
  *  „¼ bar" dafür sofort etwas. */

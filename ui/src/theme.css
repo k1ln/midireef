@@ -48,16 +48,58 @@
   --pal-step-label: #5a5a5a; /* Beischrift IN einer aktiven (hellen) Zelle */
   --pal-step-border: #3a3a3a; /* Zellrahmen */
 
-  --radius: 12px;
+  /* Klaviatur am Rand der Piano-Rolle (anspielbar, s. `.roll-key`). Bewusst
+     wie an einer echten Klaviatur zweifarbig: die Halbtöne dunkel, damit man
+     die Oktave beim Blick auf den Rand sofort liest. */
+  --pal-key-white: #d8d8d8;
+  --pal-key-black: #1c1c1c;
+  --pal-key-down: var(--pal-btn-active); /* Taste unter dem Finger */
+
+  --radius: 0px;
+
+  /* Hi-Fi-Schimmer — kühles Fast-Weiß (Weiß mit einem Hauch Blau). Alle
+     Glanz-Effekte (Wortmarke, Knopf-Fase, Leisten-Glint) ziehen hieraus.
+     Für satten Blau-Schimmer im „modernen" Look genügt es, das hier auf z.B.
+     #46d6ff / 70, 214, 255 umzustellen. */
+  --pal-shimmer: #eaf6ff;
+  --pal-shimmer-rgb: 234, 246, 255;
 }
 
 * {
   box-sizing: border-box;
 }
 
+/* Durchgehend eckige Kanten — überschreibt jedes border-radius (auch die
+   inline in den TSX-Komponenten gesetzten und die 50%/999px-Pillen/Punkte). */
+*,
+*::before,
+*::after {
+  border-radius: 0 !important;
+}
+
 body {
-  font-family: system-ui, sans-serif;
+  /* Geist (self-hosted, s. main.tsx) — durchgängige, geräteunabhängige
+     Produkt-Schrift. system-ui bleibt als Fallback, falls das Bundle fehlt. */
+  font-family: "Geist Variable", system-ui, sans-serif;
   color: var(--pal-text);
+  /* Ziffern überall gleich breit — springt sonst bei BPM/Position/Beat. */
+  font-feature-settings: "tnum" 1, "cv01" 1;
+}
+
+/* Technische Zahlen-Anzeigen in Geist Mono — die Transport-Readouts (BPM,
+   Position) tragen `.mono` direkt; die Klassen unten sind die übrigen festen
+   Zahlenfelder im UI (Takt-Marke, Transponier-Wert, Step-Zähler). */
+.mono,
+.bar-label,
+.slot-tile .transpose-value,
+.runtime-chip {
+  font-family: "Geist Mono Variable", ui-monospace, "SF Mono", monospace;
+  font-feature-settings: "tnum" 1, "zero" 1;
+  /* Leichtes Nachleuchten wie eine VFD-Anzeige im HiFi-Receiver: knackiger
+     Kern + zarter Halo im Shimmer-Ton. Bewusst dezent — nur ein Hauch. */
+  text-shadow:
+    0 0 1px rgba(var(--pal-shimmer-rgb), 0.5),
+    0 0 7px rgba(var(--pal-shimmer-rgb), 0.22);
 }
 
 /* ── Button — mirrors widgets.ts's button(): rounded rect, soft white
@@ -69,7 +111,9 @@ body {
   justify-content: center;
   border-radius: var(--radius);
   border: 1.5px solid rgba(255, 255, 255, 0.3);
-  background: var(--pal-btn);
+  /* background-color (nicht die shorthand), damit der Glas-Verlauf aus der
+     Hi-Fi-Sektion weiter unten als background-image erhalten bleibt. */
+  background-color: var(--pal-btn);
   background-clip: padding-box;
   color: var(--pal-text);
   font: inherit;
@@ -83,15 +127,15 @@ body {
   opacity: 0.55;
 }
 .btn.alt {
-  background: var(--pal-btn-alt);
+  background-color: var(--pal-btn-alt);
 }
 .btn.active {
-  background: var(--pal-btn-active);
+  background-color: var(--pal-btn-active);
   color: var(--pal-ink);
   border-color: rgba(255, 255, 255, 0.7);
 }
 .btn.danger {
-  background: var(--pal-danger);
+  background-color: var(--pal-danger);
   color: var(--pal-white);
 }
 
@@ -141,7 +185,7 @@ body {
   color: var(--pal-text);
 }
 .btn.transport-nav.on {
-  background: var(--pal-btn-alt);
+  background-color: var(--pal-btn-alt);
   border-color: rgba(255, 255, 255, 0.75);
 }
 .btn:disabled {
@@ -211,6 +255,29 @@ body {
   font-weight: 700;
   margin: 0 0 12px;
 }
+/* Dim caption above a group of controls — same treatment across every dialog
+   (Settings sections, Library). */
+.popup-subtitle {
+  font-size: 12px;
+  color: var(--pal-text-dim);
+  margin-bottom: 8px;
+}
+
+/* ── Settings page: sections laid out as fixed-width cards that pack more per
+   row on a wider screen rather than stretching. Each card keeps its natural
+   ~440px width; `auto-fill` adds columns as space allows. `min(100%, …)` lets
+   a single column shrink on a narrow touchscreen. ── */
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 440px));
+  gap: 20px 22px;
+  align-items: start;
+  justify-content: start;
+  margin-top: 14px;
+}
+.settings-card {
+  min-width: 0;
+}
 .popup-row {
   display: flex;
   width: 100%;
@@ -232,69 +299,135 @@ textarea {
   color: inherit;
 }
 
-/* ── Slot tile (Sequencer Overview lane row). ── */
+/* ── Slot tile (Sequencer Overview lane row). ──
+   Großes Mittenfeld (Trigger, ~75 %) plus sechs kleine Quadrate an den Ecken
+   und den Mittelkanten oben/unten. Alles absolut im 200×200-Quadrat. */
 .slot-tile {
   position: relative;
   width: 200px;
   height: 200px;
   flex: 0 0 auto;
   border-radius: 12px;
-  background: var(--pal-btn);
+  /* Durchscheinend wie `.panel` — die Unterwasser-Szene bleibt hinter den
+     Kacheln sichtbar. Kein `var(--pal-btn)` (deckend), s. Alpha-Kommentar oben. */
+  background: rgba(28, 28, 28, 0.55);
   border: 1.5px solid rgba(255, 255, 255, 0.3);
-  display: flex;
-  flex-direction: column;
-  padding: 4px;
-  gap: 6px;
 }
-/* Delete — small badge pinned to the tile's top-right corner. */
-.slot-tile .delete-badge {
+
+/* Kachel = KÖRPER (auswählen, kein Ton) + TRIGGER-LEISTE (auslösen). Beide
+   sind echte <button>, füllen die Kachel, kein Überlappen. */
+.slot-tile .slot-body,
+.slot-tile .slot-trigger {
   position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  font-size: 11px;
-  z-index: 1;
-}
-.slot-tile .id-strip {
-  flex: 1;
+  left: 0;
+  right: 0;
+  z-index: 2;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 700;
-  font-size: 17px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
+  user-select: none;
 }
-.slot-tile .transpose-row {
-  display: flex;
+/* Auslösen ist die häufigste Geste — die Trigger-Leiste bekommt daher gut
+   zwei Drittel der Kachel, der Auswahl-Körper nur den schmalen Kopfstreifen. */
+.slot-tile .slot-body {
+  top: 0;
+  bottom: 68%;
+  flex-direction: column;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  gap: 1px;
+  padding: 3px 5px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
 }
-.slot-tile .transpose-value {
-  flex: 1;
-  text-align: center;
-  font-size: 14px;
-  color: var(--pal-text-dim);
-  font-weight: 600;
+.slot-tile .slot-body:active {
+  background: rgba(255, 255, 255, 0.06);
 }
-.slot-tile .bottom-row {
-  display: flex;
-  height: 52px;
-  gap: 6px;
+.slot-tile .slot-trigger {
+  bottom: 0;
+  top: 32%;
+  align-items: center;
+  justify-content: center;
+  font-size: 34px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  background: rgba(255, 255, 255, 0.05);
 }
-.slot-tile .speed-btn,
-.slot-tile .loop-btn {
-  flex: 1;
-  min-width: 52px;
+.slot-tile .slot-trigger:active {
+  background: rgba(var(--pal-run-rgb), 0.22);
+}
+/* Sperr-Modus: kein Körper — die ganze Kachel ist Trigger. */
+.slot-tile.locked .slot-trigger {
+  top: 0;
+}
+
+/* Kopfstreifen ist knapp — Id und Name klein und einzeilig halten, damit die
+   Status-Chips darunter noch Platz haben. */
+.slot-tile .slot-id {
   font-size: 15px;
+  font-weight: 800;
+  line-height: 1.1;
 }
-.slot-tile .loop-btn.loop-on {
-  background: var(--pal-loop-on);
-  border-color: var(--pal-loop-on);
-  color: var(--pal-ink);
+.slot-tile .slot-name {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.1;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  opacity: 0.75;
+}
+.slot-tile .slot-badges {
+  display: flex;
+  gap: 3px;
+  justify-content: center;
+  overflow: hidden;
+}
+.slot-tile .slot-badge {
+  padding: 0 4px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+  white-space: nowrap;
+  color: var(--pal-text-dim);
+}
+
+/* Ausgewählt → das Dock rechts bearbeitet DIESE Kachel. */
+.slot-tile.selected {
+  border-color: var(--pal-shimmer);
+  box-shadow: 0 0 0 2px rgba(var(--pal-shimmer-rgb), 0.55);
+}
+
+/* „＋" als vollwertige Kachel am Ende der Kette (Item 5). */
+.slot-tile.slot-add {
+  align-items: center;
+  justify-content: center;
+  font-size: 44px;
+  font-weight: 300;
+  font-family: inherit;
+  color: var(--pal-text-dim);
+  background: rgba(28, 28, 28, 0.35);
+  border-color: rgba(255, 255, 255, 0.3);
+  border-style: dashed;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+.slot-tile.slot-add:active {
+  opacity: 0.55;
+}
+.slot-tile.slot-add:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 /* ── Wiedergabe-Feedback der Slot-Kacheln ────────────────────────────────
@@ -389,15 +522,9 @@ textarea {
   animation: tile-start 420ms ease-out;
 }
 
-/* Inhalt über Sweep und Rahmen halten — positionierte Elemente malen sonst
-   über die statischen Kinder (die .delete-badge hat ihr z-index schon). */
-.slot-tile .id-strip,
-.slot-tile .transpose-row,
-.slot-tile .bottom-row {
-  position: relative;
-  z-index: 1;
-}
-.slot-tile.playing .id-strip {
+/* Körper + Trigger leuchten mit, solange der Baustein läuft. */
+.slot-tile.playing .slot-body,
+.slot-tile.playing .slot-trigger {
   text-shadow: 0 0 10px rgba(var(--pal-run-rgb), 0.7);
 }
 
@@ -620,6 +747,16 @@ textarea {
 .step-row {
   display: flex;
 }
+/* Piano-Roll-Zeile: über die volle MIDI-Skala sind es 116 Zeilen je Takt.
+   Was außerhalb des Ausschnitts liegt, überspringt der Browser komplett —
+   ohne das ruckelt das Raster auf dem Pi-Display bei jedem Tipper. Die
+   Wunschhöhe hält die Scrollhöhe (und damit den Start-Scroll) korrekt — sie
+   muss deshalb zur echten Zeilenhöhe passen, die je Rolle anders ist
+   (Melodie 32px, Akkord 20px): `--roll-row-h` setzt sie die Rolle selbst. */
+.roll-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--roll-row-h, 20px);
+}
 .step-cell {
   border-radius: 2px;
   border: 1px solid var(--pal-step-border);
@@ -633,6 +770,41 @@ textarea {
   margin-right: 2px;
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
+}
+
+/* Anspielbare Taste am Rand der Piano-Rolle. Breit genug für einen Finger:
+   ohne sie wäre der Notenname am Zeilenende nur Beschriftung, so ist er die
+   Klaviatur, mit der man die Zeile vor dem Setzen hört. */
+.roll-key {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  padding: 0 6px;
+  flex: 0 0 auto;
+  border: 1px solid var(--pal-step-border);
+  border-radius: 2px;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  /* `manipulation` (wie bei den Zellen) lässt das senkrechte Scrollen der
+     Rolle über den Tasten weiterhin zu — der Ton endet dann per
+     `pointercancel`, sobald der Browser den Wisch übernimmt. */
+  touch-action: manipulation;
+  user-select: none;
+}
+.roll-key.white {
+  background: var(--pal-key-white);
+  color: var(--pal-ink);
+}
+.roll-key.black {
+  background: var(--pal-key-black);
+  color: var(--pal-text-dim);
+}
+.roll-key.down {
+  background: var(--pal-key-down);
+  color: var(--pal-ink);
 }
 
 /* ── Touch keyboard — mirrors ui/keyboard.ts's grid math via CSS instead of
@@ -649,3 +821,364 @@ textarea {
   font-size: 26px;
 }
 
+
+/* ── Hi-Fi-Chrom ───────────────────────────────────────────────────────
+   Angelehnt an hochwertige Studio-/Audio-Hardware: von oben angeleuchtete
+   Kanten (heller Grat oben, dunkler Schatten unten) plus je EIN sehr
+   langsamer Glanz-Sweep auf der Wortmarke und der Transport-Unterkante.
+   Bewusst fast statisch — das ist ein Live-Werkzeug, kein Bildschirmschoner.
+   Alles zieht seine Farbe aus --pal-shimmer (s. :root), bleibt also mono. */
+
+/* Gefaste, angepolierte Kante auf JEDEM Knopf: heller Grat oben, Schatten
+   unten, dazu ein zarter Glas-Verlauf über die Fläche (oben Glanz, unten
+   Abdunklung) — wie die Front eines HiFi-Geräts. Die Spezial-Zustände
+   (transport-play/-stop, .active) setzen ihren eigenen box-shadow und
+   überschreiben die Fase bewusst. */
+.btn {
+  background-image: linear-gradient(
+    180deg,
+    rgba(var(--pal-shimmer-rgb), 0.09),
+    rgba(var(--pal-shimmer-rgb), 0) 42%,
+    rgba(0, 0, 0, 0.16)
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(var(--pal-shimmer-rgb), 0.24),
+    inset 0 0 0 1px rgba(var(--pal-shimmer-rgb), 0.04),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.55),
+    0 1px 2px rgba(0, 0, 0, 0.4);
+}
+.btn.active {
+  /* Heller Zustand: der Glanz sitzt jetzt als dunkler Rand-Kontrast. */
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.5),
+    rgba(255, 255, 255, 0) 45%,
+    rgba(0, 0, 0, 0.12)
+  );
+}
+
+/* Transport-Leiste als HiFi-Frontblende: heller angepolierter Grat auf der
+   Oberkante, dunkle Fase unten, dazu ein zarter Glas-Verlauf über die ganze
+   Fläche. Das wanderende Glanzlicht auf der Unterkante bleibt (::before). Die
+   Leiste ist position:fixed (eigener Positionierungs-Kontext). */
+.hifi-rail {
+  position: relative;
+  background-image: linear-gradient(
+    180deg,
+    rgba(var(--pal-shimmer-rgb), 0.08),
+    rgba(var(--pal-shimmer-rgb), 0) 30%,
+    rgba(0, 0, 0, 0.18)
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(var(--pal-shimmer-rgb), 0.3),
+    inset 0 2px 6px rgba(var(--pal-shimmer-rgb), 0.05),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.55);
+}
+.hifi-rail::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  height: 2px;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    rgba(var(--pal-shimmer-rgb), 0) 40%,
+    rgba(var(--pal-shimmer-rgb), 0.85) 50%,
+    rgba(var(--pal-shimmer-rgb), 0) 60%
+  );
+  background-size: 240% 100%;
+  animation: hifi-glint 7s linear infinite;
+}
+@keyframes hifi-glint {
+  0% { background-position: 130% 0; }
+  100% { background-position: -130% 0; }
+}
+
+/* Wortmarke „MIDI / REEF" — dieselbe Schrift wie die BPM-Anzeige (Geist,
+   fett), nur klein und zweizeilig, mit gebürstetem-Metall-Schimmer. */
+.hifi-mark {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  margin-left: 4px;
+  font-family: "Geist Variable", system-ui, sans-serif;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 0.9;
+  letter-spacing: 0.22em;
+  pointer-events: none;
+  background: linear-gradient(
+    100deg,
+    #9fb0ba 0%,
+    #ffffff 40%,
+    var(--pal-shimmer) 50%,
+    #ffffff 60%,
+    #9fb0ba 100%
+  );
+  background-size: 280% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  /* Zweistufiger Schein wie geätztes Glas über einer beleuchteten Anzeige:
+     enger heller Kern + weiter, weicher Halo. */
+  filter:
+    drop-shadow(0 0 1px rgba(var(--pal-shimmer-rgb), 0.6))
+    drop-shadow(0 0 9px rgba(var(--pal-shimmer-rgb), 0.4));
+  animation: hifi-sheen 5.5s ease-in-out infinite;
+}
+.hifi-mark > span {
+  /* letter-spacing setzt auch HINTER den letzten Buchstaben Luft — mit
+     negativem Rand zurückholen, damit die rechte Kante beider Zeilen sitzt. */
+  margin-right: -0.22em;
+}
+@keyframes hifi-sheen {
+  0%, 100% { background-position: 135% 0; }
+  50% { background-position: -35% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hifi-rail::before,
+  .hifi-mark {
+    animation: none;
+  }
+}
+
+/* Gefaste Kante auf den größeren Flächen — Panels, Modal, Slot-Kacheln,
+   Pill-Toggle: heller Grat oben, Schattenlinie unten, wie eine gebürstete
+   Alu-Blende. Nur ein statischer box-shadow, kein Overlay über den Inhalt.
+   Laufende Kacheln (.slot-tile.playing .play-glow) legen ihren eigenen
+   Leucht-Rahmen darüber. */
+.panel,
+.panel-deep,
+.modal-box,
+.slot-tile,
+.pill-toggle {
+  box-shadow:
+    inset 0 1px 0 rgba(var(--pal-shimmer-rgb), 0.16),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.42);
+}
+.pill-toggle {
+  background-image: linear-gradient(
+    180deg,
+    rgba(var(--pal-shimmer-rgb), 0.08),
+    rgba(var(--pal-shimmer-rgb), 0) 44%,
+    rgba(0, 0, 0, 0.14)
+  );
+}
+.pill-toggle.on {
+  background-color: var(--pal-btn-active);
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.45),
+    rgba(255, 255, 255, 0) 46%,
+    rgba(0, 0, 0, 0.12)
+  );
+}
+
+/* ── BlockDock — angedocktes Bearbeitungs-Feld rechts in der Sequencer-
+   Übersicht. Fester Ort, kein Menü-Tauchen. Bewusst SCHMAL: Zielgerät ist ein
+   7"-Raspi-Display (800×480), die Spalte darf dem Kachel-Raster kaum Platz
+   wegnehmen — deshalb Werte als Dropdown (Liste im Popup) statt als Fader. ── */
+.block-dock {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  width: 148px;
+  padding: 8px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: rgba(10, 10, 10, 0.94);
+  border-left: 1.5px solid rgba(255, 255, 255, 0.22);
+  z-index: 30;
+}
+.block-dock-name {
+  width: 100%;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--pal-text);
+  font: inherit;
+  font-size: 19px;
+  font-weight: 800;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.block-dock-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.block-dock-sub {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--pal-text-dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.block-dock-icon {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  padding: 0;
+  font-size: 15px;
+}
+
+/* Ein Wert: Beischrift + volle Breite als Dropdown-Knopf. */
+.block-dock-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.block-dock-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--pal-text-dim);
+}
+.block-dock-select {
+  width: 100%;
+  height: 46px;
+  font-size: 20px;
+  font-weight: 800;
+  font-feature-settings: "tnum" 1;
+}
+.block-dock-move {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.block-dock-move .btn {
+  flex: 1;
+  height: 46px;
+  min-width: 0;
+  padding: 0;
+  font-size: 18px;
+}
+.block-dock-pos {
+  flex: 0 0 26px;
+  text-align: center;
+  font-size: 16px;
+  font-weight: 800;
+  font-feature-settings: "tnum" 1;
+}
+/* Edit / Swap / Delete: jede Aktion ein eigener, voll breiter Knopf — die
+   drei nebeneinander waren auf 148px zu schmal zum sicheren Treffen. */
+.block-dock-action {
+  width: 100%;
+  height: 48px;
+  font-size: 16px;
+  font-weight: 700;
+}
+.block-dock-actions {
+  display: flex;
+  gap: 4px;
+}
+.block-dock-actions .btn {
+  flex: 1;
+  height: 46px;
+  min-width: 0;
+  padding: 0;
+  font-size: 16px;
+}
+.block-dock-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+/* „Remove"/„Cancel" nebeneinander in 148px — kleinere Schrift, sonst bricht
+   die Beschriftung aus dem Knopf. */
+.block-dock-confirm .btn {
+  font-size: 13px;
+}
+
+/* ── Animationen aus (Einstellung, pro Gerät — s. app/motionConfig.ts) ──────
+   Bewusst pauschal statt selektiv: die teuren Dauer-Animationen animieren
+   nicht-kompositierbare Eigenschaften (background-position, box-shadow), und
+   solange auch nur EINE davon läuft, rastert der Browser die Seite weiter
+   ~60×/s neu. Auf dem Pi 5 ist das der Unterschied zwischen ~71 % und ~4 %
+   eines Kerns. Transitions bleiben an: die laufen nur auf Ereignis, nicht
+   dauerhaft, und kosten im Leerlauf nichts. */
+:root[data-motion="off"],
+:root[data-motion="off"] *,
+:root[data-motion="off"] *::before,
+:root[data-motion="off"] *::after {
+  animation: none !important;
+}
+
+/* ── Scrollleisten: fingerbreit statt Maus-schmal ───────────────────────────
+   Zielgerät ist ein Touchdisplay ohne Maus — Chromiums Standardleiste (~7 px)
+   ist als Griff unbrauchbar und als Positionsanzeige kaum zu sehen. Die Breite
+   hängt an einer Variablen, damit sie sich an einer Stelle ändern lässt;
+   ui/ui/touchScroll.ts misst die Leiste zur Laufzeit (clientWidth) und muss
+   deshalb NICHT mitgepflegt werden. */
+:root {
+  --scrollbar-px: 20px;
+}
+::-webkit-scrollbar {
+  width: var(--scrollbar-px);
+  height: var(--scrollbar-px);
+}
+::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: calc(var(--scrollbar-px) / 2);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.28);
+  border-radius: calc(var(--scrollbar-px) / 2);
+  /* Durchsichtiger Rand + background-clip: der Griff wirkt schlanker als seine
+     Trefferfläche — anfassbar bleibt die volle Leistenbreite. */
+  border: 4px solid transparent;
+  background-clip: padding-box;
+  /* Bei langen Listen sonst ein paar Pixel hoch und nicht mehr zu greifen. */
+  min-height: 56px;
+}
+::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:active {
+  background: rgba(255, 255, 255, 0.55);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ── Vorgemerkte Kachel („scharf", wartet auf ihre Grenze) ──────────────────
+   Bei Trigger-Quantisierung liegen zwischen Touch und Start bis zu ein ganzer
+   Takt. Ohne sichtbare Rückmeldung wirkt der Griff verschluckt und man tippt
+   nach — deshalb bekommt die wartende Kachel sofort einen gestrichelten
+   Rahmen. Gestrichelt statt durchgezogen, damit sie nicht mit der laufenden
+   Kachel (.playing) verwechselt wird. */
+.slot-tile.queued {
+  outline: 2px dashed rgba(var(--pal-run-rgb), 0.85);
+  outline-offset: -3px;
+}
+.slot-tile.queued::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(var(--pal-run-rgb), 0.1);
+  pointer-events: none;
+}
+/* Der Puls ist Zierde, keine Information — er entfällt mit „Animations: Off"
+   (s. app/motionConfig.ts) genau wie jede andere Dauer-Animation. */
+.slot-tile.queued {
+  animation: queued-pulse 0.9s ease-in-out infinite;
+}
+@keyframes queued-pulse {
+  0%, 100% { outline-color: rgba(var(--pal-run-rgb), 0.45); }
+  50%      { outline-color: rgba(var(--pal-run-rgb), 1); }
+}

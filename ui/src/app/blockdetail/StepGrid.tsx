@@ -17,10 +17,87 @@
 //! liegt (s. `.step-playhead-clip` in theme.css) — dafür braucht es kein
 //! JavaScript, runtime.ts setzt weiterhin nur `--play-step`.
 
-import { useRef, type CSSProperties, type ReactNode } from "react";
+import { useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 /** Wie die Steps eines Bausteins ausgelegt werden — s. Kopfkommentar. */
 export type StepFlow = "wrap" | "scroll";
+
+/** Tonumfang der Piano-Rollen: C0 bis G9 — die volle MIDI-Skala ohne die
+ *  namenlose Oktave -1. Feste Grenzen statt eines Fensters um die Grundnote:
+ *  jede Note, die ein Gerät spielen kann, ist damit auch erreichbar. */
+export const ROLL_LOW_NOTE = 12;
+export const ROLL_HIGH_NOTE = 127;
+/** Höhe eines Piano-Roll-Ausschnitts: gut zwei Handbreit, damit auf dem
+ *  Pi-Display auch bei taktweisem Layout mehr als ein Takt aufs Bild passt.
+ *  Der Rest ist im Raster selbst scrollbar (senkrecht). */
+export const ROLL_MAX_H = 300;
+
+/** Breite der Klaviatur am Rand der Piano-Rolle. Ein Notenname allein käme mit
+ *  der halben Breite aus — die Taste ist so breit, WEIL man sie mit dem Finger
+ *  treffen und gedrückt halten soll (s. `RollKey`). */
+export const ROLL_KEY_W = 78;
+
+const BLACK_KEYS = [1, 3, 6, 8, 10];
+
+/** Haltedauer für „lang drücken" — identisch zu `useLongPress`, damit sich die
+ *  Geste über alle Raster gleich anfühlt. */
+export const HOLD_MS = 500;
+
+/**
+ * Anspielbare Taste am Rand einer Piano-Roll-Zeile.
+ *
+ * Sie ersetzt die frühere reine Beschriftung am Zeilenende: gedrückt halten
+ * schickt ein Note-On auf das Ziel des Bausteins, loslassen das Note-Off — so
+ * hört man eine Tonhöhe, BEVOR man sie ins Raster setzt.
+ *
+ * Das Note-Off ist der heikle Teil: es muss auch dann kommen, wenn der Finger
+ * die Taste verlässt oder der Browser die Geste als Scrollen übernimmt. Darum
+ * hängt es an `pointerup`, `pointerleave` UND `pointercancel`, gedeckelt durch
+ * `down` (kein doppeltes Off) und mit Pointer-Capture, damit ein Loslassen
+ * außerhalb der Taste noch hier ankommt — ein verpasstes Note-Off wäre ein
+ * hängender Ton, den nur noch Panic beendet.
+ */
+export function RollKey({
+  note,
+  label,
+  height,
+  width = ROLL_KEY_W,
+  onPress,
+  onRelease,
+}: {
+  note: number;
+  label: string;
+  height: number;
+  width?: number;
+  onPress: () => void;
+  onRelease: () => void;
+}) {
+  const [down, setDown] = useState(false);
+  const black = BLACK_KEYS.includes(((note % 12) + 12) % 12);
+  const release = () => {
+    if (!down) return;
+    setDown(false);
+    onRelease();
+  };
+  return (
+    <div
+      className={`roll-key ${black ? "black" : "white"}${down ? " down" : ""}`}
+      style={{ width, height, lineHeight: `${height}px` }}
+      onPointerDown={(e) => {
+        if (down) return;
+        e.currentTarget.setPointerCapture?.(e.pointerId);
+        setDown(true);
+        onPress();
+      }}
+      onPointerUp={release}
+      onPointerLeave={release}
+      onPointerCancel={release}
+    >
+      {label}
+      <span style={{ opacity: 0.6, fontWeight: 400 }}>{note}</span>
+    </div>
+  );
+}
 
 export function StepScroller({
   children,
@@ -32,14 +109,23 @@ export function StepScroller({
   playhead?: { cellW: number; count: number; from: number; offsetX?: number };
   /** Hohe Raster (Piano-Roll) auf diese Höhe deckeln und senkrecht scrollbar
    *  machen, sonst schiebt EIN Takt schon den halben Screen voll. Beim ersten
-   *  Anzeigen wird in die Mitte gescrollt — dort liegt die Grundnote. */
+   *  Anzeigen wird die mit `data-roll-center` markierte Zeile in den Blick
+   *  gerückt (die Grundnote); ohne Markierung bleibt es bei der Mitte. */
   maxHeight?: number;
 }) {
   const centered = useRef(false);
   const ref = (el: HTMLDivElement | null) => {
     if (!el || !maxHeight || centered.current) return;
     centered.current = true;
-    el.scrollTop = Math.max(0, (el.scrollHeight - el.clientHeight) / 2);
+    // Über die ganze MIDI-Skala ist die Mitte der Zeilen NICHT die Mitte des
+    // Interesses — ohne das hier startete die Rolle irgendwo um F#4 statt bei
+    // der Grundnote des Bausteins. `.step-scroller` ist position:relative,
+    // also ist offsetTop der Zeile schon die Scroll-Koordinate.
+    const target = el.querySelector<HTMLElement>("[data-roll-center]");
+    const wanted = target
+      ? target.offsetTop + target.offsetHeight / 2 - el.clientHeight / 2
+      : (el.scrollHeight - el.clientHeight) / 2;
+    el.scrollTop = Math.max(0, Math.min(wanted, el.scrollHeight - el.clientHeight));
   };
   return (
     <div className="step-scroller" ref={ref} style={maxHeight ? { maxHeight, overflowY: "auto" } : undefined}>
@@ -130,7 +216,11 @@ export function StepRuler({ steps, stepsPerBar, cellW }: { steps: number[]; step
   return (
     <div style={{ display: "flex", marginBottom: 4 }}>
       {steps.map((step) => (
-        <div key={step} style={{ width: cellW, flexShrink: 0, fontSize: 10, color: "var(--pal-text-dim)" }}>
+        <div
+          key={step}
+          className="mono"
+          style={{ width: cellW, flexShrink: 0, fontSize: 10, color: "var(--pal-text-dim)" }}
+        >
           {step % marker === 0 ? step + 1 : ""}
         </div>
       ))}
@@ -144,15 +234,21 @@ export interface StepCellProps {
   active: boolean;
   mutedLook?: boolean;
   onClick: () => void;
-  /** Held-down timer that fires after 500ms — used to clear a step's value
-   *  without a separate delete gesture. Pass undefined when there's nothing
-   *  to clear (mirrors the old `if (!note) return;` guard). */
-  onHoldClear?: () => void;
+  /** Fires after HOLD_MS of holding the cell down; the tap is then swallowed,
+   *  so a hold never also triggers `onClick`. Pass undefined when a hold has
+   *  no meaning on this cell (the timer is then not even armed, otherwise a
+   *  slow tap on an empty cell would be eaten). */
+  onHold?: () => void;
   children?: ReactNode;
 }
 
-export function StepCell({ width, height, active, mutedLook, onClick, onHoldClear, children }: StepCellProps) {
+export function StepCell({ width, height, active, mutedLook, onClick, onHold, children }: StepCellProps) {
   const timer = useRef<number | undefined>(undefined);
+  /** Hat der Halte-Timer zugeschlagen, darf das Loslassen NICHT mehr als
+   *  Tipper zählen — sonst löste erst das Halten aus und gleich danach der
+   *  Klick (Detail öffnen auf eine gerade entfernte Note, Picker direkt nach
+   *  dem Leeren eines Steps). */
+  const fired = useRef(false);
   const cancel = () => {
     window.clearTimeout(timer.current);
     timer.current = undefined;
@@ -173,7 +269,12 @@ export function StepCell({ width, height, active, mutedLook, onClick, onHoldClea
         color: active ? "var(--pal-ink)" : mutedLook ? "var(--pal-text-dim)" : "var(--pal-text)",
       }}
       onPointerDown={() => {
-        if (onHoldClear) timer.current = window.setTimeout(onHoldClear, 500);
+        fired.current = false;
+        if (onHold)
+          timer.current = window.setTimeout(() => {
+            fired.current = true;
+            onHold();
+          }, HOLD_MS);
       }}
       onPointerUp={cancel}
       onPointerLeave={cancel}
@@ -181,7 +282,9 @@ export function StepCell({ width, height, active, mutedLook, onClick, onHoldClea
       // der Browser die Geste als Pan übernimmt, kommt `pointercancel` — ohne
       // das hier hätte ein Scrollen über eine Note sie nach 500ms gelöscht.
       onPointerCancel={cancel}
-      onClick={onClick}
+      onClick={() => {
+        if (!fired.current) onClick();
+      }}
     >
       {children}
     </div>

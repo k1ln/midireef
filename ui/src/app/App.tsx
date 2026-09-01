@@ -18,24 +18,41 @@ import { LaneControls } from "./LaneControls";
 import { Dashboard } from "./Dashboard";
 import { ProjectSettings } from "./ProjectSettings";
 import { applyUiScale, getUiScale } from "./uiScale";
+import { applyMotion, getMotion } from "./motionConfig";
+
+/** Top-level pages, all reached from the transport bar — no back button, no
+ *  modal. Dashboard, Sequencer, Block library and Project settings are peers;
+ *  `blockDetail` / `laneControls` are the only real drill-ins (they overlay
+ *  whichever page opened them). */
+type View = "start" | "seq" | "library" | "settings";
 
 type SubScreen =
   | { kind: "blockDetail"; blockId: string }
   | { kind: "laneControls"; laneId: string }
-  | { kind: "blockLibrary"; deviceId: string; moveBlockId?: string; moveBlockType?: BlockType }
   | null;
 
 export function App() {
   const [store] = useState(() => new Store());
   const [net] = useState(() => new Net());
   const [runtime] = useState(() => new RuntimeFeed());
-  const [view, setView] = useState<"start" | "seq">("start");
+  const [view, setView] = useState<View>("start");
   const [sub, setSub] = useState<SubScreen>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  /** Set when "Move" in the block editor sends you to the library with one
+   *  block armed for re-placing; cleared when the library is opened plainly
+   *  from the transport bar. */
+  const [libMove, setLibMove] = useState<{ blockId: string; type: BlockType } | null>(null);
 
-  // Gespeicherten UI-Zoom beim Start anwenden (s. uiScale.ts).
+  const navigate = (next: View) => {
+    setSub(null);
+    setLibMove(null);
+    setView(next);
+  };
+
+  // Gespeicherten UI-Zoom und Animations-Einstellung beim Start anwenden
+  // (s. uiScale.ts / motionConfig.ts — beides pro Gerät in localStorage).
   useEffect(() => {
     applyUiScale(getUiScale());
+    applyMotion(getMotion());
   }, []);
 
   useEffect(() => {
@@ -70,46 +87,43 @@ export function App() {
     <AppProvider value={{ store, send: (cmd) => net.send(cmd), net, runtime }}>
       <TouchKeyboardProvider>
         <NotePickerProvider>
-          <Transport
-            view={view}
-            onNav={setView}
-            settingsOpen={settingsOpen}
-            onOpenSettings={() => setSettingsOpen(true)}
-          />
+          <Transport view={view} onNav={navigate} />
 
-          {view === "start" ? (
-            <Dashboard />
-          ) : (
+          {view === "start" && <Dashboard />}
+
+          {view === "seq" && (
             <Overview
               onOpenBlock={(blockId) => setSub({ kind: "blockDetail", blockId })}
               onOpenLaneControls={(laneId) => setSub({ kind: "laneControls", laneId })}
-              onOpenLibrary={(deviceId) => setSub({ kind: "blockLibrary", deviceId })}
             />
           )}
+
+          {view === "library" && (
+            <BlockLibrary
+              // Remount when an armed "Move" arrives so the fresh props
+              // (target type + moving block) seed the library's local state.
+              key={libMove ? `move-${libMove.blockId}` : "browse"}
+              initialType={libMove?.type}
+              initialMovingBlockId={libMove?.blockId}
+              onOpenBlock={(blockId) => setSub({ kind: "blockDetail", blockId })}
+            />
+          )}
+
+          {view === "settings" && <ProjectSettings onClose={() => navigate("seq")} />}
 
           {sub?.kind === "blockDetail" && (
             <BlockDetail
               blockId={sub.blockId}
               onClose={() => setSub(null)}
-              onMove={(deviceId, blockId, blockType) =>
-                setSub({ kind: "blockLibrary", deviceId, moveBlockId: blockId, moveBlockType: blockType })
-              }
-            />
-          )}
-
-          {sub?.kind === "blockLibrary" && (
-            <BlockLibrary
-              deviceId={sub.deviceId}
-              initialType={sub.moveBlockType}
-              initialMovingBlockId={sub.moveBlockId}
-              onClose={() => setSub(null)}
-              onOpenBlock={(blockId) => setSub({ kind: "blockDetail", blockId })}
+              onMove={(blockId, blockType) => {
+                setSub(null);
+                setLibMove({ blockId, type: blockType });
+                setView("library");
+              }}
             />
           )}
 
           {sub?.kind === "laneControls" && <LaneControls laneId={sub.laneId} onClose={() => setSub(null)} />}
-
-          {settingsOpen && <ProjectSettings onClose={() => setSettingsOpen(false)} />}
         </NotePickerProvider>
       </TouchKeyboardProvider>
     </AppProvider>

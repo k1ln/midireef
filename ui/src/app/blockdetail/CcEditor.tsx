@@ -203,7 +203,7 @@ function CcLayerRow({
         Depth {depthPct}%
       </Button>
       {/* Offset braucht negative Werte — Stepper statt Texteingabe (Touch-
-          Keyboard hat keine Minus-Taste), gleiches Muster wie Device-Transpose. */}
+          Keyboard hat keine Minus-Taste), gleiches Muster wie der Slot-Transpose. */}
       <div style={{ display: "flex", alignItems: "center", gap: 4 }} title="Offset — shifts the scaled movement up/down">
         <span style={{ fontSize: 12, fontWeight: 600, color: "var(--pal-text-dim)" }}>Off</span>
         <Button style={{ width: 24, height: 34, fontSize: 16 }} onClick={() => patch({ offset: Math.max(-1, (layer.offset ?? 0) - 0.05) })}>

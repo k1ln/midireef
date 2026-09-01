@@ -1,13 +1,13 @@
 //! Lane-Zeile — React-Port des laneRow() aus ui/overview.ts.
 //!
-//! Aufbau: eine KOPFZEILE (Name, Rolle, Kanal/Ziel, Schalter) und darunter
-//! die Bausteine in EINER Reihe nebeneinander. Vorher stand der Kopf links
-//! neben den Kacheln und die Kacheln umbrachen in mehrere Zeilen — damit war
-//! weder klar, wo eine Lane aufhört, noch stimmte die Reihenfolge optisch mit
-//! der Abspielreihenfolge überein (die Kette läuft von links nach rechts).
-//! Passen sie nicht auf den Screen, wird die Reihe quer gescrollt (Touch).
+//! Aufbau: eine KOPFZEILE (Name, Kanal-Chip, Schalter) und darunter die
+//! Bausteine in EINER Reihe nebeneinander (das „＋" ist selbst eine Kachel am
+//! Ende der Kette). Die Zeile lässt sich über das Chevron einklappen — dann
+//! bleibt nur der Kopf mit einer kurzen Zusammenfassung stehen.
+//! Passen die Kacheln nicht auf den Screen, bricht die Reihe um.
 
-import type { Device, Lane } from "../../state";
+import { useState } from "react";
+import type { Block, Device, Lane } from "../../state";
 import { useRuntimeLane, useSend, useStoreValue } from "../store";
 import { useTouchKeyboard } from "../TouchKeyboard";
 import type { LiveControl } from "../dashboard/ControlWidget";
@@ -16,34 +16,67 @@ import { PillToggle } from "../widgets/PillToggle";
 import { SelectMenu, type SelectOption } from "../widgets/SelectMenu";
 import { useLocalPref } from "../useLocalPref";
 import { SlotTile } from "./SlotTile";
-import { roleLabel } from "./popups";
 
 // Stable reference for the useSyncExternalStore selector — see the
 // EMPTY_DEVICES comment in Dashboard.tsx.
 const EMPTY_CONTROLS: LiveControl[] = [];
+const EMPTY_BLOCKS: Block[] = [];
 
-const PLAY_MODE_ICON: Record<string, string> = { sequential: "▶", random: "🔀", manual: "✋" };
+const PLAY_MODE_ICON: Record<string, string> = {
+  sequential: "▶",
+  random: "⇄",
+  manual: "✋",
+  hold: "✊",
+  oneShot: "①",
+};
 const PLAY_MODE_OPTIONS: SelectOption<string>[] = [
   { value: "sequential", label: "▶ Sequential — run through blocks in order" },
-  { value: "random", label: "🔀 Random — jump to a random block" },
+  { value: "random", label: "⇄ Random — jump to a random block" },
   { value: "manual", label: "✋ Manual — repeat the current block" },
+  { value: "hold", label: "✊ Hold — silent until a tile is held; plays only while held" },
+  { value: "oneShot", label: "① One-shot — silent; one tap plays a tile once through" },
+];
+const PLAY_MODE_ACTIVE = new Set(["manual", "hold", "oneShot"]);
+
+/** Wann ein angetippter Baustein startet. Kurzzeichen für den 40px-Knopf; die
+ *  Langtexte stehen im Menü. Nur Textglyphen — der Pi hat keine Emoji-Fonts. */
+const QUANTIZE_ICON: Record<string, string> = {
+  immediate: "⚡",
+  nextBeat: "♩",
+  nextBar: "|",
+  nextBlock: "⊣",
+};
+const QUANTIZE_OPTIONS: SelectOption<string>[] = [
+  { value: "immediate", label: "⚡ Immediate — start the moment you tap" },
+  { value: "nextBeat", label: "♩ Next beat — snap to the next beat" },
+  { value: "nextBar", label: "| Next bar — snap to the next bar (stays in sync)" },
+  { value: "nextBlock", label: "⊣ Next block — wait until the running block finishes" },
 ];
 
 export interface LaneRowProps {
   lane: Lane;
   dev: Device;
   onOpenAddBlock: () => void;
-  onOpenBlockMenu: (slotId: string) => void;
+  onSelectSlot: (slotId: string) => void;
+  selectedSlotId: string | null;
   onOpenLaneControls: () => void;
   onOpenCcTarget: () => void;
 }
 
-export function LaneRow({ lane, dev, onOpenAddBlock, onOpenBlockMenu, onOpenCcTarget }: LaneRowProps) {
+export function LaneRow({
+  lane,
+  dev,
+  onOpenAddBlock,
+  onSelectSlot,
+  selectedSlotId,
+  onOpenCcTarget,
+}: LaneRowProps) {
   const send = useSend();
   const runtimeRef = useRuntimeLane(lane.id);
   const openKeyboard = useTouchKeyboard();
   const recordArmed = useStoreValue((s) => s.recordArmed);
   const controls = useStoreValue((s) => (s.project?.controls as LiveControl[] | undefined) ?? EMPTY_CONTROLS);
+  const blocks = useStoreValue((s) => (s.project?.blocks as Block[] | undefined) ?? EMPTY_BLOCKS);
   const isRecordTarget = recordArmed?.laneId === lane.id;
 
   // Sperre gegen Fehlgriffe während einer Live-Performance. Bewusst nur lokal
@@ -51,18 +84,21 @@ export function LaneRow({ lane, dev, onOpenAddBlock, onOpenBlockMenu, onOpenCcTa
   // die Lane selbst, und gehört daher nicht ins Projekt.
   const [lockedPref, setLockedPref] = useLocalPref<"0" | "1">(`lane.locked.${lane.id}`, "0");
   const locked = lockedPref === "1";
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const playMode = lane.playMode || "sequential";
-  const channelValue = lane.channel ?? 0;
-  const channelOptions: SelectOption<number>[] = [
-    { value: 0, label: `Device default (Ch ${dev.channel})` },
-    ...Array.from({ length: 16 }, (_, i) => ({ value: i + 1, label: `Ch ${i + 1}` })),
-  ];
+  const quantize = lane.triggerQuantize || "nextBar";
+  const channelValue = lane.channel || 1;
+  const channelOptions: SelectOption<number>[] = Array.from({ length: 16 }, (_, i) => ({
+    value: i + 1,
+    label: `Ch ${i + 1}`,
+  }));
+  const collapsed = !!lane.collapsed;
 
   // Ziel und Kanal sitzen an der Lane, nicht am Baustein — ein Baustein ist
   // reiner Inhalt und steckt womöglich in mehreren Lanes. Bei CC-Lanes kommt
-  // zusätzlich die CC-Nummer vom Ziel-Knob; der Kanal aber wie überall von
-  // Lane/Device, damit er in der Zeile sichtbar und korrigierbar ist.
+  // zusätzlich die CC-Nummer vom Ziel-Knob; der Kanal aber von der Lane selbst,
+  // damit er in der Zeile sichtbar und korrigierbar ist.
   const isCc = lane.role === "cc";
   const ccTarget = isCc ? controls.find((c) => c.id === lane.ccControlId) : undefined;
   const ccTargetValid = !!ccTarget && ccTarget.deviceId === dev.id && ccTarget.mapping?.kind === "cc";
@@ -86,6 +122,15 @@ export function LaneRow({ lane, dev, onOpenAddBlock, onOpenBlockMenu, onOpenCcTa
 
       {/* ── Kopfzeile ── */}
       <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+        <Button
+          variant="alt"
+          style={{ width: 30, height: 30, fontSize: 14, flex: "0 0 auto" }}
+          title={collapsed ? "Expand lane" : "Collapse lane"}
+          onClick={() => send({ t: "lane.setCollapsed", laneId: lane.id, collapsed: !collapsed })}
+        >
+          {collapsed ? "▸" : "▾"}
+        </Button>
+
         <div
           style={{ fontSize: 20, fontWeight: 600, cursor: "pointer", marginRight: 2 }}
           onClick={() =>
@@ -97,17 +142,11 @@ export function LaneRow({ lane, dev, onOpenAddBlock, onOpenBlockMenu, onOpenCcTa
           {lane.name}
         </div>
 
-        <div
-          style={{
-            padding: "2px 8px",
-            borderRadius: 8,
-            background: "rgba(255, 255, 255, 0.12)",
-            fontSize: 12,
-            fontWeight: 600,
-          }}
-        >
-          {roleLabel(lane.role)}
-        </div>
+        {collapsed && (
+          <span style={{ fontSize: 12, color: "var(--pal-text-dim)", fontWeight: 600 }}>
+            {lane.slots?.length ?? 0} block{(lane.slots?.length ?? 0) === 1 ? "" : "s"}
+          </span>
+        )}
 
         {isRecordTarget && (
           <div
@@ -122,7 +161,7 @@ export function LaneRow({ lane, dev, onOpenAddBlock, onOpenBlockMenu, onOpenCcTa
         {isCc && (
           <Button
             variant={ccTargetValid ? "default" : "alt"}
-            style={{ height: 34, padding: "0 10px", fontSize: 12 }}
+            style={{ height: 30, padding: "0 10px", fontSize: 12 }}
             title={
               ccTargetValid
                 ? `Sends CC${ccTarget!.mapping?.number} (from knob “${ccTarget!.name || "unnamed"}”)`
@@ -134,19 +173,21 @@ export function LaneRow({ lane, dev, onOpenAddBlock, onOpenBlockMenu, onOpenCcTa
           </Button>
         )}
 
+        {/* Kanal als kompakter Chip. */}
         <SelectMenu
-          style={{ height: 34, padding: "0 10px", fontSize: 12 }}
+          className="chip"
+          style={{ height: 28, padding: "0 8px", fontSize: 12 }}
           buttonTitle="MIDI channel for this lane"
           title="MIDI channel"
-          buttonLabel={lane.channel ? `Ch ${lane.channel}` : `Ch ${dev.channel} (dev)`}
+          buttonLabel={`Ch ${channelValue}`}
           value={channelValue}
           options={channelOptions}
-          onChange={(v) => send({ t: "lane.setChannel", laneId: lane.id, channel: v === 0 ? null : v })}
+          onChange={(v) => send({ t: "lane.setChannel", laneId: lane.id, channel: v })}
         />
 
-        <div style={{ display: "flex", gap: 8, alignItems: "center", marginLeft: "auto" }}>
+        <div style={{ display: "flex", gap: 4, alignItems: "center", marginLeft: "auto" }}>
           <SelectMenu
-            variant={playMode === "manual" ? "active" : "alt"}
+            variant={PLAY_MODE_ACTIVE.has(playMode) ? "active" : "alt"}
             style={{ width: 40, height: 40, fontSize: 18 }}
             title="Play mode"
             buttonTitle="How this lane moves through its blocks"
@@ -155,13 +196,23 @@ export function LaneRow({ lane, dev, onOpenAddBlock, onOpenBlockMenu, onOpenCcTa
             options={PLAY_MODE_OPTIONS}
             onChange={(mode) => send({ t: "lane.setPlayMode", laneId: lane.id, mode })}
           />
+          <SelectMenu
+            variant={quantize === "immediate" ? "alt" : "active"}
+            style={{ width: 40, height: 40, fontSize: 18 }}
+            title="Trigger timing"
+            buttonTitle="When a tapped block actually starts"
+            buttonLabel={QUANTIZE_ICON[quantize] ?? "|"}
+            value={quantize}
+            options={QUANTIZE_OPTIONS}
+            onChange={(q) => send({ t: "lane.setTriggerQuantize", laneId: lane.id, quantize: q })}
+          />
           <Button
             variant={locked ? "active" : "alt"}
             style={{ width: 40, height: 40, fontSize: 18 }}
             title={locked ? "Locked — block edits disabled (live-safe). Tap to unlock." : "Lock this lane's blocks against accidental edits"}
             onClick={() => setLockedPref(locked ? "0" : "1")}
           >
-            {locked ? "🔒" : "🔓"}
+            {locked ? "●" : "○"}
           </Button>
           <PillToggle
             letter="E"
@@ -173,25 +224,42 @@ export function LaneRow({ lane, dev, onOpenAddBlock, onOpenBlockMenu, onOpenCcTa
             active={lane.solo}
             onToggle={() => send({ t: "lane.setSolo", laneId: lane.id, solo: !lane.solo })}
           />
-          <Button
-            variant="danger"
-            style={{ width: 40, height: 40, fontSize: 18 }}
-            disabled={locked}
-            onClick={() => send({ t: "lane.delete", laneId: lane.id })}
-          >
-            ✕
-          </Button>
+          {confirmDelete ? (
+            <>
+              <span style={{ fontSize: 12, color: "var(--pal-text-dim)", fontWeight: 600 }}>Delete lane?</span>
+              <Button
+                variant="danger"
+                style={{ height: 40, padding: "0 12px", fontSize: 14 }}
+                onClick={() => send({ t: "lane.delete", laneId: lane.id })}
+              >
+                Delete
+              </Button>
+              <Button
+                style={{ height: 40, padding: "0 12px", fontSize: 14 }}
+                onClick={() => setConfirmDelete(false)}
+              >
+                Cancel
+              </Button>
+            </>
+          ) : (
+            <Button
+              variant="danger"
+              style={{ width: 40, height: 40, fontSize: 18 }}
+              disabled={locked}
+              onClick={() => setConfirmDelete(true)}
+            >
+              ✕
+            </Button>
+          )}
         </div>
       </div>
 
-      {/* ── Bausteinkette: immer nebeneinander, bei Bedarf quer scrollen ──
-          Das "＋" steht bewusst NEBEN dem Scroller, nicht darin: sonst müsste
-          man erst bis ans Ende einer langen Kette wischen, um etwas
-          hinzuzufügen. */}
-      <div style={{ display: "flex", gap: 10, alignItems: "stretch" }}>
+      {/* ── Bausteinkette: immer nebeneinander, bei Bedarf umbrechen. Das „＋"
+          ist selbst eine Kachel am Ende der Kette. ── */}
+      {!collapsed && (
         <div className="lane-slots">
           {(lane.slots ?? []).map((slot) => {
-            const blk = dev.blocks?.find((b) => b.id === slot.blockId);
+            const blk = blocks.find((b) => b.id === slot.blockId);
             return (
               <SlotTile
                 key={slot.id}
@@ -199,20 +267,22 @@ export function LaneRow({ lane, dev, onOpenAddBlock, onOpenBlockMenu, onOpenCcTa
                 slot={slot}
                 blk={blk}
                 locked={locked}
-                onLongPress={() => onOpenBlockMenu(slot.id)}
+                selected={slot.id === selectedSlotId}
+                onSelect={() => onSelectSlot(slot.id)}
               />
             );
           })}
+          <button
+            type="button"
+            className="slot-tile slot-add"
+            disabled={locked}
+            onClick={onOpenAddBlock}
+            aria-label="Add block"
+          >
+            ＋
+          </button>
         </div>
-        <Button
-          variant="alt"
-          style={{ width: 34, height: 140, fontSize: 20, flex: "0 0 auto" }}
-          disabled={locked}
-          onClick={onOpenAddBlock}
-        >
-          ＋
-        </Button>
-      </div>
+      )}
     </div>
   );
 }

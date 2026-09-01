@@ -11,7 +11,9 @@
       "Bash(nohup cargo run --quiet)",
       "Bash(disown)",
       "Bash(rm -rf /tmp/midireef-smoketest3 /tmp/midireef-server3.log)",
-      "Bash(cargo build *)"
+      "Bash(cargo build *)",
+      "Bash(cargo test *)",
+      "Bash(npx vite *)"
     ],
     "additionalDirectories": [
       "/private/tmp"
