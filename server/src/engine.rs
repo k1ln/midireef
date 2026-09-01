@@ -332,6 +332,9 @@ struct CLane {
     /// "random" springt zu einem zufälligen, "manual" bleibt stehen (repeat)
     /// bis der Slot per `trigger_slot` (Touch) gewechselt wird.
     play_mode: String,
+    /// Wann ein per Touch ausgelöster Slot tatsächlich startet:
+    /// "immediate" | "nextBeat" | "nextBar" | "nextBlock" (s. `trigger_slot`).
+    trigger_quantize: String,
     blocks: Vec<CBlock>,
 }
 
@@ -348,6 +351,18 @@ struct Playback {
     /// so hängt das Aufleuchten an echten Noten und nicht an Step-Grenzen,
     /// die auch leer sein können.
     hits: u32,
+    /// Nur für `play_mode` "hold"/"oneShot": ob die Lane gerade läuft. Solche
+    /// Lanes sind stumm (`on_pulse` überspringt sie), bis `press_slot` sie
+    /// startet; `release_slot` bzw. das Baustein-Ende (oneShot) stoppt sie.
+    /// Bei allen anderen Play-Modes immer `true`.
+    running: bool,
+    /// Nur "hold": die Kachel wird gerade gehalten — am Baustein-Ende von vorn
+    /// loopen statt stoppen. `release_slot` setzt es zurück.
+    held: bool,
+    /// Per Touch ausgelöst, wartet auf die Quantisierungsgrenze. `None` = nichts
+    /// vorgemerkt. Ein erneuter Touch überschreibt (letzter Wunsch gewinnt), ein
+    /// Touch auf den bereits wartenden Slot nimmt die Vormerkung zurück.
+    queued: Option<usize>,
 }
 
 struct PendingOff {
@@ -355,6 +370,9 @@ struct PendingOff {
     ch: u8,
     note: u8,
     at: u64, // absoluter Puls
+    /// Index der Lane, die dieses Note-Off erzeugt hat — `release_slot` kann so
+    /// gezielt die noch offenen Noten genau dieser Lane sofort abschalten.
+    lane_idx: usize,
 }
 
 /// Momentaufnahme der Wiedergabe EINER Lane — die Grundlage des UI-Feedbacks
@@ -386,6 +404,16 @@ pub struct LaneRuntime {
     /// Zuletzt tatsächlich GESENDETER 7-Bit-Wert dieses Slots (nicht der eben
     /// berechnete): was hier steht, ging auch über den Port raus.
     pub cc_value: Option<u8>,
+    /// Per Touch vorgemerkter Slot, der noch auf seine Quantisierungsgrenze
+    /// wartet (s. `trigger_slot`). Die UI markiert diese Kachel als „scharf",
+    /// damit sichtbar ist, dass der Griff angekommen ist — sonst wirkt ein
+    /// Touch bis zum nächsten Takt wie verschluckt.
+    pub queued_slot_id: Option<String>,
+    /// Klingt diese Lane gerade wirklich? Für "hold"/"oneShot" ist sie zwischen
+    /// den Auslösungen stumm. Der Eintrag wird trotzdem gesendet, sobald etwas
+    /// vorgemerkt ist (`queued_slot_id`) — nur so kann die UI die wartende
+    /// Kachel markieren. `false` heißt: nur Vormerkung, noch kein Ton.
+    pub running: bool,
 }
 
 pub struct Engine {
@@ -402,6 +430,12 @@ pub struct Engine {
     elapsed_secs: f64,
     /// Letzter gesendeter CC-Wert je Slot (Rate-Limit, s. `MIN_CC_SEND_INTERVAL`).
     cc_send_state: HashMap<String, CcSendState>,
+    /// Läuft der Transport? Bei Stillstand kommen keine Puls-Grenzen mehr, also
+    /// startet ein getriggerter Slot dann sofort — sonst würde ein Touch bei
+    /// gestopptem Transport scheinbar ins Leere gehen.
+    playing: bool,
+    /// Pulse pro Takt aus der Projekt-Taktart — Grenze für "nextBar".
+    bar_pulses: u32,
 }
 
 impl Engine {
@@ -415,6 +449,8 @@ impl Engine {
             clock_ports: Vec::new(),
             elapsed_secs: 0.0,
             cc_send_state: HashMap::new(),
+            playing: false,
+            bar_pulses: pulses_per_bar("4/4"),
         }
     }
 
@@ -426,17 +462,24 @@ impl Engine {
 
     pub fn transport_start(&mut self) {
         self.reset();
+        self.playing = true;
         for port in &self.clock_ports {
             self.midi.send(port, &[MIDI_START]);
         }
     }
 
     pub fn transport_stop(&mut self) {
+        self.playing = false;
         for port in &self.clock_ports {
             self.midi.send(port, &[MIDI_STOP]);
         }
         self.midi.all_notes_off();
         self.pending.clear();
+        // Vormerkungen verwerfen: sie beziehen sich auf eine Zeitachse, die es
+        // nach dem Stop nicht mehr gibt.
+        for pb in &mut self.playback {
+            pb.queued = None;
+        }
     }
 
     pub fn panic(&mut self) {
@@ -444,8 +487,14 @@ impl Engine {
         self.pending.clear();
     }
 
-    /// Springt sofort zum Baustein hinter `slot_id` in der Lane `lane_id`
-    /// ("sofort" gemäß Architektur — Quantisierung zum Taktanfang folgt später).
+    /// Löst den Baustein hinter `slot_id` in der Lane `lane_id` aus — je nach
+    /// `Lane.trigger_quantize` sofort oder erst zur nächsten Grenze.
+    ///
+    /// Sofort passiert es nur bei "immediate" oder wenn der Transport steht
+    /// (dann käme nie eine Grenze). Sonst wird der Slot vorgemerkt und
+    /// `apply_queued` schaltet ihn auf dem passenden Puls scharf. Ein zweiter
+    /// Touch auf dieselbe wartende Kachel nimmt die Vormerkung zurück — sonst
+    /// ließe sich ein Fehlgriff bis zum nächsten Takt nicht mehr korrigieren.
     pub fn trigger_slot(&mut self, lane_id: &str, slot_id: &str) {
         let Some(idx) = self.lanes.iter().position(|l| l.id == lane_id) else {
             return;
@@ -453,9 +502,138 @@ impl Engine {
         let Some(block_idx) = self.lanes[idx].blocks.iter().position(|b| b.slot_id == slot_id) else {
             return;
         };
+        if self.triggers_now(idx) {
+            self.playback[idx].queued = None;
+            self.start_slot(idx, block_idx);
+        } else if self.playback[idx].queued == Some(block_idx) {
+            self.playback[idx].queued = None;
+        } else {
+            self.playback[idx].queued = Some(block_idx);
+        }
+    }
+
+    /// Klingt diese Lane gerade? "hold"/"oneShot" sind zwischen den
+    /// Auslösungen stumm; alle anderen Play-Modes laufen immer durch.
+    fn is_sounding(&self, idx: usize) -> bool {
+        !matches!(self.lanes[idx].play_mode.as_str(), "hold" | "oneShot")
+            || self.playback[idx].running
+    }
+
+    /// Soll dieser Trigger sofort greifen, statt vorgemerkt zu werden?
+    ///
+    /// Neben "immediate" und stehendem Transport ist der dritte Fall der
+    /// wichtige: "nextBlock" wartet auf das ENDE des laufenden Bausteins — läuft
+    /// gerade keiner (stumme hold/oneShot-Lane), kommt dieses Ende nie, und die
+    /// Vormerkung bliebe für immer hängen. Ohne Baustein gibt es nichts
+    /// abzuwarten, also los.
+    fn triggers_now(&self, idx: usize) -> bool {
+        match self.lanes[idx].trigger_quantize.as_str() {
+            _ if !self.playing => true,
+            "immediate" => true,
+            "nextBlock" => !self.is_sounding(idx),
+            _ => false,
+        }
+    }
+
+    /// Setzt eine Lane auf einen Slot und startet ihn von vorn.
+    fn start_slot(&mut self, idx: usize, block_idx: usize) {
         self.playback[idx].slot = block_idx;
         self.playback[idx].pos = 0;
         self.playback[idx].loops_done = 0;
+    }
+
+    /// Schaltet vorgemerkte Slots scharf, deren Grenze auf `global_pulse` fällt.
+    /// Läuft VOR dem Abspielen des Pulses, damit der neue Baustein denselben
+    /// Puls noch als seinen Step 0 spielt — sonst käme er einen Puls zu spät.
+    ///
+    /// "nextBlock" wird hier NICHT behandelt: dessen Grenze ist das Ende des
+    /// laufenden Bausteins, und das kennt nur die Fortschaltung in `on_pulse`.
+    fn apply_queued(&mut self, global_pulse: u64) {
+        for idx in 0..self.lanes.len() {
+            let Some(block_idx) = self.playback[idx].queued else {
+                continue;
+            };
+            let hit = match self.lanes[idx].trigger_quantize.as_str() {
+                "nextBeat" => global_pulse % PPQN as u64 == 0,
+                "nextBar" => global_pulse % self.bar_pulses.max(1) as u64 == 0,
+                _ => false,
+            };
+            if hit {
+                self.playback[idx].queued = None;
+                self.start_slot(idx, block_idx);
+                // "oneShot" ist bis zum Auslösen stumm (`running == false`) —
+                // beim Scharfschalten muss die Lane also mitlaufen, sonst
+                // überspringt `on_pulse` sie weiterhin und man hört nichts.
+                if matches!(self.lanes[idx].play_mode.as_str(), "hold" | "oneShot") {
+                    self.playback[idx].running = true;
+                    self.playback[idx].held = self.lanes[idx].play_mode == "hold";
+                }
+            }
+        }
+    }
+
+    /// Touch-Down auf eine Kachel einer "hold"/"oneShot"-Lane: den Baustein von
+    /// vorn starten und die (sonst stumme) Lane laufen lassen. Bei "hold" bleibt
+    /// sie laufen, solange `held` gesetzt ist; bei "oneShot" stoppt sie am
+    /// Baustein-Ende von selbst (siehe `on_pulse`).
+    pub fn press_slot(&mut self, lane_id: &str, slot_id: &str) {
+        let Some(idx) = self.lanes.iter().position(|l| l.id == lane_id) else {
+            return;
+        };
+        let Some(block_idx) = self.lanes[idx].blocks.iter().position(|b| b.slot_id == slot_id) else {
+            return;
+        };
+        // "hold" wird SOFORT scharf: die Lane soll klingen, solange der Finger
+        // liegt — würde der Start auf den nächsten Takt warten, wäre die Geste
+        // bei einem kurzen Antippen schon vorbei, bevor überhaupt etwas kommt.
+        // "oneShot" dagegen ist ein normaler Auslöser und folgt der
+        // Quantisierung wie `trigger_slot`.
+        let hold = self.lanes[idx].play_mode == "hold";
+        if hold || self.triggers_now(idx) {
+            self.playback[idx].queued = None;
+            self.start_slot(idx, block_idx);
+            self.playback[idx].running = true;
+            self.playback[idx].held = hold;
+        } else if self.playback[idx].queued == Some(block_idx) {
+            self.playback[idx].queued = None; // zweiter Tipp = Vormerkung zurück
+        } else {
+            self.playback[idx].queued = Some(block_idx);
+        }
+    }
+
+    /// Touch-Up auf eine "hold"-Lane: Baustein stoppen, Lane wieder stumm
+    /// schalten und alle noch offenen Noten dieser Lane sofort abschalten
+    /// (nicht erst zur regulären Off-Fälligkeit). No-op für andere Lanes.
+    pub fn release_slot(&mut self, lane_id: &str) {
+        let Some(idx) = self.lanes.iter().position(|l| l.id == lane_id) else {
+            return;
+        };
+        // Finger weg, bevor eine Vormerkung scharf wurde: verwerfen, sonst
+        // startete die Lane nach dem Loslassen von allein.
+        self.playback[idx].queued = None;
+        self.playback[idx].running = false;
+        self.playback[idx].held = false;
+        self.playback[idx].pos = 0;
+        self.playback[idx].loops_done = 0;
+
+        // Offene Note-Offs dieser Lane herauslösen und pro Port in EINEM Packet
+        // rausschicken — wie die Batch-Logik in `on_pulse`.
+        let mut off_batches: std::collections::HashMap<String, Vec<u8>> = std::collections::HashMap::new();
+        let mut i = 0;
+        while i < self.pending.len() {
+            if self.pending[i].lane_idx == idx {
+                let off = self.pending.swap_remove(i);
+                off_batches
+                    .entry(off.port)
+                    .or_default()
+                    .extend_from_slice(&[0x80 | (off.ch - 1), off.note, 0]);
+            } else {
+                i += 1;
+            }
+        }
+        for (port, bytes) in off_batches {
+            self.midi.send(&port, &bytes);
+        }
     }
 
     /// Sendet rohe MIDI-Bytes an einen Port (für Live-Controls vom Dashboard).
@@ -469,6 +647,10 @@ impl Engine {
             p.slot = 0;
             p.pos = 0;
             p.loops_done = 0;
+            // "hold"/"oneShot"-Lanes nach einem Transport-Neustart wieder
+            // scharf (stumm bis zum nächsten Touch); für alle anderen egal.
+            p.running = false;
+            p.held = false;
         }
         self.pending.clear();
         self.elapsed_secs = 0.0;
@@ -484,6 +666,9 @@ impl Engine {
     }
 
     fn rebuild(&mut self, project: &Project) {
+        // Taktlänge fürs "nextBar"-Raster — die Taktart kann sich im Projekt
+        // ändern, also bei jedem Rebuild mitziehen.
+        self.bar_pulses = pulses_per_bar(&project.time_signature);
         // Bisherige Playback-Positionen je Lane-ID merken.
         let prev: std::collections::HashMap<String, Playback> = self
             .lanes
@@ -501,31 +686,27 @@ impl Engine {
         self.clock_ports = clock_ports;
 
         let mut lanes = Vec::new();
+        // Bausteine liegen projektweit (nicht mehr je Device) — einmal referenzieren.
+        let blocks_json = &project.blocks;
         for dev in &project.devices {
-            let blocks_json = &dev.blocks;
             for lane in &dev.lanes {
                 let port = if dev.midi_out_port.is_empty() {
                     String::new()
                 } else {
                     dev.midi_out_port.clone()
                 };
-                let lane_channel = lane.channel.unwrap_or(dev.channel).clamp(1, 16);
+                let lane_channel = lane.channel.clamp(1, 16);
                 // CC-Ziel hängt an der Lane, nicht am Baustein — einmal pro
                 // Lane auflösen und an alle ihre CC-Bausteine durchreichen.
                 let cc_target =
                     resolve_cc_target(&lane.cc_control_id, dev, lane_channel, &project.controls);
-                let blocks = compile_slots(
-                    &lane.slots,
-                    blocks_json,
-                    lane_channel,
-                    dev.transpose,
-                    cc_target,
-                );
+                let blocks = compile_slots(&lane.slots, blocks_json, lane_channel, cc_target);
                 lanes.push(CLane {
                     id: lane.id.clone(),
                     port,
                     enabled: lane.enabled && !lane.muted,
                     play_mode: lane.play_mode.clone(),
+                    trigger_quantize: lane.trigger_quantize.clone(),
                     blocks,
                 });
             }
@@ -537,7 +718,15 @@ impl Engine {
                 let mut pb = prev
                     .get(&l.id)
                     .copied()
-                    .unwrap_or(Playback { slot: 0, pos: 0, hits: 0, loops_done: 0 });
+                    .unwrap_or(Playback {
+                        slot: 0,
+                        pos: 0,
+                        hits: 0,
+                        loops_done: 0,
+                        running: false,
+                        held: false,
+                        queued: None,
+                    });
                 if l.blocks.is_empty() {
                     pb.slot = 0;
                     pb.pos = 0;
@@ -589,8 +778,16 @@ impl Engine {
             self.midi.send(&port, &bytes);
         }
 
+        // Vorgemerkte Trigger, deren Grenze genau jetzt liegt, scharfschalten.
+        self.apply_queued(global_pulse);
+
         for idx in 0..self.lanes.len() {
             if !self.lanes[idx].enabled || self.lanes[idx].blocks.is_empty() {
+                continue;
+            }
+            // "hold"/"oneShot"-Lanes sind stumm, bis `press_slot` sie startet.
+            let gated = matches!(self.lanes[idx].play_mode.as_str(), "hold" | "oneShot");
+            if gated && !self.playback[idx].running {
                 continue;
             }
             let (slot, pos) = {
@@ -615,12 +812,54 @@ impl Engine {
             let mut next_slot = slot;
             if next >= len {
                 next = 0;
+                // Getakte Lanes: nicht weiterrücken, sondern
+                //   oneShot → nach EINEM Durchlauf stoppen (Lane wieder stumm).
+                //   hold    → von vorn loopen, solange die Kachel gehalten wird;
+                //             das `release_slot` beendet es.
+                if gated {
+                    // Eine "nextBlock"-Vormerkung wartet genau auf DIESEN
+                    // Moment. Sie muss vor dem Stummschalten greifen, sonst
+                    // bliebe sie liegen: die Lane wäre danach still, und der
+                    // stumme Zweig oben überspringt sie fortan — die
+                    // Vormerkung käme nie mehr zum Zug.
+                    if let Some(queued) = self.playback[idx].queued {
+                        if self.lanes[idx].trigger_quantize.as_str() == "nextBlock" {
+                            self.playback[idx].queued = None;
+                            self.playback[idx].slot = queued;
+                            self.playback[idx].pos = 0;
+                            self.playback[idx].loops_done = 0;
+                            self.playback[idx].running = true;
+                            continue;
+                        }
+                    }
+                    if self.lanes[idx].play_mode == "oneShot" {
+                        self.playback[idx].running = false;
+                    }
+                    self.playback[idx].slot = slot;
+                    self.playback[idx].pos = 0;
+                    continue;
+                }
                 // Block ist einmal durch. Ob die Lane weiterrückt, entscheiden
                 // Play-Mode UND die Loop-Anzahl des Slots:
                 //   manual        → bleibt immer stehen (wiederholt current).
                 //   max_loops == 0 → ∞, dieser Block loopt endlos, kein Wechsel.
                 //   sonst          → nach max_loops Durchläufen weiterrücken;
                 //                    "sequential" zum nächsten, "random" zufällig.
+                // "nextBlock": der laufende Baustein ist hier zu Ende — das ist
+                // genau die Grenze, auf die die Vormerkung gewartet hat. Sie
+                // gewinnt gegen die reguläre Fortschaltung.
+                if let Some(queued) = self.playback[idx].queued {
+                    if self.lanes[idx].trigger_quantize.as_str() == "nextBlock" {
+                        self.playback[idx].queued = None;
+                        self.playback[idx].slot = queued;
+                        self.playback[idx].pos = 0;
+                        self.playback[idx].loops_done = 0;
+                        if matches!(self.lanes[idx].play_mode.as_str(), "hold" | "oneShot") {
+                            self.playback[idx].running = true;
+                        }
+                        continue;
+                    }
+                }
                 let n_blocks = self.lanes[idx].blocks.len();
                 let max_loops = self.lanes[idx].blocks[slot].max_loops;
                 if self.lanes[idx].play_mode != "manual" && max_loops != 0 {
@@ -696,6 +935,7 @@ impl Engine {
                 ch,
                 note: *note,
                 at: *off,
+                lane_idx,
             });
         }
         if !on_bytes.is_empty() {
@@ -712,6 +952,16 @@ impl Engine {
         let mut out = Vec::with_capacity(self.lanes.len());
         for (idx, lane) in self.lanes.iter().enumerate() {
             if !lane.enabled || lane.blocks.is_empty() {
+                continue;
+            }
+            // Getakte Lanes ("hold"/"oneShot") tauchen nur auf, solange sie
+            // wirklich laufen — sonst zeigte die Übersicht einen Dauer-Glow auf
+            // einer stummen Lane.
+            let gated = matches!(lane.play_mode.as_str(), "hold" | "oneShot");
+            let running = !gated || self.playback[idx].running;
+            // Stumme getaktete Lane nur dann melden, wenn ein Trigger wartet —
+            // sonst zeigte die Übersicht Dauer-Glow auf einer stillen Lane.
+            if !running && self.playback[idx].queued.is_none() {
                 continue;
             }
             let pb = self.playback[idx];
@@ -740,6 +990,11 @@ impl Engine {
                 hits: pb.hits,
                 cc_number,
                 cc_value,
+                running,
+                queued_slot_id: pb
+                    .queued
+                    .and_then(|q| lane.blocks.get(q))
+                    .map(|b| b.slot_id.clone()),
             });
         }
         out
@@ -884,7 +1139,6 @@ fn compile_slots(
     slots_json: &serde_json::Value,
     blocks_json: &serde_json::Value,
     lane_channel: u8,
-    dev_transpose: i32,
     cc_target: Option<CcTarget>,
 ) -> Vec<CBlock> {
     let slots: Vec<SlotJson> = serde_json::from_value(slots_json.clone()).unwrap_or_default();
@@ -901,7 +1155,7 @@ fn compile_slots(
         let Ok(block) = serde_json::from_value::<BlockJson>(bv.clone()) else {
             continue;
         };
-        if let Some(cb) = compile_block(&block, &slot, lane_channel, dev_transpose, &cc_target) {
+        if let Some(cb) = compile_block(&block, &slot, lane_channel, &cc_target) {
             out.push(cb);
         }
     }
@@ -912,7 +1166,6 @@ fn compile_block(
     b: &BlockJson,
     slot: &SlotJson,
     lane_channel: u8,
-    dev_transpose: i32,
     cc_target: &Option<CcTarget>,
 ) -> Option<CBlock> {
     let ppb = pulses_per_bar(&b.time_signature);
@@ -929,7 +1182,7 @@ fn compile_block(
         _ => 1,
     };
     let channel = lane_channel.clamp(1, 16);
-    let transpose = slot.transpose + dev_transpose;
+    let transpose = slot.transpose;
 
     let kind = match b.kind.as_str() {
         "melody" => {

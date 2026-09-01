@@ -18,9 +18,28 @@ pub async fn ws_handler(
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
+/// Kennung des ausgelieferten UI-Builds. Das Deploy-Skript schreibt
+/// `<ui-dir>/.build-id` (Git-SHA + Zeitstempel); fehlt die Datei — etwa im
+/// Vite-Dev-Betrieb, wo HMR das Nachladen übernimmt — bleibt die Kennung
+/// konstant und es wird nie neu geladen.
+fn ui_build_id() -> String {
+    let dir = std::env::var("MIDIREEF_UI_DIR").unwrap_or_else(|_| "./ui".into());
+    std::fs::read_to_string(std::path::Path::new(&dir).join(".build-id"))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| "dev".into())
+}
+
 async fn handle_socket(socket: WebSocket, state: AppState) {
     let (mut sender, mut receiver) = socket.split();
     let mut rx = state.events.subscribe();
+
+    // Beim Verbinden zuerst die Build-Kennung: der Client vergleicht sie mit
+    // der, die beim Laden der Seite galt, und lädt sich bei Abweichung neu.
+    // Da `net.ts` nach einem Server-Neustart automatisch reconnected, reicht
+    // ein Deploy + Dienst-Neustart, damit der Kiosk-Browser die neue UI holt —
+    // ohne Chromium neu zu starten.
+    let hello = serde_json::json!({ "t": "server.hello", "uiBuild": ui_build_id() });
+    let _ = sender.send(Message::Text(hello.to_string())).await;
 
     // Beim Verbinden: verfügbare MIDI-Ports + voller Zustand.
     let (outputs, inputs) = midi::list_ports();
@@ -177,22 +196,6 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 with_device(state, &id, |d| d.midi_out_port = port.clone());
             }
         }
-        "device.setChannel" => {
-            if let (Some(id), Some(ch)) = (
-                str_field(&cmd, "deviceId"),
-                cmd.get("channel").and_then(|v| v.as_u64()),
-            ) {
-                with_device(state, &id, |d| d.channel = ch as u8);
-            }
-        }
-        "device.setTranspose" => {
-            if let (Some(id), Some(t)) = (
-                str_field(&cmd, "deviceId"),
-                cmd.get("transpose").and_then(|v| v.as_i64()),
-            ) {
-                with_device(state, &id, |d| d.transpose = (t as i32).clamp(-36, 36));
-            }
-        }
         "device.setSendClock" => {
             if let (Some(id), Some(on)) = (
                 str_field(&cmd, "deviceId"),
@@ -206,29 +209,37 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
             if let Some(device_id) = str_field(&cmd, "deviceId") {
                 let role = str_field(&cmd, "role").unwrap_or_else(|| "melody".to_string());
                 let name = str_field(&cmd, "name");
-                with_device(state, &device_id, |d| {
-                    let n = name
-                        .clone()
-                        .unwrap_or_else(|| format!("Lane {}", d.lanes.len() + 1));
-                    let mut lane = Lane::new(&role, n);
-                    // Starter-Inhalt, damit sofort etwas da ist (Melodie/Beat klingen
-                    // sofort; die übrigen Typen sind zumindest editierbar).
+                {
+                    let mut proj = state.project.lock().unwrap();
+                    // Starter-Baustein zuerst in die projektweite Bibliothek.
+                    let mut starter_slot: Option<String> = None;
                     if let Some(mut block) = default_block_for(&role) {
-                        if let Some((row, col)) = next_free_slot(d, &role) {
-                            block["slot"] = serde_json::json!({ "type": role, "row": row, "col": col });
+                        if let Some((row, col)) = next_free_slot(&proj.blocks, &role) {
+                            block["slot"] =
+                                serde_json::json!({ "type": role, "row": row, "col": col });
                             let block_id = block
                                 .get("id")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or_default()
                                 .to_string();
-                            if let Some(arr) = d.blocks.as_array_mut() {
+                            if let Some(arr) = proj.blocks.as_array_mut() {
                                 arr.push(block);
                             }
-                            lane.slots = serde_json::json!([demo_slot(&block_id)]);
+                            starter_slot = Some(block_id);
                         }
                     }
-                    d.lanes.push(lane);
-                });
+                    if let Some(d) = proj.devices.iter_mut().find(|d| d.id == device_id) {
+                        let n = name
+                            .clone()
+                            .unwrap_or_else(|| format!("Lane {}", d.lanes.len() + 1));
+                        let mut lane = Lane::new(&role, n);
+                        if let Some(block_id) = starter_slot {
+                            lane.slots = serde_json::json!([demo_slot(&block_id)]);
+                        }
+                        d.lanes.push(lane);
+                    }
+                }
+                broadcast_snapshot(state);
             }
         }
         "lane.rename" => lane_str(state, &cmd, "name", |l, v| l.name = v),
@@ -250,15 +261,19 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
         "lane.setSolo" => lane_bool(state, &cmd, "solo", |l, v| l.solo = v),
         "lane.setCollapsed" => lane_bool(state, &cmd, "collapsed", |l, v| l.collapsed = v),
         "lane.setPlayMode" => lane_str(state, &cmd, "mode", |l, v| l.play_mode = v),
-        // Kanal-Override der Lane (null → Device-Kanal). Sitzt bewusst hier und
-        // nicht am Baustein: Bausteine sind reiner Inhalt und sollen in mehreren
-        // Lanes auf verschiedenen Kanälen wiederverwendbar sein.
+        // immediate | nextBeat | nextBar | nextBlock — s. Engine::trigger_slot.
+        "lane.setTriggerQuantize" => {
+            lane_str(state, &cmd, "quantize", |l, v| l.trigger_quantize = v)
+        }
+        // MIDI-Kanal der Lane (1–16). Sitzt bewusst hier und nicht am Baustein:
+        // Bausteine sind reiner Inhalt und sollen in mehreren Lanes auf
+        // verschiedenen Kanälen wiederverwendbar sein.
         "lane.setChannel" => {
-            if let Some(lane_id) = str_field(&cmd, "laneId") {
-                let ch = cmd
-                    .get("channel")
-                    .and_then(|v| v.as_u64())
-                    .map(|c| (c as u8).clamp(1, 16));
+            if let (Some(lane_id), Some(ch)) = (
+                str_field(&cmd, "laneId"),
+                cmd.get("channel").and_then(|v| v.as_u64()),
+            ) {
+                let ch = (ch as u8).clamp(1, 16);
                 with_lane(state, &lane_id, |l| l.channel = ch);
             }
         }
@@ -544,6 +559,18 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 state.clock.send(ClockCommand::TriggerSlot(lane_id, slot_id));
             }
         }
+        "block.press" => {
+            if let (Some(lane_id), Some(slot_id)) =
+                (str_field(&cmd, "laneId"), str_field(&cmd, "slotId"))
+            {
+                state.clock.send(ClockCommand::PressSlot(lane_id, slot_id));
+            }
+        }
+        "block.release" => {
+            if let Some(lane_id) = str_field(&cmd, "laneId") {
+                state.clock.send(ClockCommand::ReleaseSlot(lane_id));
+            }
+        }
         "block.rename" => {
             if let (Some(id), Some(name)) = (str_field(&cmd, "blockId"), str_field(&cmd, "name")) {
                 let name: String = name.chars().take(6).collect();
@@ -560,27 +587,24 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
         // im Unterschied zu `lane.addBlock`, das die nächste freie Zelle nimmt).
         // No-op, wenn die Zelle schon belegt ist.
         "block.createAt" => {
-            if let (Some(device_id), Some(block_type), Some(row), Some(col)) = (
-                str_field(&cmd, "deviceId"),
+            if let (Some(block_type), Some(row), Some(col)) = (
                 str_field(&cmd, "blockType"),
                 cmd.get("row").and_then(|v| v.as_u64()),
                 cmd.get("col").and_then(|v| v.as_u64()),
             ) {
                 let mut proj = state.project.lock().unwrap();
-                if let Some(d) = proj.devices.iter_mut().find(|d| d.id == device_id) {
-                    let occupied = d.blocks.as_array().map(|arr| {
-                        arr.iter().any(|b| {
-                            b.get("type").and_then(|v| v.as_str()) == Some(block_type.as_str())
-                                && b.get("slot").and_then(|s| s.get("row")).and_then(|v| v.as_u64()) == Some(row)
-                                && b.get("slot").and_then(|s| s.get("col")).and_then(|v| v.as_u64()) == Some(col)
-                        })
-                    }).unwrap_or(false);
-                    if !occupied {
-                        if let Some(mut block) = default_block_for(&block_type) {
-                            block["slot"] = serde_json::json!({ "type": block_type, "row": row, "col": col });
-                            if let Some(arr) = d.blocks.as_array_mut() {
-                                arr.push(block);
-                            }
+                let occupied = proj.blocks.as_array().map(|arr| {
+                    arr.iter().any(|b| {
+                        b.get("type").and_then(|v| v.as_str()) == Some(block_type.as_str())
+                            && b.get("slot").and_then(|s| s.get("row")).and_then(|v| v.as_u64()) == Some(row)
+                            && b.get("slot").and_then(|s| s.get("col")).and_then(|v| v.as_u64()) == Some(col)
+                    })
+                }).unwrap_or(false);
+                if !occupied {
+                    if let Some(mut block) = default_block_for(&block_type) {
+                        block["slot"] = serde_json::json!({ "type": block_type, "row": row, "col": col });
+                        if let Some(arr) = proj.blocks.as_array_mut() {
+                            arr.push(block);
                         }
                     }
                 }
@@ -589,19 +613,14 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
             }
         }
         // Baustein-Bibliothek: entfernt einen Baustein endgültig und räumt
-        // dangling Lane-Slot-Referenzen im selben Device auf.
+        // dangling Lane-Slot-Referenzen in ALLEN Lanes ALLER Devices auf.
         "block.delete" => {
             if let Some(id) = str_field(&cmd, "blockId") {
                 let mut proj = state.project.lock().unwrap();
-                if let Some(d) = proj.devices.iter_mut().find(|d| {
-                    d.blocks
-                        .as_array()
-                        .map(|arr| arr.iter().any(|b| b.get("id").and_then(|v| v.as_str()) == Some(id.as_str())))
-                        .unwrap_or(false)
-                }) {
-                    if let Some(arr) = d.blocks.as_array_mut() {
-                        arr.retain(|b| b.get("id").and_then(|v| v.as_str()) != Some(id.as_str()));
-                    }
+                if let Some(arr) = proj.blocks.as_array_mut() {
+                    arr.retain(|b| b.get("id").and_then(|v| v.as_str()) != Some(id.as_str()));
+                }
+                for d in proj.devices.iter_mut() {
                     for lane in d.lanes.iter_mut() {
                         if let Some(slots) = lane.slots.as_array_mut() {
                             slots.retain(|s| s.get("blockId").and_then(|v| v.as_str()) != Some(id.as_str()));
@@ -622,33 +641,26 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 cmd.get("col").and_then(|v| v.as_u64()),
             ) {
                 let mut proj = state.project.lock().unwrap();
-                if let Some(d) = proj.devices.iter_mut().find(|d| {
-                    d.blocks
-                        .as_array()
-                        .map(|arr| arr.iter().any(|b| b.get("id").and_then(|v| v.as_str()) == Some(id.as_str())))
-                        .unwrap_or(false)
-                }) {
-                    let block_type = d
-                        .blocks
-                        .as_array()
-                        .and_then(|arr| arr.iter().find(|b| b.get("id").and_then(|v| v.as_str()) == Some(id.as_str())))
-                        .and_then(|b| b.get("type").and_then(|v| v.as_str()))
-                        .map(str::to_string);
-                    if let Some(block_type) = block_type {
-                        let occupied_by_other = d.blocks.as_array().map(|arr| {
-                            arr.iter().any(|b| {
-                                b.get("id").and_then(|v| v.as_str()) != Some(id.as_str())
-                                    && b.get("type").and_then(|v| v.as_str()) == Some(block_type.as_str())
-                                    && b.get("slot").and_then(|s| s.get("row")).and_then(|v| v.as_u64()) == Some(row)
-                                    && b.get("slot").and_then(|s| s.get("col")).and_then(|v| v.as_u64()) == Some(col)
-                            })
-                        }).unwrap_or(false);
-                        if !occupied_by_other {
-                            if let Some(b) = d.blocks.as_array_mut().and_then(|arr| {
-                                arr.iter_mut().find(|b| b.get("id").and_then(|v| v.as_str()) == Some(id.as_str()))
-                            }) {
-                                b["slot"] = serde_json::json!({ "type": block_type, "row": row, "col": col });
-                            }
+                let block_type = proj
+                    .blocks
+                    .as_array()
+                    .and_then(|arr| arr.iter().find(|b| b.get("id").and_then(|v| v.as_str()) == Some(id.as_str())))
+                    .and_then(|b| b.get("type").and_then(|v| v.as_str()))
+                    .map(str::to_string);
+                if let Some(block_type) = block_type {
+                    let occupied_by_other = proj.blocks.as_array().map(|arr| {
+                        arr.iter().any(|b| {
+                            b.get("id").and_then(|v| v.as_str()) != Some(id.as_str())
+                                && b.get("type").and_then(|v| v.as_str()) == Some(block_type.as_str())
+                                && b.get("slot").and_then(|s| s.get("row")).and_then(|v| v.as_u64()) == Some(row)
+                                && b.get("slot").and_then(|s| s.get("col")).and_then(|v| v.as_u64()) == Some(col)
+                        })
+                    }).unwrap_or(false);
+                    if !occupied_by_other {
+                        if let Some(b) = proj.blocks.as_array_mut().and_then(|arr| {
+                            arr.iter_mut().find(|b| b.get("id").and_then(|v| v.as_str()) == Some(id.as_str()))
+                        }) {
+                            b["slot"] = serde_json::json!({ "type": block_type, "row": row, "col": col });
                         }
                     }
                 }
@@ -848,6 +860,33 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 }
                 drop(proj);
                 broadcast_snapshot(state);
+            }
+        }
+        // Baustein-Detail: eine Tonhöhe live anspielen (Klaviatur am Rand der
+        // Piano-Rolle). Läuft — wie die Live-Controls — an der Engine vorbei
+        // direkt auf den Port, verändert also NICHTS am Projekt: kein
+        // Snapshot, kein Autosave, nur Note-On/Note-Off.
+        "block.previewNote" => {
+            if let (Some(id), Some(note), Some(on)) = (
+                str_field(&cmd, "blockId"),
+                cmd.get("note").and_then(|v| v.as_u64()),
+                cmd.get("on").and_then(|v| v.as_bool()),
+            ) {
+                let note = note.min(127) as u8;
+                let vel = cmd
+                    .get("velocity")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(100)
+                    .clamp(1, 127) as u8;
+                let proj = state.project.lock().unwrap();
+                if let Some((port, ch)) = block_preview_target(&proj, &id) {
+                    let bytes = if on {
+                        vec![0x90 | (ch - 1), note, vel]
+                    } else {
+                        vec![0x80 | (ch - 1), note, 0]
+                    };
+                    state.clock.send(ClockCommand::Midi(port, bytes));
+                }
             }
         }
         // Baustein-Detail: Step einer Beat-Line an/aus (velocity 0/100).
@@ -1161,44 +1200,55 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
             if let Some(lane_id) = str_field(&cmd, "laneId") {
                 {
                     let mut proj = state.project.lock().unwrap();
-                    for d in proj.devices.iter_mut() {
-                        if let Some(pos) = d.lanes.iter().position(|l| l.id == lane_id) {
-                            let role = d.lanes[pos].role.clone();
-                            if let Some(mut block) = default_block_for(&role) {
-                                if let Some((row, col)) = next_free_slot(d, &role) {
-                                    block["slot"] = serde_json::json!({ "type": role, "row": row, "col": col });
-                                    let bid = block
-                                        .get("id")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or_default()
-                                        .to_string();
-                                    if let Some(arr) = d.blocks.as_array_mut() {
-                                        arr.push(block);
-                                    }
-                                    if let Some(sl) = d.lanes[pos].slots.as_array_mut() {
-                                        sl.push(demo_slot(&bid));
+                    let role = proj.devices.iter().find_map(|d| {
+                        d.lanes
+                            .iter()
+                            .find(|l| l.id == lane_id)
+                            .map(|l| l.role.clone())
+                    });
+                    if let Some(role) = role {
+                        if let Some(mut block) = default_block_for(&role) {
+                            if let Some((row, col)) = next_free_slot(&proj.blocks, &role) {
+                                block["slot"] =
+                                    serde_json::json!({ "type": role, "row": row, "col": col });
+                                let bid = block
+                                    .get("id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or_default()
+                                    .to_string();
+                                if let Some(arr) = proj.blocks.as_array_mut() {
+                                    arr.push(block);
+                                }
+                                for d in proj.devices.iter_mut() {
+                                    if let Some(l) = d.lanes.iter_mut().find(|l| l.id == lane_id) {
+                                        if let Some(sl) = l.slots.as_array_mut() {
+                                            sl.push(demo_slot(&bid));
+                                        }
+                                        break;
                                     }
                                 }
                             }
-                            break;
                         }
                     }
                 }
                 broadcast_snapshot(state);
             }
         }
-        // Fügt einen BESTEHENDEN Baustein (aus der Baustein-Bibliothek des
-        // Devices) als neuen Slot in eine Lane ein — anders als
-        // `lane.addBlock`, das immer einen frischen Baustein anlegt. Nur
-        // erlaubt, wenn Baustein-Typ und Lane-Rolle übereinstimmen und
-        // beide zum selben Device gehören.
+        // Fügt einen BESTEHENDEN Baustein aus der projektweiten Bibliothek als
+        // neuen Slot in eine Lane ein — anders als `lane.addBlock`, das immer
+        // einen frischen Baustein anlegt. Nur erlaubt, wenn Baustein-Typ und
+        // Lane-Rolle übereinstimmen.
         "laneSlot.add" => {
             if let (Some(lane_id), Some(block_id)) = (str_field(&cmd, "laneId"), str_field(&cmd, "blockId")) {
                 let mut proj = state.project.lock().unwrap();
-                for d in proj.devices.iter_mut() {
-                    let Some(pos) = d.lanes.iter().position(|l| l.id == lane_id) else { continue };
-                    let role = d.lanes[pos].role.clone();
-                    let block_matches = d
+                let role = proj.devices.iter().find_map(|d| {
+                    d.lanes
+                        .iter()
+                        .find(|l| l.id == lane_id)
+                        .map(|l| l.role.clone())
+                });
+                if let Some(role) = role {
+                    let block_matches = proj
                         .blocks
                         .as_array()
                         .map(|arr| {
@@ -1209,11 +1259,15 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                         })
                         .unwrap_or(false);
                     if block_matches {
-                        if let Some(sl) = d.lanes[pos].slots.as_array_mut() {
-                            sl.push(demo_slot(&block_id));
+                        for d in proj.devices.iter_mut() {
+                            if let Some(l) = d.lanes.iter_mut().find(|l| l.id == lane_id) {
+                                if let Some(sl) = l.slots.as_array_mut() {
+                                    sl.push(demo_slot(&block_id));
+                                }
+                                break;
+                            }
                         }
                     }
-                    break;
                 }
                 drop(proj);
                 broadcast_snapshot(state);
@@ -1290,10 +1344,14 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 str_field(&cmd, "blockId"),
             ) {
                 let mut proj = state.project.lock().unwrap();
-                for d in proj.devices.iter_mut() {
-                    let Some(lpos) = d.lanes.iter().position(|l| l.id == lane_id) else { continue };
-                    let role = d.lanes[lpos].role.clone();
-                    let block_matches = d
+                let role = proj.devices.iter().find_map(|d| {
+                    d.lanes
+                        .iter()
+                        .find(|l| l.id == lane_id)
+                        .map(|l| l.role.clone())
+                });
+                if let Some(role) = role {
+                    let block_matches = proj
                         .blocks
                         .as_array()
                         .map(|arr| {
@@ -1304,15 +1362,19 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                         })
                         .unwrap_or(false);
                     if block_matches {
-                        if let Some(sl) = d.lanes[lpos].slots.as_array_mut() {
-                            if let Some(slot) = sl.iter_mut().find(|s| {
-                                s.get("id").and_then(|v| v.as_str()) == Some(slot_id.as_str())
-                            }) {
-                                slot["blockId"] = serde_json::json!(block_id);
+                        for d in proj.devices.iter_mut() {
+                            if let Some(l) = d.lanes.iter_mut().find(|l| l.id == lane_id) {
+                                if let Some(sl) = l.slots.as_array_mut() {
+                                    if let Some(slot) = sl.iter_mut().find(|s| {
+                                        s.get("id").and_then(|v| v.as_str()) == Some(slot_id.as_str())
+                                    }) {
+                                        slot["blockId"] = serde_json::json!(block_id);
+                                    }
+                                }
+                                break;
                             }
                         }
                     }
-                    break;
                 }
                 drop(proj);
                 broadcast_snapshot(state);
@@ -1328,6 +1390,34 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 }
                 drop(proj);
                 broadcast_snapshot(state);
+            }
+        }
+        // Bausteinkette einer Lane umsortieren (Kachel nach links/rechts
+        // schieben). `orderedSlotIds` gibt die neue Reihenfolge vor; nicht
+        // gelistete Slots hängen sich in bisheriger Reihenfolge hinten an.
+        "laneSlot.reorder" => {
+            if let Some(lane_id) = str_field(&cmd, "laneId") {
+                let ordered: Vec<String> = cmd
+                    .get("orderedSlotIds")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                    .unwrap_or_default();
+                if !ordered.is_empty() {
+                    let mut proj = state.project.lock().unwrap();
+                    if let Some(lane) = find_lane_mut(&mut proj, &lane_id) {
+                        if let Some(arr) = lane.slots.as_array_mut() {
+                            let rank = |s: &serde_json::Value| -> usize {
+                                s.get("id")
+                                    .and_then(|v| v.as_str())
+                                    .and_then(|id| ordered.iter().position(|o| o == id))
+                                    .unwrap_or(usize::MAX)
+                            };
+                            arr.sort_by_key(rank);
+                        }
+                    }
+                    drop(proj);
+                    broadcast_snapshot(state);
+                }
             }
         }
         other => {
@@ -1445,20 +1535,13 @@ fn lane_str<F: FnMut(&mut Lane, String)>(
 
 // ── Baustein-Helfer (Baustein-Detail-Editor) ────────────────────────────────
 
-/// Sucht einen Baustein anhand seiner ID über alle Devices hinweg (Bausteine
-/// leben in `device.blocks`, IDs sind global eindeutig — die ID allein reicht).
+/// Sucht einen Baustein anhand seiner ID in der projektweiten Bibliothek
+/// (`project.blocks`). IDs sind global eindeutig — die ID allein reicht.
 fn find_block_mut<'a>(proj: &'a mut Project, block_id: &str) -> Option<&'a mut serde_json::Value> {
-    for d in proj.devices.iter_mut() {
-        if let Some(arr) = d.blocks.as_array_mut() {
-            if let Some(b) = arr
-                .iter_mut()
-                .find(|b| b.get("id").and_then(|v| v.as_str()) == Some(block_id))
-            {
-                return Some(b);
-            }
-        }
-    }
-    None
+    proj.blocks
+        .as_array_mut()?
+        .iter_mut()
+        .find(|b| b.get("id").and_then(|v| v.as_str()) == Some(block_id))
 }
 
 /// Grenzen für `block.setLength`. Die Auflösung bleibt bewusst grob geklemmt:
@@ -1643,9 +1726,9 @@ fn default_cc_layer(kind: &str, steps: usize) -> Option<serde_json::Value> {
 
 /// Erste freie (row, col)-Position im 9×9-Raster dieses Bausteintyps
 /// (row-major: 1-1, 1-2, …, 9-9). `None`, wenn alle 81 Zellen belegt sind.
-fn next_free_slot(dev: &Device, block_type: &str) -> Option<(u8, u8)> {
-    let taken: std::collections::HashSet<(u8, u8)> = dev
-        .blocks
+/// `blocks` ist die projektweite Bibliothek (`project.blocks`).
+fn next_free_slot(blocks: &serde_json::Value, block_type: &str) -> Option<(u8, u8)> {
+    let taken: std::collections::HashSet<(u8, u8)> = blocks
         .as_array()
         .map(|arr| {
             arr.iter()
@@ -1719,10 +1802,50 @@ fn find_lane_control_mut<'a>(lane: &'a mut Lane, control_id: &str) -> Option<&'a
         .find(|c| c.get("id").and_then(|v| v.as_str()) == Some(control_id))
 }
 
-/// (Port, Kanal) für eine Lane — Lane-Channel-Override oder Device-Default.
+/// (Port, Kanal) für eine Lane — der Kanal sitzt an der Lane, der Port am Device.
 fn lane_port_channel(dev: &Device, lane: &Lane) -> (String, u8) {
-    let ch = lane.channel.unwrap_or(dev.channel).clamp(1, 16);
+    let ch = lane.channel.clamp(1, 16);
     (dev.midi_out_port.clone(), ch)
+}
+
+/// Wohin ein Probeton aus dem Baustein-Detail geht (Port, Kanal 1–16).
+///
+/// Ein Baustein trägt selbst KEIN Ziel — kein Port, kein Kanal (s. `BlockBase`
+/// in shared/model.ts): das Ziel sitzt an der Lane. Zum Anspielen wird deshalb
+/// die erste Lane gesucht, die diesen Baustein wirklich in einem Slot hat —
+/// das ist das Gerät, auf dem er beim Abspielen auch klingt. Steckt er noch in
+/// keiner Lane (frisch aus der Bibliothek), tut es die erste Lane mit passender
+/// Rolle, sonst die erste Lane überhaupt: zum Vorhören ist irgendein hörbares
+/// Ziel besser als Stille.
+fn block_preview_target(proj: &Project, block_id: &str) -> Option<(String, u8)> {
+    let role = proj
+        .blocks
+        .as_array()
+        .and_then(|a| a.iter().find(|b| b.get("id").and_then(|v| v.as_str()) == Some(block_id)))
+        .and_then(|b| b.get("type").and_then(|v| v.as_str()))
+        .map(str::to_string);
+
+    let mut by_role: Option<(String, u8)> = None;
+    let mut any: Option<(String, u8)> = None;
+    for dev in &proj.devices {
+        for lane in &dev.lanes {
+            let uses_block = lane.slots.as_array().is_some_and(|slots| {
+                slots
+                    .iter()
+                    .any(|s| s.get("blockId").and_then(|v| v.as_str()) == Some(block_id))
+            });
+            if uses_block {
+                return Some(lane_port_channel(dev, lane));
+            }
+            if by_role.is_none() && role.as_deref() == Some(lane.role.as_str()) {
+                by_role = Some(lane_port_channel(dev, lane));
+            }
+            if any.is_none() {
+                any = Some(lane_port_channel(dev, lane));
+            }
+        }
+    }
+    by_role.or(any)
 }
 
 /// Feuert ein Lane-Control live (Press/Release) — Drum-Trigger, Mute-Toggle,

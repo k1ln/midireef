@@ -54,8 +54,13 @@ pub struct Lane {
     pub height: f64,
     pub play_mode: String,        // sequential|random|manual
     pub trigger_quantize: String, // immediate|nextBeat|nextBar|nextBlock
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub channel: Option<u8>,
+    /// MIDI-Kanal dieser Lane (1–16). Der Kanal sitzt ausschließlich an der
+    /// Lane — Bausteine sind reiner Inhalt, das Device kennt keinen Kanal mehr.
+    /// Sentinel `0` = aus einem Altprojekt geladen, ohne eigenen Kanal;
+    /// `migrate_project` füllt ihn beim Laden auf (Baustein-Feld → alter
+    /// Device-Kanal → 1).
+    #[serde(default)]
+    pub channel: u8,
     /// Nur für `role == "cc"`: der Ziel-Knob dieser Lane (ein gelerntes
     /// Live-Control aus `Project.controls`, `kind == "knob"`). Die CC-Bausteine
     /// der Lane liefern ausschließlich die BEWEGUNG (0..1) — Port, Kanal und
@@ -86,7 +91,7 @@ impl Lane {
             height: 64.0,
             play_mode: "sequential".to_string(),
             trigger_quantize: "nextBar".to_string(),
-            channel: None,
+            channel: 1,
             cc_control_id: None,
             slots: serde_json::json!([]),
             controls: serde_json::json!([]),
@@ -107,7 +112,9 @@ fn default_role_color(role: &str) -> &'static str {
     }
 }
 
-/// Device (Instrument). Bausteine bleiben vorerst als freies JSON.
+/// Device (Instrument). Die Baustein-Bibliothek liegt seit der Projekt-Umstellung
+/// nicht mehr am Device, sondern an `Project.blocks` — ein Baustein ist reiner
+/// Inhalt und in jeder Lane jedes Geräts einsetzbar.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Device {
@@ -116,18 +123,21 @@ pub struct Device {
     pub midi_out_port: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub midi_in_port: Option<String>,
-    pub channel: u8,
-    /// Globaler Halbton-Versatz, live verstellbar — addiert sich auf den
-    /// Per-Slot-Transpose obendrauf (z.B. um mehrere Lanes live in eine
-    /// gemeinsame Tonart zu bringen, ohne Bausteine zu editieren).
-    #[serde(default)]
-    pub transpose: i32,
+    /// Nur für die Migration von Altprojekten: früher lag der Default-Kanal am
+    /// Device, heute trägt ihn jede Lane selbst. Wird beim Laden aus dem alten
+    /// `channel`-Feld gelesen, um Lanes ohne eigenen Kanal einmalig zu füllen
+    /// (siehe `migrate_project`), und nie wieder geschrieben.
+    #[serde(rename = "channel", default, skip_serializing)]
+    pub legacy_channel: Option<u8>,
     pub send_clock: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile_id: Option<Id>,
     pub latency_offset_ms: f64,
-    #[serde(default)]
-    pub blocks: serde_json::Value,
+    /// Nur für die Migration von Altprojekten: früher hielt jedes Device seine
+    /// eigene Baustein-Bibliothek. `migrate_project` hebt diese einmalig nach
+    /// `Project.blocks` und schreibt sie nie wieder.
+    #[serde(rename = "blocks", default, skip_serializing)]
+    pub legacy_blocks: serde_json::Value,
     pub lanes: Vec<Lane>,
 }
 
@@ -138,12 +148,11 @@ impl Device {
             name,
             midi_out_port,
             midi_in_port: None,
-            channel: 1,
-            transpose: 0,
+            legacy_channel: None,
             send_clock: true,
             profile_id: None,
             latency_offset_ms: 0.0,
-            blocks: serde_json::json!([]),
+            legacy_blocks: serde_json::Value::Null,
             lanes: Vec::new(),
         }
     }
@@ -164,6 +173,12 @@ pub struct Project {
     /// Rohbereiche, die der Server (noch) nicht typisiert verarbeitet, aber persistiert.
     #[serde(default)]
     pub devices: Vec<Device>,
+    /// Baustein-Bibliothek des Projekts ("schwebende Tabelle", 9×9-Raster pro Typ).
+    /// Ein Baustein ist reiner Inhalt und in jeder Lane jedes Geräts nutzbar; das
+    /// Ziel (Kanal/CC) legt die Lane fest. Altprojekte tragen die Bausteine noch
+    /// je Device — `migrate_project` hebt sie beim Laden hierher.
+    #[serde(default)]
+    pub blocks: serde_json::Value,
     #[serde(default)]
     pub device_profiles: serde_json::Value,
     #[serde(default)]
@@ -204,6 +219,7 @@ impl Project {
             },
             swing: 0.0,
             devices: Vec::new(),
+            blocks: serde_json::json!([]),
             device_profiles: serde_json::json!([]),
             controls: serde_json::json!([]),
             control_screens: serde_json::json!([]),

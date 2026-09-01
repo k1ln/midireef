@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use axum::routing::get;
 use axum::Router;
 use tokio::sync::broadcast;
+use tower_http::services::{ServeDir, ServeFile};
 
 use crate::model::{Project, TransportState};
 use crate::state::AppState;
@@ -105,7 +106,8 @@ async fn main() {
 
     let app = Router::new()
         .route("/ws", get(ws::ws_handler))
-        .with_state(state);
+        .with_state(state)
+        .fallback_service(ui_service());
 
     let port: u16 = std::env::var("MIDIREEF_PORT")
         .ok()
@@ -116,9 +118,30 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .expect("bind TCP");
-    tracing::info!("MidiReef-Server läuft auf ws://{addr}/ws");
+    tracing::info!("MidiReef-Server läuft auf http://{addr} (WebSocket: ws://{addr}/ws)");
 
     axum::serve(listener, app).await.expect("serve");
+}
+
+/// Statisches Ausliefern des gebauten UI (`ui/dist`) durch denselben Server,
+/// der auch `/ws` bedient — auf dem Pi läuft so ein einziger Dienst auf einem
+/// einzigen Port, den der Kiosk-Browser anspringt. Pfad via `MIDIREEF_UI_DIR`
+/// (Default `./ui`, relativ zum Arbeitsverzeichnis des Dienstes).
+///
+/// Unbekannte Pfade fallen auf `index.html` zurück: die UI ist eine SPA, und
+/// ohne Fallback würde ein Reload auf einer Unterroute 404 liefern.
+fn ui_service() -> ServeDir<ServeFile> {
+    let dir = std::env::var("MIDIREEF_UI_DIR").unwrap_or_else(|_| "./ui".into());
+    let index = std::path::Path::new(&dir).join("index.html");
+    if index.exists() {
+        tracing::info!("UI wird ausgeliefert aus „{dir}“");
+    } else {
+        tracing::warn!(
+            "Kein UI unter „{dir}“ gefunden (kein index.html) — der Server \
+             bedient nur /ws. Für den Kiosk-Betrieb `ui/dist` dorthin deployen."
+        );
+    }
+    ServeDir::new(&dir).fallback(ServeFile::new(index))
 }
 
 /// Interval für den Hotplug-Rescan der MIDI-Eingänge — `midir` bietet keine
@@ -160,12 +183,7 @@ fn spawn_midi_learn(state: &AppState) {
                             // Gerät automatisch aus der Quelle ableiten: passendes Device
                             // wiederverwenden oder — falls ein gleichnamiger MIDI-Ausgang
                             // existiert — neu in der Sequencer-Übersicht anlegen.
-                            let learned_channel = mapping
-                                .get("channel")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(1) as u8;
-                            let device_id =
-                                state.device_id_for_input_port(&source_port, learned_channel);
+                            let device_id = state.device_id_for_input_port(&source_port);
                             let control_id = state.add_learned_control(&mapping, device_id.as_deref());
                             let _ = state.events.send(serde_json::json!({
                                 "t": "learn.captured",

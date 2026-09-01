@@ -29,6 +29,10 @@ pub enum ClockCommand {
     Midi(String, Vec<u8>),
     /// Baustein per Touch auslösen: (laneId, slotId).
     TriggerSlot(String, String),
+    /// Touch-Down auf eine "hold"/"oneShot"-Lane: (laneId, slotId).
+    PressSlot(String, String),
+    /// Touch-Up auf eine "hold"-Lane: (laneId).
+    ReleaseSlot(String),
     /// Live vom Keyboard kommende Note für eine per `record.arm` gelinkte
     /// Melodie-Lane — siehe `record_note_in` unten. Nur der Clock-Thread kennt
     /// den laufenden Puls-Zähler, daher landet das hier statt in ws.rs.
@@ -174,6 +178,12 @@ fn clock_loop(
                 ClockCommand::TriggerSlot(lane_id, slot_id) => {
                     engine.trigger_slot(&lane_id, &slot_id);
                 }
+                ClockCommand::PressSlot(lane_id, slot_id) => {
+                    engine.press_slot(&lane_id, &slot_id);
+                }
+                ClockCommand::ReleaseSlot(lane_id) => {
+                    engine.release_slot(&lane_id);
+                }
                 ClockCommand::SetClockSource(src) => {
                     let mut t = transport.lock().unwrap();
                     t.clock_source = src;
@@ -287,19 +297,19 @@ fn record_note_in(
     pulses: u64,
     holds: &mut HashMap<(String, u8), u32>,
 ) -> Option<(String, bool)> {
-    let dev = proj
+    let block_id = proj
         .devices
-        .iter_mut()
-        .find(|d| d.lanes.iter().any(|l| l.id == lane_id))?;
-    let lane = dev.lanes.iter().find(|l| l.id == lane_id)?;
-    let block_id = lane
+        .iter()
+        .flat_map(|d| d.lanes.iter())
+        .find(|l| l.id == lane_id)?
         .slots
         .as_array()?
         .first()?
         .get("blockId")?
         .as_str()?
         .to_string();
-    let block = dev
+    // Bausteine liegen projektweit (`project.blocks`).
+    let block = proj
         .blocks
         .as_array_mut()?
         .iter_mut()
