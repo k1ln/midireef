@@ -17,6 +17,7 @@ import {
   PixelateFilter,
 } from "pixi-filters";
 import { PAL } from "../theme";
+import type { BgConfig } from "../app/bgConfig";
 
 export const THEME = {
   ray: PAL.white,
@@ -124,11 +125,21 @@ function vignetteTexture(w: number, h: number): Texture {
   return Texture.from(canvas);
 }
 
+/** Kürzester Abstand zwischen zwei Noten-Stößen (ms). Bei 16teln/120 BPM
+ *  kämen sonst 8 Stöße pro Sekunde. */
+const PULSE_MIN_MS = 120;
+/** Absolute Obergrenze an Blasen. Greift, wenn sehr dicht gespielt wird. */
+const BUBBLE_HARD_CAP = 90;
+
 interface Bubble {
   g: Graphics;
   speed: number;
   wobble: number;
   phase: number;
+  /** Aus einem Noten-Stoß (`pulse`) entstanden: verschwindet oben endgültig,
+   *  statt wie die Grundmenge wieder unten aufzutauchen. Ohne diese
+   *  Unterscheidung wächst die Blasenzahl während der Wiedergabe unbegrenzt. */
+  transient?: boolean;
 }
 
 /** Plankton: 1 Pixel breit, driftet frei in alle Richtungen (nicht nur nach oben). */
@@ -179,6 +190,45 @@ interface Algae {
   width: number; // Grundbreite des Stiels
 }
 
+/** Tintenfisch: treibt und schießt in Stößen (Rückstoßantrieb) durchs Bild,
+ *  der Mantel zieht sich beim Stoß zusammen. Blickt/fährt mantelvoran. */
+interface Squid {
+  c: Container;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  aim: number; // Fahrtrichtung (rad)
+  burstCd: number; // Sekunden bis zum nächsten Stoß
+  squish: number; // 0..1 Mantelkontraktion, klingt ab
+  scaleBase: number;
+}
+
+/** Hydrothermale Schlot-Quelle am Boden: ein massiver Felskegel ("black
+ *  smoker"), aus dem eine dichte, wallende Rauchschwade quillt. */
+interface Chimney {
+  c: Container;
+  x: number;
+  ventY: number; // y der Austrittsöffnung
+  mouth: number; // Breite der Öffnung → Streuung der Schwaden
+  emit: number; // Sekunden bis zum nächsten Schwadenstoß
+  particles: ChimneyParticle[];
+}
+
+interface ChimneyParticle {
+  s: Sprite; // weiche Rauch-Wolke (Glow-Textur)
+  x: number; // Welt-Koordinaten (float; werden auf s.x/s.y geschrieben)
+  y: number;
+  vx: number;
+  vy: number; // negativ = Auftrieb
+  age: number;
+  life: number;
+  sway: number;
+  size0: number; // Start-Durchmesser
+  size1: number; // End-Durchmesser (Schwade weitet sich beim Aufsteigen)
+  turb: number; // Turbulenz-Frequenzfaktor pro Partikel
+}
+
 /** Boden-Tier (Krabbe/Schnecke), das zu Algen läuft und sie abfrisst. */
 interface Grazer {
   c: Container;
@@ -191,6 +241,9 @@ interface Grazer {
   state: "approach" | "eat" | "leave";
   legPhase: number;
 }
+
+/** Neuzeichnungen der Algen-Geometrie pro Pflanze und Sekunde (s. redrawAlgae). */
+const ALGAE_HZ = 10;
 
 export class UnderwaterScene {
   readonly container = new Container();
@@ -206,18 +259,37 @@ export class UnderwaterScene {
   private vignette: Sprite;
   private pools: { s: Sprite; baseX: number; baseY: number; phase: number; r: number }[] = [];
   private bubbles: Bubble[] = [];
+  private lastPulseAt = 0;
   private plankton: Plankton[] = [];
   private fishes: Fish[] = [];
   private jellies: Jelly[] = [];
+  private squids: Squid[] = [];
+  private chimneys: Chimney[] = [];
   private algae: Algae[] = [];
+  private algaeCursor = 0; // Rundlauf-Zeiger für die verteilte Neuzeichnung
+  private algaeBudget = 0; // aufgelaufener Bruchteil einer fälligen Pflanze
+  // Scratch-Puffer für stalkPoints(): pro Halm und Frame würde ein frisches
+  // Punkte-Array sonst den GC füttern (segments ≤ 10, 64 ist reichlich).
+  private stalkX = new Float64Array(64);
+  private stalkY = new Float64Array(64);
   private grazers: Grazer[] = [];
   private grazerCooldown = 1; // Sekunden bis das nächste Tier kommt
   private glowTex = glowTexture(128);
   private w = 0;
   private h = 0;
   private time = 0;
+  /** Nutzer-Konfiguration (Preset + Kreaturenzahl + Reaktivität). */
+  private cfg: BgConfig;
+  /** Strömungs-/Bewegungs-Faktor: 1 = normal, folgt bei laufender Wiedergabe
+   *  weich dem Tempo (s. setTempo). */
+  private tempo = 1;
+  private tempoTarget = 1;
+  /** Kurzer Ausschlag nach einer Notensendung (s. pulse) — klingt pro Frame ab
+   *  und hebt God-Rays/Kaustik an. */
+  private noteFlash = 0;
 
-  constructor() {
+  constructor(cfg: BgConfig) {
+    this.cfg = cfg;
     this.container.addChild(this.scene);
 
     this.bg = new Sprite(gradientTexture(8, 256));
@@ -298,10 +370,63 @@ export class UnderwaterScene {
     this.buildCaustics();
     this.buildLightPools();
     this.buildAlgae();
+    this.drawAllAlgae();
     this.ensureBubbles();
     this.ensurePlankton();
-    this.ensureFishes();
-    this.ensureJellies();
+    this.syncFishes();
+    this.syncJellies();
+    this.syncSquids();
+    this.syncChimneys();
+  }
+
+  /** Neue Nutzer-Konfiguration übernehmen: Kreaturenzahl live nachziehen,
+   *  Algen-Feld neu aufbauen, wenn sich die Dichte geändert hat. */
+  setConfig(cfg: BgConfig) {
+    const kelpChanged = cfg.kelp !== this.cfg.kelp;
+    this.cfg = cfg;
+    if (kelpChanged) this.buildAlgae();
+    this.syncFishes();
+    this.syncJellies();
+    this.syncSquids();
+    this.syncChimneys();
+  }
+
+  /** Strömungs-Faktor setzen (background.ts, aus dem laufenden Tempo). Wird im
+   *  update() weich angefahren, damit ein Tempowechsel nicht ruckt. */
+  setTempo(factor: number) {
+    this.tempoTarget = Math.max(0.25, Math.min(3, factor));
+  }
+
+  /** Eine Notensendung der Wiedergabe: Blasenstoß vom Boden + kurzer Lichtblitz. */
+  /** Noten-Stoß: kurzer Aufblitz + ein Schwung Blasen.
+   *
+   *  Zwei Bremsen, ohne die eine dichte Sequenz den Hintergrund flutet: bei
+   *  16teln auf 120 BPM kommen bis zu 8 Stöße/s, und jede Blase braucht 6–12 s
+   *  nach oben. Ungebremst stehen nach kurzer Zeit mehrere Hundert gleichzeitig
+   *  im Bild — das war die Ursache für „viele Blasen" UND für das Ruckeln des
+   *  Baustein-Sweeps (der Pi rendert dann nichts anderes mehr flüssig). */
+  pulse(strength = 1) {
+    this.noteFlash = Math.min(1, this.noteFlash + 0.25 * strength);
+
+    // 1) Nicht öfter als alle PULSE_MIN_MS ein Stoß.
+    const now = performance.now();
+    if (now - this.lastPulseAt < PULSE_MIN_MS) return;
+    this.lastPulseAt = now;
+
+    // 2) Nie mehr als BUBBLE_HARD_CAP Blasen insgesamt.
+    const room = BUBBLE_HARD_CAP - this.bubbles.length;
+    if (room <= 0) return;
+    const count = Math.min(room, 3 + Math.min(6, strength * 2));
+
+    const x = Math.random() * this.w;
+    for (let i = 0; i < count; i++) {
+      const b = this.makeBubble();
+      b.g.x = x + (Math.random() - 0.5) * 40;
+      b.g.y = this.h + Math.random() * 20;
+      b.speed = 60 + Math.random() * 60;
+      b.transient = true; // oben entsorgen, nicht wieder unten einsetzen
+      this.bubbles.push(b);
+    }
   }
 
   private buildLightPools() {
@@ -335,16 +460,25 @@ export class UnderwaterScene {
     }
   }
 
+  /** Algen-Feld auf die konfigurierte Zahl bringen. Bewusst INKREMENTELL:
+   *  am Kelp-Regler zu ziehen feuert BG_CONFIG_EVENT im Dutzend — würde jedes
+   *  davon alle Pflanzen neu anlegen (und neu tessellieren), ruckelt der Pi. */
   private buildAlgae() {
-    for (const a of this.algae) a.g.destroy();
-    this.algae = [];
-    // Mehr Algen, unregelmäßig über die gesamte Breite verteilt (nicht im Raster).
-    const count = Math.max(14, Math.floor(this.w / 60));
-    for (let i = 0; i < count; i++) {
+    const count = this.cfg.kelp;
+    while (this.algae.length > count) this.algae.pop()!.g.destroy();
+    while (this.algae.length < count) {
       const g = new Graphics();
       this.scene.addChild(g);
-      this.algae.push({ g, ...this.randomAlgaeTraits() });
+      const a = { g, ...this.randomAlgaeTraits() };
+      this.algae.push(a);
+      this.drawAlgae(a); // sofort zeichnen, sonst blitzt sie erst später auf
     }
+  }
+
+  /** Alle Pflanzen sofort neu zeichnen (nach einem Resize: die alte Geometrie
+   *  hängt an der alten Höhe und darf nicht erst nach und nach nachziehen). */
+  private drawAllAlgae() {
+    for (const a of this.algae) this.drawAlgae(a);
   }
 
   /** Zufällige Wuchs-Eigenschaften einer Pflanze (neu wachsend / nachwachsend). */
@@ -452,92 +586,141 @@ export class UnderwaterScene {
     else this.drawKelp(a, h);
   }
 
-  /** Gemeinsamer, sanft wiegender Stiel; liefert die Punkte für Anbauten. */
-  private stalkPoints(a: Algae, h: number, xOffset = 0) {
-    const sway = Math.sin(this.time * 0.9 + a.phase) * 4;
-    const pts: { x: number; y: number; t: number }[] = [];
-    for (let s = 0; s <= a.segments; s++) {
-      const t = s / a.segments;
+  /** Gemeinsamer, sanft wiegender Stiel. Schreibt die Punkte in stalkX/stalkY
+   *  und liefert deren Anzahl — allokationsfrei, weil das pro Halm und Frame
+   *  läuft. */
+  private stalkPoints(
+    baseX: number,
+    h: number,
+    segments: number,
+    phase: number,
+    seed: number,
+    xOffset = 0,
+  ): number {
+    const sway = Math.sin(this.time * 0.9 + phase) * 4;
+    const n = Math.min(segments, this.stalkX.length - 1);
+    for (let s = 0; s <= n; s++) {
+      const t = s / n;
       // Zwei Frequenzen → organischere, sich langsam wellende Krümmung.
       const bend =
-        Math.sin(this.time * 0.9 + a.phase + t * 1.6) * sway * t +
-        Math.sin(this.time * 0.5 + a.seed + t * 3.0) * 3 * t;
-      pts.push({ x: a.baseX + xOffset + bend, y: this.h - h * t, t });
+        Math.sin(this.time * 0.9 + phase + t * 1.6) * sway * t +
+        Math.sin(this.time * 0.5 + seed + t * 3.0) * 3 * t;
+      this.stalkX[s] = baseX + xOffset + bend;
+      this.stalkY[s] = this.h - h * t;
     }
-    return pts;
+    return n + 1;
   }
 
   /** Breittang: kräftiger, sich verjüngender Stiel mit gefiederten Blättern. */
   private drawKelp(a: Algae, h: number) {
     const g = a.g;
-    const pts = this.stalkPoints(a, h);
-    // Verjüngender Stiel: von unten (dick) nach oben (dünn) in Segmenten.
-    for (let i = 1; i < pts.length; i++) {
-      const w = a.width * (1 - pts[i].t * 0.7);
-      g.moveTo(pts[i - 1].x, pts[i - 1].y)
-        .lineTo(pts[i].x, pts[i].y)
-        .stroke({ color: THEME.algae, width: w, alpha: 0.5, cap: "round" });
-    }
-    // Blätter: an fast jedem Knoten, wechselseitig, als geschwungene Klingen.
-    const leaves = Math.max(1, Math.floor((a.segments - 1) * a.growth));
+    const n = this.stalkPoints(a.baseX, h, a.segments, a.phase, a.seed);
+    const px = this.stalkX;
+    const py = this.stalkY;
+    // Verjüngender Stiel als EIN Polygon (links hinauf, rechts zurück) statt
+    // eines Strokes je Segment: ein Tessellations- und Batch-Vorgang statt
+    // zehn. Der Stiel steht nahezu senkrecht, daher genügt ein horizontaler
+    // Versatz als Normale.
+    const halfW = (t: number) => a.width * (1 - t * 0.7) * 0.5;
+    g.moveTo(px[0] - halfW(0), py[0]);
+    for (let i = 1; i < n; i++) g.lineTo(px[i] - halfW(i / (n - 1)), py[i]);
+    for (let i = n - 1; i >= 0; i--) g.lineTo(px[i] + halfW(i / (n - 1)), py[i]);
+    g.fill({ color: THEME.algae, alpha: 0.5 });
+    // Blätter: an fast jedem Knoten, wechselseitig, als geschwungene Klingen —
+    // alle in EINEN Pfad, dann ein einziger Stroke.
+    const leaves = Math.min(n - 1, Math.max(1, Math.floor((a.segments - 1) * a.growth)));
     for (let i = 1; i <= leaves; i++) {
-      const base = pts[i];
+      const bx = px[i];
+      const by = py[i];
       const side = i % 2 === 0 ? 1 : -1;
       const len = (30 - i * 1.8) * a.growth;
       const wobble = Math.sin(this.time * 1.1 + a.seed + i) * 4;
-      const midX = base.x + side * len * 0.6 + wobble;
-      const midY = base.y - 4;
-      const tipX = base.x + side * len * 0.4 + wobble * 1.5;
-      const tipY = base.y - 12 - i;
-      g.moveTo(base.x, base.y)
-        .quadraticCurveTo(midX, midY, tipX, tipY)
-        .stroke({ color: THEME.algae, width: 2.5, alpha: 0.4, cap: "round" });
+      g.moveTo(bx, by).quadraticCurveTo(
+        bx + side * len * 0.6 + wobble,
+        by - 4,
+        bx + side * len * 0.4 + wobble * 1.5,
+        by - 12 - i,
+      );
     }
+    g.stroke({ color: THEME.algae, width: 2.5, alpha: 0.4, cap: "round" });
   }
 
-  /** Seegras: mehrere schlanke, unterschiedlich hohe Halme aus einem Büschel. */
+  /** Seegras: mehrere schlanke, unterschiedlich hohe Halme aus einem Büschel.
+   *  Alle Halme landen in einem Pfad → ein Stroke pro Büschel. */
   private drawGrass(a: Algae, h: number) {
     const g = a.g;
+    const px = this.stalkX;
+    const py = this.stalkY;
     for (let s = 0; s < a.strands; s++) {
       const off = (s - (a.strands - 1) / 2) * 4;
       const sh = h * (0.7 + ((s * 37) % 30) / 100); // je Halm etwas andere Höhe
-      const pts = this.stalkPoints(
-        { ...a, phase: a.phase + s * 0.6, seed: a.seed + s * 13 },
+      const n = this.stalkPoints(
+        a.baseX,
         sh,
+        a.segments,
+        a.phase + s * 0.6,
+        a.seed + s * 13,
         off,
       );
-      g.moveTo(pts[0].x, pts[0].y);
-      for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y);
-      g.stroke({
-        color: THEME.algae,
-        width: a.width * (1 - s * 0.06),
-        alpha: 0.4,
-        cap: "round",
-      });
+      g.moveTo(px[0], py[0]);
+      for (let i = 1; i < n; i++) g.lineTo(px[i], py[i]);
     }
+    // Ein Stroke heißt eine Breite für alle Halme (vorher verjüngte sich jeder
+    // Halm um 6 %); die Variation trägt ohnehin Höhe und Phase.
+    g.stroke({
+      color: THEME.algae,
+      width: a.width * (1 - (a.strands - 1) * 0.03),
+      alpha: 0.4,
+      cap: "round",
+    });
   }
 
   /** Federalge: Mittelrippe mit dicht stehenden, feinen Seitenfiedern. */
   private drawFeather(a: Algae, h: number) {
     const g = a.g;
-    const pts = this.stalkPoints(a, h);
+    const n = this.stalkPoints(a.baseX, h, a.segments, a.phase, a.seed);
+    const px = this.stalkX;
+    const py = this.stalkY;
     // Mittelrippe.
-    g.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y);
+    g.moveTo(px[0], py[0]);
+    for (let i = 1; i < n; i++) g.lineTo(px[i], py[i]);
     g.stroke({ color: THEME.algae, width: a.width, alpha: 0.5, cap: "round" });
-    // Feine Fiedern paarweise an jedem Segment.
-    const grown = Math.floor((pts.length - 1) * a.growth);
+    // Feine Fiedern paarweise an jedem Segment — ebenfalls ein Pfad, ein Stroke.
+    const grown = Math.floor((n - 1) * a.growth);
+    let any = false;
     for (let i = 1; i <= grown; i++) {
-      const base = pts[i];
       const len = (14 - i * 0.8) * a.growth;
       if (len <= 1) continue;
+      const bx = px[i];
+      const by = py[i];
       const wob = Math.sin(this.time * 1.3 + a.seed + i * 0.5) * 2;
-      const dy = -6;
-      g.moveTo(base.x, base.y)
-        .lineTo(base.x + len + wob, base.y + dy)
-        .moveTo(base.x, base.y)
-        .lineTo(base.x - len + wob, base.y + dy)
-        .stroke({ color: THEME.algae, width: 1, alpha: 0.32, cap: "round" });
+      g.moveTo(bx, by)
+        .lineTo(bx + len + wob, by - 6)
+        .moveTo(bx, by)
+        .lineTo(bx - len + wob, by - 6);
+      any = true;
+    }
+    if (any)
+      g.stroke({ color: THEME.algae, width: 1, alpha: 0.32, cap: "round" });
+  }
+
+  /** Algen-Geometrie über die Frames verteilen. Jede Pflanze pro Frame neu zu
+   *  tessellieren war der teuerste Posten der Szene (bei 480 Kelp: ~500 Pfade
+   *  je Frame, samt Buffer-Upload). Das Wiegen läuft mit ~0.9 rad/s, also über
+   *  7 s je Schwingung — ALGAE_HZ Aktualisierungen pro Pflanze und Sekunde
+   *  sind davon nicht zu unterscheiden, kosten aber nur einen Bruchteil.
+   *  Bruchteile einer fälligen Pflanze werden über die Frames aufsummiert,
+   *  damit auch dichte Felder gleichmäßig durchlaufen. */
+  private redrawAlgae(dt: number) {
+    const n = this.algae.length;
+    if (n === 0) return;
+    if (this.algaeCursor >= n) this.algaeCursor = 0; // Feld wurde verkleinert
+    this.algaeBudget = Math.min(n, this.algaeBudget + n * ALGAE_HZ * dt);
+    let due = Math.floor(this.algaeBudget);
+    this.algaeBudget -= due;
+    while (due-- > 0) {
+      this.drawAlgae(this.algae[this.algaeCursor]);
+      this.algaeCursor = (this.algaeCursor + 1) % n;
     }
   }
 
@@ -545,6 +728,9 @@ export class UnderwaterScene {
     for (let i = this.grazers.length - 1; i >= 0; i--) {
       const g = this.grazers[i];
       g.legPhase += dt * 8;
+
+      // Zahl im Betrieb gesenkt: die überzähligen (am Ende der Liste) abwandern.
+      if (i >= this.cfg.crabs && g.state !== "leave") g.state = "leave";
 
       if (g.state === "leave") {
         // Vom Bild ablaufen, dann entfernen; Cooldown bis zum nächsten Tier.
@@ -611,21 +797,130 @@ export class UnderwaterScene {
     };
   }
 
-  private ensureFishes() {
-    // Überwiegend Fische; Haie sehr selten (keine Schildkröten).
-    const target = 6;
-    while (this.fishes.length < target) {
-      const sharkCount = this.fishes.filter((f) => f.kind === "shark").length;
-      const kind: Fish["kind"] =
-        sharkCount === 0 && Math.random() < 0.2 ? "shark" : "fish";
-      this.fishes.push(this.makeFish(kind));
-    }
+  /** Kreaturen-Pool auf die Zielzahl bringen (wächst UND schrumpft — anders als
+   *  die alten ensureX(), die nur auffüllten). */
+  private syncPool<T>(pool: T[], target: number, make: () => T, kill: (t: T) => void) {
+    while (pool.length < target) pool.push(make());
+    while (pool.length > target) kill(pool.pop()!);
   }
 
-  private ensureJellies() {
-    // Quallen sind häufiger als Fische.
-    const target = Math.max(6, Math.floor(this.w / 260));
-    while (this.jellies.length < target) this.jellies.push(this.makeJelly());
+  private syncFishes() {
+    // Überwiegend Fische; ein einzelner Hai, sobald genug Fische da sind.
+    this.syncPool(
+      this.fishes,
+      this.cfg.fish,
+      () => {
+        const wantShark = this.fishes.length >= 4 && !this.fishes.some((f) => f.kind === "shark");
+        return this.makeFish(wantShark && Math.random() < 0.5 ? "shark" : "fish");
+      },
+      (f) => f.c.destroy(),
+    );
+  }
+
+  private syncJellies() {
+    this.syncPool(this.jellies, this.cfg.jellyfish, () => this.makeJelly(), (j) => j.c.destroy());
+  }
+
+  private syncSquids() {
+    this.syncPool(this.squids, this.cfg.squid, () => this.makeSquid(), (s) => s.c.destroy());
+  }
+
+  private syncChimneys() {
+    this.syncPool(
+      this.chimneys,
+      this.cfg.chimneys,
+      () => this.makeChimney(),
+      (ch) => {
+        for (const p of ch.particles) p.s.destroy();
+        ch.c.destroy();
+      },
+    );
+  }
+
+  private makeSquid(): Squid {
+    const c = new Container();
+    const eye = new Graphics();
+    drawSquid(c, eye);
+    c.addChild(eye);
+    const scaleBase = 0.8 + Math.random() * 0.7;
+    const x = Math.random() * this.w;
+    const y = 60 + Math.random() * (this.h - 160);
+    c.x = x;
+    c.y = y;
+    this.scene.addChild(c);
+    return {
+      c,
+      x,
+      y,
+      vx: (Math.random() - 0.5) * 20,
+      vy: (Math.random() - 0.5) * 20,
+      aim: Math.random() * Math.PI * 2,
+      burstCd: Math.random() * 2,
+      squish: 0,
+      scaleBase,
+    };
+  }
+
+  private makeChimney(): Chimney {
+    const c = new Container();
+    const g = new Graphics();
+    // Deutlich massiver als früher (war 22–52 hoch / 9–19 breit): ein
+    // gewachsener Schlot mit breitem Fuß und schmaler Öffnung.
+    const hgt = 46 + Math.random() * 60;
+    const wdt = 20 + Math.random() * 24;
+    const mouth = 5 + Math.random() * 6;
+    const lean = (Math.random() - 0.5) * 10; // Spitze leicht versetzt
+
+    // Geröll-Hügel um den Fuß → sitzt im Boden, nicht aufgesetzt.
+    g.ellipse(0, -3, wdt * 1.9, 13).fill({ color: PAL.black, alpha: 0.5 });
+
+    // Hauptkegel mit rauer, gestufter Silhouette.
+    g.moveTo(-wdt, 0)
+      .lineTo(-wdt * 0.74, -hgt * 0.3)
+      .lineTo(-wdt * 0.52, -hgt * 0.33)
+      .lineTo(-wdt * 0.44, -hgt * 0.64)
+      .lineTo(-mouth, -hgt)
+      .lineTo(lean - mouth * 0.5, -hgt - 4)
+      .lineTo(lean + mouth * 0.5, -hgt - 4)
+      .lineTo(mouth, -hgt)
+      .lineTo(wdt * 0.46, -hgt * 0.6)
+      .lineTo(wdt * 0.54, -hgt * 0.34)
+      .lineTo(wdt * 0.8, -hgt * 0.28)
+      .lineTo(wdt, 0)
+      .closePath()
+      .fill({ color: PAL.black, alpha: 0.72 })
+      .stroke({ color: THEME.algae, width: 1.5, alpha: 0.38 });
+
+    // Ein paar Gesteinsschichten als Struktur/Masse.
+    for (let i = 1; i <= 3; i++) {
+      const y = -hgt * (i / 4);
+      const half = wdt * (1 - i / 4) * 0.85;
+      g.moveTo(-half, y)
+        .lineTo(half, y)
+        .stroke({ color: PAL.black, width: 2, alpha: 0.38 });
+    }
+
+    // Schwacher Glutschimmer direkt an der Öffnung.
+    const vent = new Sprite(this.glowTex);
+    vent.anchor.set(0.5);
+    vent.width = vent.height = mouth * 3.4;
+    vent.x = lean;
+    vent.y = -hgt;
+    vent.alpha = 0.1;
+    c.addChild(g, vent);
+
+    const x = 30 + Math.random() * Math.max(1, this.w - 60);
+    c.x = x;
+    c.y = this.h;
+    this.scene.addChild(c);
+    return {
+      c,
+      x: x + lean,
+      ventY: this.h - hgt,
+      mouth,
+      emit: 0,
+      particles: [],
+    };
   }
 
   private makeJelly(): Jelly {
@@ -697,6 +992,11 @@ export class UnderwaterScene {
     const dt = ticker.deltaMS / 1000;
     this.time += dt;
 
+    // Strömungs-Faktor weich ans Ziel-Tempo führen; Notenblitz abklingen lassen.
+    this.tempo += (this.tempoTarget - this.tempo) * Math.min(1, dt * 2);
+    this.noteFlash = Math.max(0, this.noteFlash - dt * 2.2);
+    const flow = this.tempo;
+
     // Wasser-Verzerrung animieren: zwei Displacement-Ebenen gegenläufig driften
     // lassen → sich überlagernde Wellenfronten wie an einer echten Oberfläche.
     this.dispSprite.x = Math.sin(this.time * 0.3) * 40;
@@ -714,7 +1014,8 @@ export class UnderwaterScene {
     this.godray.time = this.time * 0.9;
     this.godray.angle =
       26 + Math.sin(this.time * 0.35) * 12 + Math.sin(this.time * 0.11) * 6;
-    this.godray.gain = 0.4 + Math.sin(this.time * 0.5) * 0.12;
+    // Bei einer Notensendung kurz aufhellen (reactNotes).
+    this.godray.gain = 0.4 + Math.sin(this.time * 0.5) * 0.12 + this.noteFlash * 0.5;
 
     // Kaustik-Lichtpfützen am Boden atmen/wandern leicht.
     for (const p of this.pools) {
@@ -734,16 +1035,25 @@ export class UnderwaterScene {
       for (let x = 0; x <= this.w; x += 40) {
         g.lineTo(x, y + Math.sin(this.time * 1.4 + x * 0.02) * 6);
       }
-      g.stroke({ color: PAL.white, width: 2, alpha: 0.05 });
+      g.stroke({ color: PAL.white, width: 2, alpha: 0.05 + this.noteFlash * 0.15 });
     }
 
-    // Blasen aufsteigen + wackeln.
-    for (const b of this.bubbles) {
-      b.g.y -= b.speed * dt;
+    // Blasen aufsteigen + wackeln. Rückwärts laufen, damit das Entfernen
+    // transienter Blasen den Index nicht verschiebt.
+    for (let i = this.bubbles.length - 1; i >= 0; i--) {
+      const b = this.bubbles[i];
+      b.g.y -= b.speed * dt * flow;
       b.g.x += Math.sin(this.time * 1.5 + b.phase) * b.wobble * dt;
       if (b.g.y < -20) {
-        b.g.y = this.h + 20;
-        b.g.x = Math.random() * this.w;
+        if (b.transient) {
+          // Stoß-Blase hat ihren Weg hinter sich — abräumen. Genau das fehlte:
+          // vorher wurde JEDE Blase unten neu eingesetzt und nie zerstört.
+          b.g.destroy();
+          this.bubbles.splice(i, 1);
+        } else {
+          b.g.y = this.h + 20;
+          b.g.x = Math.random() * this.w;
+        }
       }
     }
 
@@ -757,31 +1067,41 @@ export class UnderwaterScene {
       const max = 16;
       p.vx = Math.max(-max, Math.min(max, p.vx));
       p.vy = Math.max(-max, Math.min(max, p.vy));
-      p.g.x += p.vx * dt;
-      p.g.y += p.vy * dt;
+      p.g.x += p.vx * dt * flow;
+      p.g.y += p.vy * dt * flow;
       if (p.g.x < -2) p.g.x = this.w + 2;
       else if (p.g.x > this.w + 2) p.g.x = -2;
       if (p.g.y < -2) p.g.y = this.h + 2;
       else if (p.g.y > this.h + 2) p.g.y = -2;
     }
 
-    // Algen wachsen unregelmäßig nach, bis zur individuellen Obergrenze.
+    // Algen wachsen unregelmäßig nach, bis zur individuellen Obergrenze. Das
+    // ist reine Zahlenarbeit und läuft für alle; die teure Geometrie holt
+    // redrawAlgae() reihum nach.
     for (const a of this.algae) {
       a.growthPhase += dt;
       // Wachstumsrate schwankt (mal schneller, mal fast Stillstand).
       const rate = a.regrow * Math.max(0, 0.3 + Math.sin(a.growthPhase * 0.7) + 0.5);
       a.growth = Math.min(a.maxGrowth, a.growth + rate * dt);
-      this.drawAlgae(a);
     }
+    this.redrawAlgae(dt);
 
-    // Boden-Tiere: mehrere gleichzeitig; frisst eine Pflanze ganz auf und geht wieder.
+    // Boden-Tiere: bis zur konfigurierten Zahl gleichzeitig; jedes frisst eine
+    // Pflanze ganz auf und wandert wieder ab. Wird die Zahl gesenkt, schickt
+    // updateGrazers die überzähligen von selbst aus dem Bild.
     this.grazerCooldown -= dt;
-    if (this.grazers.length < 3 && this.grazerCooldown <= 0) {
+    if (this.grazers.length < this.cfg.crabs && this.grazerCooldown <= 0) {
       const kind: Grazer["kind"] = Math.random() < 0.5 ? "crab" : "snail";
       this.grazers.push(this.makeGrazer(kind));
       this.grazerCooldown = 2 + Math.random() * 4;
     }
     this.updateGrazers(dt);
+
+    // Tintenfische: Rückstoßstöße + Gleiten.
+    this.updateSquids(dt, flow);
+
+    // Schlot-Quellen: Flimmer-Partikel aufsteigen lassen.
+    this.updateChimneys(dt, flow);
 
     // Fische schwimmen (mit seitlichem Wackeln) + blinzeln + jagen.
     for (const f of this.fishes) {
@@ -792,7 +1112,7 @@ export class UnderwaterScene {
 
       // Vortrieb pulsiert leicht, als würde mit dem Schwanz geschlagen.
       const surge = 0.7 + 0.3 * Math.abs(Math.sin(this.time * 8 + f.phase));
-      f.c.x += f.dir * f.speed * surge * dt;
+      f.c.x += f.dir * f.speed * surge * dt * flow;
 
       // Sanftes Auf und Ab; beim Jagen vertikal zur Beute steuern (nur wenn die
       // Beute in Schwimmrichtung voraus liegt).
@@ -832,8 +1152,8 @@ export class UnderwaterScene {
     // Quallen treiben, pulsieren und steigen langsam auf (wrap an den Rändern).
     for (const j of this.jellies) {
       j.phase += dt;
-      j.x += j.driftX * dt + Math.sin(j.phase * 0.8) * 6 * dt;
-      j.y += j.vy * dt;
+      j.x += (j.driftX + Math.sin(j.phase * 0.8) * 6) * dt * flow;
+      j.y += j.vy * dt * flow;
       if (j.y < -40) j.y = this.h + 40;
       if (j.x < -30) j.x = this.w + 30;
       else if (j.x > this.w + 30) j.x = -30;
@@ -897,6 +1217,111 @@ export class UnderwaterScene {
     j.x = Math.random() * this.w;
     j.y = this.h + 40; // taucht unten neu auf und steigt wieder
   }
+
+  /** Tintenfische: alle paar Sekunden ein Rückstoßstoß in (grob) Blickrichtung,
+   *  dazwischen gleiten sie mit Wasserwiderstand aus. Der Mantel zieht sich beim
+   *  Stoß zusammen (squish) und der Körper zeigt mantelvoran in Fahrtrichtung. */
+  private updateSquids(dt: number, flow: number) {
+    for (const s of this.squids) {
+      s.burstCd -= dt * flow;
+      if (s.burstCd <= 0) {
+        s.burstCd = 1.4 + Math.random() * 2.4;
+        const ang = s.aim + (Math.random() - 0.5) * 1.2;
+        s.aim = ang;
+        s.vx += Math.cos(ang) * 130;
+        s.vy += Math.sin(ang) * 130;
+        s.squish = 1;
+      }
+      s.squish = Math.max(0, s.squish - dt * 3);
+      // Wasserwiderstand + leichtes Absinken zwischen den Stößen.
+      s.vx *= 0.985;
+      s.vy = s.vy * 0.985 + 7 * dt;
+      s.x += s.vx * dt * flow;
+      s.y += s.vy * dt * flow;
+      if (s.x < -40) s.x = this.w + 40;
+      else if (s.x > this.w + 40) s.x = -40;
+      if (s.y < 44) {
+        s.y = 44;
+        s.vy = Math.abs(s.vy) * 0.4;
+      } else if (s.y > this.h - 28) {
+        s.y = this.h - 28;
+        s.vy = -Math.abs(s.vy) * 0.4;
+      }
+      const speed = Math.hypot(s.vx, s.vy);
+      if (speed > 10) s.aim = Math.atan2(s.vy, s.vx);
+      // Gezeichnet mit Mantelspitze bei -x → +Math.PI, damit sie voran zeigt.
+      s.c.rotation = s.aim + Math.PI;
+      const stretch = 1 + s.squish * 0.35;
+      s.c.scale.set(s.scaleBase * stretch, s.scaleBase * (1 - s.squish * 0.2));
+      s.c.x = s.x;
+      s.c.y = s.y;
+    }
+  }
+
+  /** Schlot-Quellen: stoßen dichte Schwaden weicher Rauch-Wolken aus, die
+   *  aufsteigen, sich weiten, turbulent wabern und langsam vergehen — eine
+   *  schwere, wallende Säule statt einzelner Flimmer. */
+  private updateChimneys(dt: number, flow: number) {
+    const CAP = 60; // Wolken pro Schlot — Füllraten-Deckel (Pi läuft auf 30 fps)
+    for (const ch of this.chimneys) {
+      // ── Emission: mehrere Puffs pro Stoß, in kurzen Abständen ──
+      ch.emit -= dt * flow;
+      while (ch.emit <= 0) {
+        ch.emit += 0.028 + Math.random() * 0.03;
+        const puffs = 2 + ((Math.random() * 2.5) | 0);
+        for (let k = 0; k < puffs && ch.particles.length < CAP; k++) {
+          const s = new Sprite(this.glowTex);
+          s.anchor.set(0.5);
+          const size0 = 6 + Math.random() * 8;
+          const px = ch.x + (Math.random() - 0.5) * ch.mouth * 1.4;
+          const py = ch.ventY - Math.random() * 4;
+          s.width = s.height = size0;
+          s.x = px;
+          s.y = py;
+          s.alpha = 0;
+          this.scene.addChild(s);
+          ch.particles.push({
+            s,
+            x: px,
+            y: py,
+            vx: (Math.random() - 0.5) * 10,
+            vy: -(34 + Math.random() * 42),
+            age: 0,
+            life: 2.4 + Math.random() * 2.8,
+            sway: Math.random() * Math.PI * 2,
+            size0,
+            size1: size0 * (3.4 + Math.random() * 3.2),
+            turb: 0.7 + Math.random() * 0.9,
+          });
+        }
+      }
+      // ── Aufstieg, Turbulenz, Weitung ──
+      for (let i = ch.particles.length - 1; i >= 0; i--) {
+        const pt = ch.particles[i];
+        pt.age += dt;
+        const t = pt.age / pt.life;
+        if (t >= 1) {
+          pt.s.destroy();
+          ch.particles.splice(i, 1);
+          continue;
+        }
+        // Auftrieb lässt oben nach (Wasser bremst die Schwade ab).
+        pt.vy += 24 * dt;
+        // Seitliche Turbulenz, gedämpft → wabert, driftet nicht weg.
+        pt.vx += Math.sin(pt.age * 2.3 * pt.turb + pt.sway) * 32 * dt;
+        pt.vx -= pt.vx * 0.9 * dt;
+        pt.x += pt.vx * dt * flow;
+        pt.y += pt.vy * dt * flow;
+        // Wolke weitet sich beim Aufsteigen auf.
+        const size = pt.size0 + (pt.size1 - pt.size0) * Math.pow(t, 0.6);
+        pt.s.width = pt.s.height = size;
+        pt.s.x = pt.x + Math.sin(pt.age * 1.6 + pt.sway) * 6;
+        pt.s.y = pt.y;
+        // Schnell auf-, weich abblenden; bleibt unscheinbar (nie hart weiß).
+        pt.s.alpha = 0.26 * Math.min(1, t * 6) * (1 - t) * (1 - t);
+      }
+    }
+  }
 }
 
 /** Distanz-Check zwischen zwei Containern. */
@@ -911,6 +1336,37 @@ function dist2(ax: number, ay: number, bx: number, by: number): number {
   const dx = ax - bx;
   const dy = ay - by;
   return dx * dx + dy * dy;
+}
+
+/** Tintenfisch, monochrom. Mantelspitze zeigt nach -x (Fahrtrichtung, s.
+ *  updateSquids' Rotations-Offset), Kopf + Tentakel nach +x. Auge separat. */
+function drawSquid(c: Container, eye: Graphics) {
+  const body = new Graphics();
+  // Mantel: spitze Tüte von der Spitze (-14) bis zum Kopfansatz (+6).
+  body
+    .moveTo(-14, 0)
+    .quadraticCurveTo(-4, -5, 6, -4)
+    .quadraticCurveTo(9, 0, 6, 4)
+    .quadraticCurveTo(-4, 5, -14, 0)
+    .closePath()
+    .fill({ color: THEME.fish, alpha: 0.9 });
+  // Seitenflossen an der Mantelspitze (rautenförmig).
+  body
+    .moveTo(-14, 0)
+    .lineTo(-20, -5)
+    .lineTo(-15, 0)
+    .lineTo(-20, 5)
+    .closePath()
+    .fill({ color: THEME.fish, alpha: 0.85 });
+  // Kurze Tentakel am Kopf.
+  for (let i = -2; i <= 2; i++) {
+    body
+      .moveTo(6, i * 1.6)
+      .lineTo(14, i * 2.4)
+      .stroke({ color: THEME.fish, width: 1, alpha: 0.75 });
+  }
+  c.addChild(body);
+  eye.circle(2, -1.6, 1.4).fill({ color: PAL.black, alpha: 0.9 });
 }
 
 /** Qualle (Blickrichtung egal): Glocke + Tentakel, monochrom. */
