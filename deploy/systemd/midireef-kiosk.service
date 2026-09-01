@@ -1,0 +1,16 @@
+[Unit]
+Description=MidiReef Kiosk (Chromium, Fullscreen)
+After=midireef-server.service
+
+[Service]
+Type=simple
+ExecStart=__PI_DIR__/bin/kiosk.sh
+Restart=always
+RestartSec=3
+
+[Install]
+# Bewusst default.target statt graphical-session.target: labwc auf Pi OS
+# aktiviert graphical-session.target nicht (geprüft — der Dienst wäre beim
+# Booten nie gestartet). default.target läuft dank `loginctl enable-linger`
+# schon vor jedem Login; auf den Compositor wartet kiosk.sh selbst.
+WantedBy=default.target

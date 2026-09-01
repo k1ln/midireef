@@ -1,0 +1,16 @@
+# Build-Umgebung für das Pi-Binary.
+#
+# Bewusst KEIN Cross-Compile-Toolchain: auf Apple Silicon läuft ein
+# linux/arm64-Container nativ in der Docker-VM (keine QEMU-Emulation), also
+# baut ein echter aarch64-Linux-Rust hier mit voller Geschwindigkeit — und
+# ohne die üblichen Cross-Schmerzen mit `alsa-sys`/pkg-config.
+#
+# Basis ist Bookworm, weil Raspberry Pi OS (64-bit) ebenfalls Debian 12 ist:
+# gleiche glibc, damit das Binary auf dem Pi garantiert läuft.
+FROM rust:1-bookworm
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libasound2-dev pkg-config \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build

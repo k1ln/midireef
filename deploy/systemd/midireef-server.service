@@ -1,0 +1,28 @@
+[Unit]
+Description=MidiReef MIDI-Server (WebSocket + UI)
+Documentation=file://__PI_DIR__/docs/ARCHITECTURE.md
+After=network.target sound.target
+
+[Service]
+Type=simple
+User=__PI_USER__
+WorkingDirectory=__PI_DIR__
+Environment=MIDIREEF_PORT=__MIDIREEF_PORT__
+Environment=MIDIREEF_UI_DIR=__PI_DIR__/ui
+Environment=MIDIREEF_DATA=__PI_DIR__/data
+Environment=RUST_LOG=midireef_server=info
+ExecStart=__PI_DIR__/bin/midireef-server
+
+# Der Dienst wird bei jedem Deploy neu gestartet und soll nach einem Absturz
+# sofort zurückkommen — die UI reconnected von selbst (net.ts, 1 s).
+Restart=always
+RestartSec=1
+
+# MIDI-Timing: die Clock-/Look-Ahead-Threads dürfen Realtime-Priorität
+# anfordern, sonst eiert das Timing unter Last (siehe docs/ARCHITECTURE.md §3).
+LimitRTPRIO=95
+LimitMEMLOCK=infinity
+Nice=-10
+
+[Install]
+WantedBy=multi-user.target

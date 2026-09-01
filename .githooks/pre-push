@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Deployt nach jedem Push auf den Deploy-Branch automatisch auf den Pi.
+#
+# Git kennt keinen post-push-Hook, deshalb hängt das Deploy hier hinten dran:
+# der Push selbst hat zu diesem Zeitpunkt noch nicht stattgefunden, also wird
+# das Release in den Hintergrund gelegt und wartet kurz auf den Abschluss.
+#
+# Aktivieren:   git config core.hooksPath .githooks
+# Überspringen: git push --no-verify   oder   MIDIREEF_NO_DEPLOY=1 git push
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+[[ -f "$ROOT/deploy/config.env" ]] || exit 0
+[[ -z "${MIDIREEF_NO_DEPLOY:-}" ]] || exit 0
+
+# shellcheck disable=SC1091
+BRANCH_CFG="$(grep -E '^GIT_BRANCH=' "$ROOT/deploy/config.env" | cut -d= -f2)"
+CURRENT="$(git rev-parse --abbrev-ref HEAD)"
+[[ "$CURRENT" == "${BRANCH_CFG:-main}" ]] || exit 0
+
+(
+  # Auf den eigentlichen Push warten, dann deployen. Fehler beim Deploy dürfen
+  # den Push nicht rückgängig machen — daher abgekoppelt und ohne Exit-Code.
+  sleep 3
+  "$ROOT/deploy/release.sh" || echo "! Auto-Deploy fehlgeschlagen — 'make deploy' manuell nachziehen." >&2
+) </dev/null >/dev/tty 2>&1 &
+
+exit 0
