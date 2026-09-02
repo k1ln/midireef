@@ -9,7 +9,37 @@ use futures_util::{SinkExt, StreamExt};
 use crate::clock::ClockCommand;
 use crate::midi;
 use crate::model::{ClockSource, Device, Lane, Project};
+use crate::net_ap;
 use crate::state::AppState;
+
+/// Port, auf dem der Server lauscht — gleiche Ableitung wie in `main.rs`. Geht
+/// nur in die `network.state`-Anzeige ein (die Beitritts-URL des AP).
+fn server_port() -> u16 {
+    std::env::var("MIDIREEF_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(8787)
+}
+
+/// Ermittelt den Ist-Zustand des WLAN-AP (blockierend: `sudo`/`nmcli`) und
+/// broadcastet `network.state` an alle Clients. Läuft in einem Task, damit der
+/// Command-Loop nicht wartet.
+fn broadcast_network_state(state: &AppState) {
+    let cfg = state.network.lock().unwrap().clone();
+    let events = state.events.clone();
+    let port = server_port();
+    tokio::spawn(async move {
+        let active = if net_ap::supported() {
+            tokio::task::spawn_blocking(net_ap::status)
+                .await
+                .map(|(a, _)| a)
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        let _ = events.send(net_ap::state_event(&cfg, port, active));
+    });
+}
 
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
@@ -55,6 +85,22 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     });
     let _ = sender.send(Message::Text(list.to_string())).await;
 
+    // WLAN-Access-Point-Zustand — wie midi.ports nur an diesen Client. Der
+    // Ist-Zustand (`active`) kommt blockierend vom Helfer, daher spawn_blocking.
+    {
+        let cfg = state.network.lock().unwrap().clone();
+        let active = if net_ap::supported() {
+            tokio::task::spawn_blocking(net_ap::status)
+                .await
+                .map(|(a, _)| a)
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        let evt = net_ap::state_event(&cfg, server_port(), active);
+        let _ = sender.send(Message::Text(evt.to_string())).await;
+    }
+
     // Task: Broadcast-Events an diesen Client weiterleiten.
     let forward = tokio::spawn(async move {
         while let Ok(evt) = rx.recv().await {
@@ -74,6 +120,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     }
 
     forward.abort();
+    // Verbindung weg: ein noch armierter Piano-Roll-Editor kann nichts mehr
+    // eintragen — und seine gehaltenen Töne würden sonst hängen bleiben.
+    set_note_input(&state, None);
 }
 
 fn dispatch(state: &AppState, cmd: serde_json::Value) {
@@ -352,6 +401,14 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                     "laneId": now_armed.as_ref().map(|(_, l)| l),
                 }));
             }
+        }
+        // Melodie-Editor: Piano-Rolle auf Eingabe schalten. Solange ein Baustein
+        // armiert ist, meldet der MIDI-Eingangs-Thread jede Note als
+        // `noteInput.note` an die UI (s. `AppState::forward_note_input`) und
+        // spielt sie auf dem Ziel des Bausteins mit. `blockId: null` (oder ein
+        // Wechsel auf einen anderen Baustein) entwaffnet.
+        "noteInput.listen" => {
+            set_note_input(state, str_field(&cmd, "blockId").as_deref());
         }
         "control.assignName" => {
             if let (Some(id), Some(name)) =
@@ -734,23 +791,47 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 cmd.get("note").and_then(|v| v.as_u64()),
             ) {
                 let note = note.min(127);
+                // Anschlag und Länge dürfen mitkommen — beim Einspielen über
+                // die Piano-Rolle (`noteInput`) stehen beide schon fest, und
+                // drei Kommandos je gespielter Note wären drei Snapshots.
+                let velocity = cmd
+                    .get("velocity")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v.clamp(1, 127));
+                let length = cmd
+                    .get("lengthSteps")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v.max(1));
                 let mut proj = state.project.lock().unwrap();
                 if let Some(b) = find_block_mut(&mut proj, &id) {
                     if !b["notes"].is_array() {
                         b["notes"] = serde_json::json!([]);
                     }
                     if let Some(arr) = b["notes"].as_array_mut() {
-                        let dup = arr.iter().any(|n| {
+                        let existing = arr.iter_mut().find(|n| {
                             n.get("step").and_then(|v| v.as_u64()) == Some(step)
                                 && n.get("note").and_then(|v| v.as_u64()) == Some(note)
                         });
-                        if !dup {
-                            arr.push(serde_json::json!({
+                        match existing {
+                            // Dieselbe Tonhöhe am selben Step noch einmal
+                            // gespielt: kein zweiter Eintrag (die Note gibt es
+                            // nur einmal), aber mitgeschickter Anschlag/Länge
+                            // schreiben die vorhandene um — beim Einspielen ist
+                            // das erneute Anschlagen genau diese Absicht.
+                            Some(n) => {
+                                if let Some(v) = velocity {
+                                    n["velocity"] = serde_json::json!(v);
+                                }
+                                if let Some(l) = length {
+                                    n["lengthSteps"] = serde_json::json!(l);
+                                }
+                            }
+                            None => arr.push(serde_json::json!({
                                 "step": step,
-                                "lengthSteps": 1,
+                                "lengthSteps": length.unwrap_or(1),
                                 "note": note,
-                                "velocity": 100,
-                            }));
+                                "velocity": velocity.unwrap_or(100),
+                            })),
                         }
                     }
                 }
@@ -1420,6 +1501,65 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 }
             }
         }
+        // ── WLAN-Access-Point ──────────────────────────────────────────────
+        "network.getState" => broadcast_network_state(state),
+        "network.setAp" => {
+            let enabled = cmd.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+            let ssid = cmd
+                .get("ssid")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let password = cmd
+                .get("password")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let cfg = net_ap::NetworkConfig { ap_enabled: enabled, ssid, password };
+
+            if let Err(msg) = net_ap::validate(&cfg) {
+                let _ = state
+                    .events
+                    .send(serde_json::json!({ "t": "network.error", "message": msg }));
+            } else if !net_ap::supported() {
+                let _ = state.events.send(serde_json::json!({
+                    "t": "network.error",
+                    "message": "WLAN-Access-Point gibt es nur auf dem Pi.",
+                }));
+            } else {
+                *state.network.lock().unwrap() = cfg.clone();
+                if let Err(e) = net_ap::save(&state.data_dir, &cfg) {
+                    tracing::warn!("network.json speichern fehlgeschlagen: {e}");
+                }
+                let events = state.events.clone();
+                let port = server_port();
+                // `nmcli` setzt die Schnittstelle neu auf (Sekunden) — im Task,
+                // damit der Command-Loop weiterläuft. Ergebnis geht als
+                // network.state (bzw. network.error) an alle Clients.
+                tokio::spawn(async move {
+                    let apply_cfg = cfg.clone();
+                    let res = tokio::task::spawn_blocking(move || net_ap::apply(&apply_cfg))
+                        .await
+                        .unwrap_or_else(|e| Err(format!("Task abgebrochen: {e}")));
+                    match res {
+                        Ok(()) => {
+                            let active = tokio::task::spawn_blocking(net_ap::status)
+                                .await
+                                .map(|(a, _)| a)
+                                .unwrap_or(cfg.ap_enabled);
+                            let _ = events.send(net_ap::state_event(&cfg, port, active));
+                        }
+                        Err(msg) => {
+                            let _ = events.send(
+                                serde_json::json!({ "t": "network.error", "message": msg }),
+                            );
+                            let _ = events.send(net_ap::state_event(&cfg, port, false));
+                        }
+                    }
+                });
+            }
+        }
         other => {
             // Noch nicht implementierte Commands werden geloggt, aber ignoriert.
             tracing::debug!("Command (noch) nicht behandelt: {other}");
@@ -1472,6 +1612,9 @@ fn switch_project(state: &AppState, proj: Project, save_current: bool) {
     let _ = state.events.send(
         serde_json::json!({ "t": "record.armState", "controlId": null, "laneId": null }),
     );
+    // Dasselbe für eine offene Piano-Roll-Eingabe: ihr Baustein gehört zum
+    // alten Projekt.
+    set_note_input(state, None);
 
     broadcast_snapshot(state); // legt das neue Projekt gleich auf Platte an
     broadcast_project_list(state);
@@ -1848,6 +1991,44 @@ fn block_preview_target(proj: &Project, block_id: &str) -> Option<(String, u8)> 
     by_role.or(any)
 }
 
+/// Armiert (bzw. entwaffnet mit `None`) die Noten-Eingabe der Piano-Rolle.
+///
+/// Beim Entwaffnen bekommt jede Note, die das Mithören noch hält, ihr
+/// Note-Off — ein Editor, den man mitten im Akkord schließt, dürfte sonst
+/// einen Ton stehen lassen, den nur noch Panic beendet.
+fn set_note_input(state: &AppState, block_id: Option<&str>) {
+    let echo = block_id.and_then(|id| {
+        let proj = state.project.lock().unwrap();
+        block_preview_target(&proj, id)
+    });
+
+    let previous = {
+        let mut guard = state.note_input.lock().unwrap();
+        let previous = guard.take();
+        *guard = block_id.map(|id| crate::state::NoteInputArm {
+            block_id: id.to_string(),
+            echo,
+            held: std::collections::HashSet::new(),
+        });
+        previous
+    };
+
+    if let Some(prev) = previous {
+        if let Some((port, ch)) = prev.echo {
+            for note in prev.held {
+                state
+                    .clock
+                    .send(ClockCommand::Midi(port.clone(), vec![0x80 | (ch - 1), note, 0]));
+            }
+        }
+    }
+
+    let _ = state.events.send(serde_json::json!({
+        "t": "noteInput.armed",
+        "blockId": block_id,
+    }));
+}
+
 /// Feuert ein Lane-Control live (Press/Release) — Drum-Trigger, Mute-Toggle,
 /// Noten-Control oder MIDI-Signal-Button. Läuft am Playback-Engine vorbei,
 /// direkt wie die Live-Controls im Dashboard.
@@ -2116,7 +2297,10 @@ fn demo_slot(block_id: &str) -> serde_json::Value {
         "blockId": block_id,
         "transpose": 0,
         "speed": 1,
-        "loopMode": "loop",
+        // "off" (einmal), NICHT "loop": sonst rückt "sequential"/"random" nie
+        // weiter, weil der Slot nie fertig wird (bei nur einem Slot in der
+        // Lane unsichtbar, da er ohnehin zu sich selbst zurück-wrapped).
+        "loopMode": "off",
         "loopCount": 0,
     })
 }

@@ -956,11 +956,23 @@ export type Command =
   | { t: "block.setField"; blockId: Id; field: string; value: unknown }
   | { t: "beat.setLineMuted"; blockId: Id; lineId: Id; muted: boolean }
   | { t: "beat.setEuclid"; blockId: Id; lineId: Id; euclid: EuclidConfig }
-  | { t: "melody.addNote"; blockId: Id; step: number; note: MidiNote } // neue Note an Step hinzufügen — Steps können mehrere gleichzeitige Noten tragen (Akkord-Stack); Duplikat (gleiche Tonhöhe am Step) wird ignoriert
+  // Neue Note an Step hinzufügen — Steps können mehrere gleichzeitige Noten
+  // tragen (Akkord-Stack). Gibt es die Tonhöhe an diesem Step schon, entsteht
+  // KEIN zweiter Eintrag: mitgeschickte velocity/lengthSteps schreiben die
+  // vorhandene Note um, ohne beide bleibt sie unverändert. `velocity` und
+  // `lengthSteps` schickt vor allem das Einspielen über die Piano-Rolle mit
+  // (s. "noteInput.listen"), wo Anschlag und Notenlänge schon feststehen.
+  | { t: "melody.addNote"; blockId: Id; step: number; note: MidiNote; velocity?: Midi7Bit; lengthSteps?: number }
   | { t: "melody.removeNote"; blockId: Id; step: number; note: MidiNote } // eine bestimmte Note an einem Step entfernen, identifiziert über (step, Tonhöhe)
   | { t: "melody.setNotePitch"; blockId: Id; step: number; note: MidiNote; newNote: MidiNote } // Tonhöhe einer bestehenden Note ändern (identifiziert über die alte Tonhöhe)
   | { t: "melody.setNoteLength"; blockId: Id; step: number; note: MidiNote; lengthSteps: number } // Dauer einer bestimmten Note am Step (Note-Off entsprechend später)
   | { t: "melody.setNoteVelocity"; blockId: Id; step: number; note: MidiNote; velocity: Midi7Bit } // Anschlagstärke einer bestimmten Note am Step (1–127; 0 wäre ein Note-Off)
+  // Melodie-Editor: Piano-Rolle auf Eingabe schalten ("Play in"). Solange ein
+  // Baustein armiert ist, meldet der Server JEDE Note JEDES MIDI-Eingangs als
+  // "noteInput.note" an die UI — der Editor trägt sie an seinem Schreib-Cursor
+  // ein — und spielt sie zugleich auf dem Ziel des Bausteins mit. `blockId:
+  // null` entwaffnet (und schickt Note-Offs für noch gehaltene Töne).
+  | { t: "noteInput.listen"; blockId: Id | null }
   | { t: "block.previewNote"; blockId: Id; note: MidiNote; on: boolean; velocity?: Midi7Bit } // Baustein-Detail: Tonhöhe live anspielen (Klaviatur der Piano-Rolle). Ändert NICHTS am Projekt; Ziel ist die erste Lane, die den Baustein verwendet. on=false ist das zugehörige Note-Off
   | { t: "beat.toggleStep"; blockId: Id; lineId: Id; step: number } // Baustein-Detail: Step an/aus
   | { t: "chord.toggleNote"; blockId: Id; step: number; note: MidiNote } // Baustein-Detail: Note im Akkord an Step an/aus
@@ -1028,7 +1040,18 @@ export type Command =
   | { t: "project.rename"; name: string }
   | { t: "project.delete"; projectId: Id }
   | { t: "project.list" } // Antwort: ServerEvent "project.list"
-  | { t: "project.save" };
+  | { t: "project.save" }
+  // ── WLAN-Access-Point (nur auf dem Pi) ──
+  // Der Pi kann sein eigenes WLAN aufspannen, damit man ohne vorhandenes Netz
+  // per Handy/Laptop an die UI kommt. Antwort ist immer ServerEvent
+  // "network.state" (bzw. "network.error" bei ungültiger Eingabe / Fehler).
+  | { t: "network.getState" }
+  // `ssid`: 1–32 Zeichen. `password`: leer = offenes Netz, sonst WPA2-PSK mit
+  // 8–63 Zeichen. Achtung: Der Pi hat EIN WLAN-Radio — den AP einzuschalten
+  // trennt jede andere WLAN-Verbindung des Pi (Ethernet-Uplink bleibt und wird
+  // an die AP-Clients weitergereicht). Clients erreichen die UI dann unter
+  // http://10.42.0.1:<port>.
+  | { t: "network.setAp"; enabled: boolean; ssid: string; password: string };
 
 /** Ein gespeichertes Projekt in der Projektliste (Zahnrad-Menü). `updatedAt`
  *  ist die Änderungszeit der Datei in Unix-Sekunden. */
@@ -1046,6 +1069,8 @@ export type ServerEvent =
   | { t: "transport.tick"; transport: TransportState }
   | { t: "learn.captured"; controlId: Id; mapping: MidiMapping }
   | { t: "record.captured"; laneId: Id; blockId: Id } // Aufnahme in Baustein geschrieben
+  | { t: "noteInput.note"; blockId: Id; note: MidiNote; velocity: Midi7Bit; on: boolean } // Note eines angeschlossenen Keyboards, während die Piano-Rolle auf Eingabe steht
+  | { t: "noteInput.armed"; blockId: Id | null } // aktueller Eingabe-Zustand der Piano-Rolle (null = niemand hört zu)
   | { t: "record.armState"; controlId: Id | null; laneId: Id | null } // aktueller Record-Arm-Zustand (beide null = nichts armiert)
   | { t: "routing.activity"; routeId: Id } // Route hat gerade Daten durchgeleitet (UI-Feedback)
   | { t: "midi.ports"; outputs: string[]; inputs: string[] }
@@ -1055,4 +1080,21 @@ export type ServerEvent =
   // Control passt — Dashboard hält Knopf/Regler live synchron (unabhängig
   // vom einmaligen MIDI-Learn-Vorgang, der ein Control erst anlegt).
   | { t: "control.valueChanged"; controlId: Id; value: Midi7Bit } // Regler physisch gedreht
-  | { t: "control.activity"; controlId: Id; active: boolean }; // Taster physisch gedrückt/losgelassen
+  | { t: "control.activity"; controlId: Id; active: boolean } // Taster physisch gedrückt/losgelassen
+  // WLAN-Access-Point: beim Verbinden, nach "network.getState" und nach jedem
+  // "network.setAp". `supported` ist false, wo der privilegierte Helfer fehlt
+  // (z.B. Mac-Dev) — die UI zeigt die Karte dann deaktiviert. `apEnabled` ist
+  // der gespeicherte Soll-Zustand, `active` ob der AP gerade wirklich läuft.
+  // `password` kommt bewusst mit zurück, damit der Kiosk ihn (und den
+  // Beitritts-QR-Code) anzeigen kann.
+  | {
+      t: "network.state";
+      supported: boolean;
+      apEnabled: boolean;
+      ssid: string;
+      password: string;
+      apAddress: string; // i.d.R. "10.42.0.1"
+      port: number;
+      active: boolean;
+    }
+  | { t: "network.error"; message: string }; // ungültige Eingabe oder Helfer-Fehler

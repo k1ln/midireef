@@ -152,7 +152,14 @@ export function Dashboard() {
     e.currentTarget.setPointerCapture(e.pointerId);
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     cancelPress();
-    if (pointers.current.size >= 2) {
+    // A finger already down on a control never reaches `pointers` (its own
+    // pointerdown handler stops propagation so it doesn't start a pan/learn
+    // gesture here) — so `pressedControl` is the only signal that finger
+    // exists. Without it in this condition, `pointers.current.size` could
+    // never reach 2 from a control+background combo, only from two fingers
+    // both landing on empty background (pinch) — the knob's context menu
+    // would then be unreachable by touch.
+    if (pointers.current.size >= 2 || pressedControl.current) {
       panStart.current = null;
       isPanning.current = false;
       if (pressedControl.current) {

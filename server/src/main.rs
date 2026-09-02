@@ -8,6 +8,7 @@ mod coremidi_hotplug;
 mod engine;
 mod midi;
 mod model;
+mod net_ap;
 mod state;
 mod ws;
 
@@ -88,6 +89,10 @@ async fn main() {
         data_dir.clone(),
     );
 
+    // WLAN-Access-Point-Konfiguration (siehe net_ap): der Pi „behält" den AP
+    // über Reboots, indem der Soll-Zustand hier aus network.json kommt.
+    let network = Arc::new(Mutex::new(net_ap::load(&data_dir)));
+
     let state = AppState {
         project,
         transport,
@@ -99,10 +104,25 @@ async fn main() {
         last_device_warning: Arc::new(Mutex::new(None)),
         held_notes: Arc::new(Mutex::new(std::collections::HashMap::new())),
         record_armed: Arc::new(Mutex::new(None)),
+        note_input: Arc::new(Mutex::new(None)),
+        network: network.clone(),
     };
 
     // MIDI-Input öffnen + Learn-Handler-Thread starten.
     spawn_midi_learn(&state);
+
+    // WLAN-AP beim Start in den gespeicherten Zustand bringen. Nie den
+    // Serverstart blockieren — `nmcli` setzt die Schnittstelle neu auf und
+    // braucht Sekunden — daher in einem Blocking-Task nebenher.
+    {
+        let cfg = network.lock().unwrap().clone();
+        if cfg.ap_enabled && net_ap::supported() {
+            tokio::task::spawn_blocking(move || match net_ap::apply(&cfg) {
+                Ok(()) => tracing::info!("WLAN-Access-Point „{}“ aktiviert", cfg.ssid),
+                Err(e) => tracing::warn!("WLAN-Access-Point-Start fehlgeschlagen: {e}"),
+            });
+        }
+    }
 
     let app = Router::new()
         .route("/ws", get(ws::ws_handler))
@@ -169,6 +189,9 @@ fn spawn_midi_learn(state: &AppState) {
                         // Live-Aufnahme (record.arm) läuft unabhängig vom
                         // Lern-Modus — beides sind unabhängige Vorgänge.
                         state.forward_to_recorder(&msg);
+                        // Einspielen in die offene Piano-Rolle — ebenfalls
+                        // unabhängig vom Lern-Modus (s. `forward_note_input`).
+                        state.forward_note_input(&msg);
                         if !state.learn_armed.load(Ordering::Relaxed) {
                             // Nicht im Lern-Modus: trotzdem prüfen, ob die Nachricht zu
                             // einem bereits gelernten Control passt (physisch bedienter
@@ -177,7 +200,7 @@ fn spawn_midi_learn(state: &AppState) {
                             // sendet (MIDI-Clock, Active-Sensing 0xFE) würde sonst den
                             // Hotplug-Rescan unten dauerhaft überspringen, sodass ein
                             // nach Serverstart angeschlossenes Gerät nie geöffnet wird.
-                            state.handle_midi_feedback(&msg);
+                            state.handle_midi_feedback(&source_port, &msg);
                         } else if let Some(mapping) = midi::parse_mapping(&msg) {
                             state.learn_armed.store(false, Ordering::Relaxed);
                             // Gerät automatisch aus der Quelle ableiten: passendes Device

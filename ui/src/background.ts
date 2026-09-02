@@ -1,4 +1,4 @@
-//! Pixi-Hintergrund: nur die Unterwasser-Szene + der Ripple-Layer. Läuft in
+//! Pixi-Hintergrund: nur die Unterwasser-Szene. Läuft in
 //! einem eigenen, nicht-interaktiven Canvas hinter der React-Oberfläche (die
 //! das eigentliche "Frontend" ist — siehe docs/ARCHITECTURE.md §2/§6). Das
 //! Canvas hat `pointer-events: none`, damit alle Touches ungehindert bis zur
@@ -7,7 +7,6 @@
 
 import { Application } from "pixi.js";
 import { UnderwaterScene } from "./scene/underwater";
-import { wireGlobalRipples } from "./ui/ripple";
 import { getUiScale, UI_SCALE_EVENT } from "./app/uiScale";
 import { getBgConfig, bgEnabled, BG_CONFIG_EVENT } from "./app/bgConfig";
 
@@ -32,14 +31,12 @@ export async function mountBackground(host: HTMLElement) {
 
   const scene = new UnderwaterScene(cfg);
   app.stage.addChild(scene.container);
-  wireGlobalRipples(app.stage);
 
   // Die App skaliert ihre GESAMTE Oberfläche über CSS `zoom` auf <html>
   // (s. uiScale.ts) — das streckt/staucht auch dieses Canvas mit. Würden wir
   // in Fenstergröße rendern, bliebe bei scale < 1 ein Rand ums Canvas frei.
   // Also in der *logischen* Größe (Fenster / Skalierung) rendern: nach dem
-  // `zoom` landet das Canvas exakt auf dem Viewport, und die Ripple-Koordinaten
-  // (die in der gezoomten Einheit ankommen) passen weiterhin 1:1.
+  // `zoom` landet das Canvas exakt auf dem Viewport.
   const resize = () => {
     const scale = getUiScale();
     app.renderer.resize(window.innerWidth / scale, window.innerHeight / scale);
@@ -52,11 +49,12 @@ export async function mountBackground(host: HTMLElement) {
   window.addEventListener("resize", resize);
   window.addEventListener(UI_SCALE_EVENT, resize);
 
-  // Umgebungs-Animation auf 30 fps deckeln: halbiert die (füllraten-schwere)
-  // Shader-Last auf schwacher Hardware wie dem Raspberry Pi und passt zum
-  // Pixel-Look. Touch-Ripples laufen über ihre eigene rAF-Schleife und bleiben
-  // davon unberührt flüssig.
-  app.ticker.maxFPS = 30;
+  // Umgebungs-Animation auf die in den Einstellungen gewählte Bildrate
+  // deckeln: senkt die (füllraten-schwere) Shader-Last auf schwacher
+  // Hardware wie dem Raspberry Pi und passt zum Pixel-Look. Die Tipp-
+  // Rückmeldung (ui/ripple.ts) hängt nicht an diesem Ticker und bleibt davon
+  // unberührt flüssig.
+  app.ticker.maxFPS = cfg.fps;
 
   app.ticker.add((ticker) => scene.update(ticker));
 
@@ -81,6 +79,7 @@ export async function mountBackground(host: HTMLElement) {
   window.addEventListener(BG_CONFIG_EVENT, () => {
     cfg = getBgConfig();
     scene.setConfig(cfg);
+    app.ticker.maxFPS = cfg.fps;
     applyEnabled(bgEnabled(cfg));
   });
 

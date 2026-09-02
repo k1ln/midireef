@@ -92,11 +92,15 @@ export function SlotTile({ lane, slot, blk, locked, selected, onSelect }: SlotTi
           onClick={onSelect}
         >
           <span className="slot-id">{idLabel}</span>
-          {blk?.name ? <span className="slot-name">{blk.name}</span> : null}
-          <span className="slot-badges">
-            {transpose !== 0 && <span className="slot-badge">{transpose > 0 ? `▲+${transpose}` : `▼${transpose}`}</span>}
-            {loop && <span className="slot-badge">{loop}</span>}
-            {speed !== 1 && <span className="slot-badge">×{speed}</span>}
+          {/* Name + Status-Badges (Transpose/Loop/Speed) NEBENEINANDER in einer
+              Zeile, nicht mehr gestapelt — s. .slot-meta in theme.css. */}
+          <span className="slot-meta">
+            {blk?.name ? <span className="slot-name">{blk.name}</span> : null}
+            <span className="slot-badges">
+              {transpose !== 0 && <span className="slot-badge">{transpose > 0 ? `▲+${transpose}` : `▼${transpose}`}</span>}
+              {loop && <span className="slot-badge">{loop}</span>}
+              {speed !== 1 && <span className="slot-badge">×{speed}</span>}
+            </span>
           </span>
         </button>
       )}

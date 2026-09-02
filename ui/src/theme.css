@@ -63,6 +63,14 @@
      #46d6ff / 70, 214, 255 umzustellen. */
   --pal-shimmer: #eaf6ff;
   --pal-shimmer-rgb: 234, 246, 255;
+
+  /* Einzel-Größen (app/uiSizes.ts) — unabhängig vom Gesamt-Zoom (uiScale.ts):
+     `--ctrl-scale` skaliert JEDEN Knopf/Regler (.btn/.pill-toggle) per `zoom`,
+     `--fs-device-scale`/`--fs-lane-scale` je eine Schriftgröße (Geräte-/
+     Lane-Name, s. DevicePanel/LaneRow). Alle drei getrennt einstellbar. */
+  --ctrl-scale: 1;
+  --fs-device-scale: 1;
+  --fs-lane-scale: 1;
 }
 
 * {
@@ -122,6 +130,10 @@ body {
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
   user-select: none;
+  /* Einzel-Regler-Größe (Settings → Controls & fonts) — `zoom` statt
+     `transform: scale`, damit umgebende Flex-/Grid-Layouts den neuen Platz
+     wirklich reservieren statt die Kachel nur optisch zu vergrößern. */
+  zoom: var(--ctrl-scale, 1);
 }
 .btn:active {
   opacity: 0.55;
@@ -150,30 +162,39 @@ body {
   box-shadow: inset 0 0 14px rgba(var(--pal-run-rgb), 0.12);
 }
 .btn.transport-stop {
+  position: relative;
   background: rgba(var(--pal-stop-rgb), 0.18);
   border-color: rgba(var(--pal-stop-rgb), 0.9);
   color: var(--pal-stop);
+}
+/* Der Puls-Schein liegt auf einem eigenen Layer (::after) mit FESTEM box-shadow
+   — animiert wird nur die Deckkraft dieses Layers. Das rechnet der Compositor
+   allein; die Seite muss nicht ~60×/s neu gerastert werden (anders als eine
+   box-shadow-Animation, s. app/motionConfig.ts). */
+.btn.transport-stop::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  pointer-events: none;
+  box-shadow:
+    0 0 22px rgba(var(--pal-stop-rgb), 0.85),
+    inset 0 0 18px rgba(var(--pal-stop-rgb), 0.3);
   animation: transport-stop-glow 1.4s ease-in-out infinite;
+  will-change: opacity;
 }
 @keyframes transport-stop-glow {
   0%,
   100% {
-    box-shadow:
-      0 0 10px rgba(var(--pal-stop-rgb), 0.45),
-      inset 0 0 12px rgba(var(--pal-stop-rgb), 0.15);
+    opacity: 0.5;
   }
   50% {
-    box-shadow:
-      0 0 22px rgba(var(--pal-stop-rgb), 0.85),
-      inset 0 0 18px rgba(var(--pal-stop-rgb), 0.3);
+    opacity: 1;
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .btn.transport-stop {
+  .btn.transport-stop::after {
     animation: none;
-    box-shadow:
-      0 0 16px rgba(var(--pal-stop-rgb), 0.7),
-      inset 0 0 16px rgba(var(--pal-stop-rgb), 0.22);
+    opacity: 0.85;
   }
 }
 
@@ -209,6 +230,7 @@ body {
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
   user-select: none;
+  zoom: var(--ctrl-scale, 1);
 }
 .pill-toggle.on {
   background: var(--pal-btn-active);
@@ -332,16 +354,18 @@ textarea {
   touch-action: manipulation;
   user-select: none;
 }
-/* Auslösen ist die häufigste Geste — die Trigger-Leiste bekommt daher gut
-   zwei Drittel der Kachel, der Auswahl-Körper nur den schmalen Kopfstreifen. */
+/* Auslösen ist die häufigste Geste — die Trigger-Leiste bekommt daher den
+   Löwenanteil der Kachel; der Auswahl-Körper (Kopfstreifen) ist dafür groß
+   genug für eine gut lesbare Id + Name/Badges NEBENEINANDER (nicht mehr
+   gestapelt). */
 .slot-tile .slot-body {
   top: 0;
-  bottom: 68%;
+  bottom: 60%;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 1px;
-  padding: 3px 5px;
+  gap: 3px;
+  padding: 4px 6px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.14);
 }
 .slot-tile .slot-body:active {
@@ -349,7 +373,7 @@ textarea {
 }
 .slot-tile .slot-trigger {
   bottom: 0;
-  top: 32%;
+  top: 40%;
   align-items: center;
   justify-content: center;
   font-size: 34px;
@@ -365,36 +389,46 @@ textarea {
   top: 0;
 }
 
-/* Kopfstreifen ist knapp — Id und Name klein und einzeilig halten, damit die
-   Status-Chips darunter noch Platz haben. */
+/* Id ist die wichtigste Information im Kopfstreifen (Ort im Raster) — deutlich
+   größer als Name/Badges. Die stehen zu zweit in EINER Zeile darunter
+   (`.slot-meta`), statt wie zuvor jeweils eine eigene Zeile zu belegen. */
 .slot-tile .slot-id {
-  font-size: 15px;
+  font-size: 22px;
   font-weight: 800;
   line-height: 1.1;
 }
-.slot-tile .slot-name {
+.slot-tile .slot-meta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   max-width: 100%;
   overflow: hidden;
-  font-size: 11px;
-  font-weight: 600;
+}
+.slot-tile .slot-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 15px;
+  font-weight: 700;
   line-height: 1.1;
   white-space: nowrap;
   text-overflow: ellipsis;
-  opacity: 0.75;
+  opacity: 0.8;
 }
 .slot-tile .slot-badges {
   display: flex;
+  flex: 0 0 auto;
   gap: 3px;
-  justify-content: center;
   overflow: hidden;
 }
 .slot-tile .slot-badge {
-  padding: 0 4px;
+  padding: 0 5px;
   border: 1px solid rgba(255, 255, 255, 0.28);
   border-radius: 5px;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
-  line-height: 1.4;
+  line-height: 1.5;
   white-space: nowrap;
   color: var(--pal-text-dim);
 }
@@ -506,20 +540,24 @@ textarea {
 }
 
 /* Anblitzen im Moment des Blockstarts. */
+.slot-tile.starting::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  box-shadow:
+    0 0 0 4px rgba(var(--pal-run-rgb), 0.95),
+    0 0 34px rgba(var(--pal-run-rgb), 0.8);
+  animation: tile-start 420ms ease-out forwards;
+}
 @keyframes tile-start {
   0% {
-    box-shadow:
-      0 0 0 4px rgba(var(--pal-run-rgb), 0.95),
-      0 0 34px rgba(var(--pal-run-rgb), 0.8);
+    opacity: 1;
   }
   100% {
-    box-shadow:
-      0 0 0 0 rgba(var(--pal-run-rgb), 0),
-      0 0 0 rgba(var(--pal-run-rgb), 0);
+    opacity: 0;
   }
-}
-.slot-tile.starting {
-  animation: tile-start 420ms ease-out;
 }
 
 /* Körper + Trigger leuchten mit, solange der Baustein läuft. */
@@ -555,15 +593,16 @@ textarea {
   pointer-events: none;
   opacity: 0;
   background: var(--pal-run);
+  /* box-shadow steht FEST — der Blitz kommt allein aus der Deckkraft (unten),
+     die der Compositor ohne Neu-Rastern der Seite bewegt. */
+  box-shadow: 0 0 12px 2px rgba(var(--pal-run-rgb), 0.85);
 }
 @keyframes lane-pulse {
   0% {
     opacity: 1;
-    box-shadow: 0 0 12px 2px rgba(var(--pal-run-rgb), 0.85);
   }
   100% {
     opacity: 0;
-    box-shadow: 0 0 0 0 rgba(var(--pal-run-rgb), 0);
   }
 }
 .lane-row.hit .lane-pulse {
@@ -573,9 +612,12 @@ textarea {
 /* Bewegung sparsam, wenn das System es so will — der Zustand bleibt sichtbar
    (Rahmen/Fortschritt), nur Blitze und Übergänge fallen weg. */
 @media (prefers-reduced-motion: reduce) {
-  .slot-tile.starting,
+  .slot-tile.starting::before,
   .lane-row.hit .lane-pulse {
     animation: none;
+  }
+  .slot-tile.starting::before {
+    display: none;
   }
   .slot-tile .play-fill,
   .slot-tile .play-glow {
@@ -654,6 +696,7 @@ textarea {
   min-height: 30px;
 }
 .runtime-chip {
+  position: relative;
   padding: 5px 12px;
   border-radius: 999px;
   font-size: 13px;
@@ -667,16 +710,23 @@ textarea {
   color: var(--pal-run);
   border-color: rgba(var(--pal-run-rgb), 0.7);
 }
+/* Treffer-Ring auf eigenem Layer mit festem box-shadow; animiert wird nur die
+   Deckkraft → Compositor-only, kein Neu-Rastern (s. app/motionConfig.ts). */
+.runtime-chip.hit::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  box-shadow: 0 0 0 3px rgba(var(--pal-run-rgb), 0.8);
+  animation: chip-hit 260ms ease-out forwards;
+}
 @keyframes chip-hit {
   0% {
-    box-shadow: 0 0 0 3px rgba(var(--pal-run-rgb), 0.8);
+    opacity: 1;
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(var(--pal-run-rgb), 0);
+    opacity: 0;
   }
-}
-.runtime-chip.hit {
-  animation: chip-hit 260ms ease-out;
 }
 
 /* Pegel des zuletzt GESENDETEN CC-Werts (0..127 → --cc01). Bleibt bei Stop
@@ -704,8 +754,9 @@ textarea {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .runtime-chip.hit {
+  .runtime-chip.hit::after {
     animation: none;
+    display: none;
   }
   .step-playhead {
     transition: none;
@@ -807,6 +858,112 @@ textarea {
   color: var(--pal-ink);
 }
 
+/* Step-Lineal über jedem Raster. Beim Einspielen (s. PlayIn.tsx) trägt es
+   zusätzlich den Schreib-Cursor und ist dann antippbar. */
+.step-ruler-cell {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: var(--pal-text-dim);
+  -webkit-tap-highlight-color: transparent;
+}
+.step-ruler-cell.pickable {
+  cursor: pointer;
+  /* Ohne etwas Höhe wäre die Zahl allein ein 10px hohes Ziel. */
+  min-height: 18px;
+  line-height: 18px;
+  text-align: center;
+}
+.step-ruler-cell.cursor {
+  background: rgba(var(--pal-run-rgb), 0.35);
+  color: var(--pal-run);
+  border-radius: 2px;
+  font-weight: 700;
+}
+/* Spalte, auf die das nächste Gespielte geschrieben wird. Ein Rahmen INNEN
+   (inset), damit die Zelle ihre Größe behält und die Rolle nicht springt. */
+.step-cell.step-cursor {
+  box-shadow: inset 0 0 0 2px rgba(var(--pal-run-rgb), 0.85);
+}
+
+/* ── Einspiel-Leiste unter der Piano-Rolle (PlayIn.tsx) ─────────────────── */
+.play-in-bar {
+  /* Klebt am unteren Rand des scrollenden Editors: die Rolle darüber scrollt
+     durch 116 Tonhöhen, eine mitwandernde Klaviatur wäre wertlos. */
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  margin-top: 10px;
+  padding: 10px 0 4px;
+  background: var(--pal-water-deep);
+  border-top: 1px solid var(--pal-step-border);
+}
+.piano {
+  position: relative;
+  height: 108px;
+  /* Anteilige Tastenbreite — die schwarzen Tasten sitzen darüber und rechnen
+     ihre Position daraus (s. PianoKeys). */
+  --white-w: calc(100% / var(--white-count));
+  --black-w: calc(var(--white-w) * 0.62);
+  /* Die Klaviatur ist eine Spielfläche, kein Scrollbereich: ohne das hier
+     nimmt der Browser jeden Tastendruck als Beginn eines Wischs und schickt
+     ein `pointercancel` — der Ton bräche mitten im Spielen ab. */
+  touch-action: none;
+  user-select: none;
+}
+.piano-whites {
+  display: flex;
+  height: 100%;
+}
+.piano-blacks {
+  position: absolute;
+  inset: 0;
+  /* Der Streifen selbst fängt nichts ab — nur die Tasten darin. */
+  pointer-events: none;
+}
+.piano-key {
+  -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
+}
+.piano-key.white {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  background: var(--pal-key-white);
+  color: var(--pal-ink);
+  border: 1px solid var(--pal-step-border);
+  border-radius: 0 0 3px 3px;
+  /* Beschriftung (nur die C) unten in der Taste, wo keine schwarze liegt. */
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 6px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.piano-key.black {
+  position: absolute;
+  top: 0;
+  width: var(--black-w);
+  height: 62%;
+  background: var(--pal-key-black);
+  border: 1px solid var(--pal-step-border);
+  border-radius: 0 0 3px 3px;
+  pointer-events: auto;
+}
+.piano-key.down {
+  background: var(--pal-key-down);
+  color: var(--pal-ink);
+}
+/* Note steht schon am aktuellen Step (s. `notesAtCursor` in PlayIn.tsx) —
+   bleibt grün stehen, auch wenn kein Finger mehr auf der Taste liegt, damit
+   man beim Zurückspringen auf einen Step sieht, was dort schon liegt, und es
+   mit demselben Tipper wieder abschalten kann. Nach `.down` deklariert, damit
+   es den kurzen Anspiel-Blitz einer schon gesetzten Note übersteht. */
+.piano-key.selected {
+  background: var(--pal-run);
+  color: var(--pal-ink);
+}
+
 /* ── Touch keyboard — mirrors ui/keyboard.ts's grid math via CSS instead of
    hand-computed key widths. ── */
 .kb-row {
@@ -859,10 +1016,11 @@ textarea {
 
 /* Transport-Leiste als HiFi-Frontblende: heller angepolierter Grat auf der
    Oberkante, dunkle Fase unten, dazu ein zarter Glas-Verlauf über die ganze
-   Fläche. Das wanderende Glanzlicht auf der Unterkante bleibt (::before). Die
-   Leiste ist position:fixed (eigener Positionierungs-Kontext). */
+   Fläche. Bewusst ohne wanderndes Glanzlicht auf der Unterkante: ein heller
+   Balken, der endlos über eine 2 px hohe Linie am oberen Bildrand zieht, liest
+   sich als Fortschrittsbalken — die Oberfläche sah dauerhaft aus, als lade sie
+   noch. */
 .hifi-rail {
-  position: relative;
   background-image: linear-gradient(
     180deg,
     rgba(var(--pal-shimmer-rgb), 0.08),
@@ -874,30 +1032,11 @@ textarea {
     inset 0 2px 6px rgba(var(--pal-shimmer-rgb), 0.05),
     inset 0 -1px 0 rgba(0, 0, 0, 0.55);
 }
-.hifi-rail::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: -2px;
-  height: 2px;
-  pointer-events: none;
-  background: linear-gradient(
-    90deg,
-    rgba(var(--pal-shimmer-rgb), 0) 40%,
-    rgba(var(--pal-shimmer-rgb), 0.85) 50%,
-    rgba(var(--pal-shimmer-rgb), 0) 60%
-  );
-  background-size: 240% 100%;
-  animation: hifi-glint 7s linear infinite;
-}
-@keyframes hifi-glint {
-  0% { background-position: 130% 0; }
-  100% { background-position: -130% 0; }
-}
 
 /* Wortmarke „MIDI / REEF" — dieselbe Schrift wie die BPM-Anzeige (Geist,
-   fett), nur klein und zweizeilig, mit gebürstetem-Metall-Schimmer. */
+   fett), nur klein und zweizeilig, mit gebürstetem-Metall-Schimmer. Der
+   Verlauf steht fest; er lief früher endlos über die Schrift, was neben der
+   Leisten-Linie wie ein zweiter Ladeindikator wirkte. */
 .hifi-mark {
   display: flex;
   flex-direction: column;
@@ -917,7 +1056,6 @@ textarea {
     #ffffff 60%,
     #9fb0ba 100%
   );
-  background-size: 280% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -927,23 +1065,11 @@ textarea {
   filter:
     drop-shadow(0 0 1px rgba(var(--pal-shimmer-rgb), 0.6))
     drop-shadow(0 0 9px rgba(var(--pal-shimmer-rgb), 0.4));
-  animation: hifi-sheen 5.5s ease-in-out infinite;
 }
 .hifi-mark > span {
   /* letter-spacing setzt auch HINTER den letzten Buchstaben Luft — mit
      negativem Rand zurückholen, damit die rechte Kante beider Zeilen sitzt. */
   margin-right: -0.22em;
-}
-@keyframes hifi-sheen {
-  0%, 100% { background-position: 135% 0; }
-  50% { background-position: -35% 0; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .hifi-rail::before,
-  .hifi-mark {
-    animation: none;
-  }
 }
 
 /* Gefaste Kante auf den größeren Flächen — Panels, Modal, Slot-Kacheln,
@@ -1107,17 +1233,109 @@ textarea {
 }
 
 /* ── Animationen aus (Einstellung, pro Gerät — s. app/motionConfig.ts) ──────
-   Bewusst pauschal statt selektiv: die teuren Dauer-Animationen animieren
-   nicht-kompositierbare Eigenschaften (background-position, box-shadow), und
-   solange auch nur EINE davon läuft, rastert der Browser die Seite weiter
-   ~60×/s neu. Auf dem Pi 5 ist das der Unterschied zwischen ~71 % und ~4 %
-   eines Kerns. Transitions bleiben an: die laufen nur auf Ereignis, nicht
-   dauerhaft, und kosten im Leerlauf nichts. */
+   Die Zier-Animationen laufen inzwischen alle Compositor-only (nur `opacity`
+   auf eigenen Layern, s. u.), zwingen den Pi also nicht mehr zum Neu-Rastern.
+   Der Schalter bleibt trotzdem: eine Dauer-Animation ist auch als reiner
+   Compositor-Job Bewegung im Blickfeld, die man an einem Live-Werkzeug
+   abstellen können soll. Pauschal statt selektiv, damit nichts durchrutscht.
+   Transitions bleiben an: die laufen nur auf Ereignis und kosten im Leerlauf
+   nichts. */
 :root[data-motion="off"],
 :root[data-motion="off"] *,
 :root[data-motion="off"] *::before,
 :root[data-motion="off"] *::after {
   animation: none !important;
+}
+/* Die Glanz-/Treffer-Layer bekommen ihre Deckkraft sonst von der (jetzt
+   toten) Animation. Die Blitz-Layer trägt runtime.ts nie wieder ab — ohne
+   das hier bliebe ihr Schein dauerhaft stehen. */
+:root[data-motion="off"] .btn.transport-stop::after,
+:root[data-motion="off"] .slot-tile.starting::before,
+:root[data-motion="off"] .runtime-chip.hit::after,
+:root[data-motion="off"] .lane-row.hit .lane-pulse {
+  display: none !important;
+}
+
+/* ── Wassertropfen-Rückmeldung ──────────────────────────────────────────────
+   Ein Tipp, ein Tropfen: weicher Kern + aufblühender Ring am Finger. Erzeugt
+   von ui/ui/ripple.ts, die Bewegung liegt komplett hier.
+
+   Die Ebene hängt an <body> und liegt über ALLEM (Popups z-index 10, Schublade
+   30) — sonst wäre die Rückmeldung ausgerechnet in einem Dialog verdeckt. Sie
+   fängt nichts ab (`pointer-events: none`) und clippt am Viewport, damit ein
+   Tropfen am Rand keine Scrollfläche aufzieht. */
+.ripple-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  overflow: hidden;
+}
+/* Nullgroßer Anker exakt am Berührungspunkt; die Kinder sind darum zentriert. */
+.ripple-drop {
+  position: absolute;
+  width: 0;
+  height: 0;
+  /* Weiß auf dunklem Grund; ripple.ts dreht das auf hellen Flächen um. */
+  --ripple-rgb: 255, 255, 255;
+}
+.ripple-core,
+.ripple-ring {
+  position: absolute;
+  display: block;
+  border-radius: 50%;
+  /* Nur transform/opacity animieren → der Compositor macht das allein, ohne
+     die Seite neu zu rastern (s. Messungen im Kopf von motionConfig.ts). */
+  will-change: transform, opacity;
+}
+.ripple-core {
+  width: 72px;
+  height: 72px;
+  margin: -36px 0 0 -36px;
+  background: radial-gradient(
+    circle,
+    rgba(var(--ripple-rgb), 0.5) 0%,
+    rgba(var(--ripple-rgb), 0.14) 55%,
+    rgba(var(--ripple-rgb), 0) 72%
+  );
+}
+.ripple-ring {
+  width: 96px;
+  height: 96px;
+  margin: -48px 0 0 -48px;
+  border: 2px solid rgba(var(--ripple-rgb), 0.8);
+}
+@keyframes ripple-core {
+  from {
+    transform: scale(0.22);
+    opacity: 0.8;
+  }
+  to {
+    transform: scale(1.1);
+    opacity: 0;
+  }
+}
+@keyframes ripple-ring {
+  from {
+    transform: scale(0.14);
+    opacity: 0.9;
+  }
+  to {
+    transform: scale(1);
+    opacity: 0;
+  }
+}
+/* Ausnahme vom Pauschal-Aus weiter oben — bewusst mit `!important` UND höherer
+   Spezifität als `:root[data-motion="off"] *`. „Animations: Off" zielt auf die
+   DAUERnden Zier-Animationen, die den Pi zum Dauer-Neurastern zwingen; dieser
+   Tropfen ist Bedien-Rückmeldung, dauert eine halbe Sekunde und läuft rein im
+   Compositor. Ihn mit abzuschalten hieße, auf dem schwächsten Gerät als
+   einzigem ohne Tipp-Bestätigung dazustehen. */
+:root .ripple-layer .ripple-core {
+  animation: ripple-core 400ms ease-out forwards !important;
+}
+:root .ripple-layer .ripple-ring {
+  animation: ripple-ring 560ms cubic-bezier(0.16, 0.72, 0.3, 1) forwards !important;
 }
 
 /* ── Scrollleisten: fingerbreit statt Maus-schmal ───────────────────────────
@@ -1166,19 +1384,21 @@ textarea {
   outline: 2px dashed rgba(var(--pal-run-rgb), 0.85);
   outline-offset: -3px;
 }
+/* Der Puls ist Zierde, keine Information — er entfällt mit „Animations: Off"
+   (s. app/motionConfig.ts) genau wie jede andere Dauer-Animation. Er pulst die
+   DECKKRAFT dieses Füll-Layers (Compositor-only), NICHT `outline-color` am
+   Element selbst — Letzteres zwänge den Browser, die Seite ~60×/s neu zu
+   rastern, s. app/motionConfig.ts. */
 .slot-tile.queued::after {
   content: "";
   position: absolute;
   inset: 0;
-  background: rgba(var(--pal-run-rgb), 0.1);
+  background: rgba(var(--pal-run-rgb), 0.14);
   pointer-events: none;
-}
-/* Der Puls ist Zierde, keine Information — er entfällt mit „Animations: Off"
-   (s. app/motionConfig.ts) genau wie jede andere Dauer-Animation. */
-.slot-tile.queued {
   animation: queued-pulse 0.9s ease-in-out infinite;
+  will-change: opacity;
 }
 @keyframes queued-pulse {
-  0%, 100% { outline-color: rgba(var(--pal-run-rgb), 0.45); }
-  50%      { outline-color: rgba(var(--pal-run-rgb), 1); }
+  0%, 100% { opacity: 0.4; }
+  50%      { opacity: 1; }
 }

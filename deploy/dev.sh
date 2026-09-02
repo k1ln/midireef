@@ -71,6 +71,11 @@ if [[ "$WHAT" == all || "$WHAT" == ui ]]; then
   pi_rsync -a --delete -q ui/dist/ "$PI:$PI_DIR/ui/"
 fi
 
+# WLAN-Helfer mitziehen, damit Änderungen daran nicht `make setup` brauchen
+# (die sudoers-Regel zeigt auf denselben Pfad und bleibt gültig).
+pi_rsync -a -q deploy/bin/midireef-net "$PI:$PI_DIR/bin/midireef-net"
+pi_ssh "chmod +x '$PI_DIR/bin/midireef-net'"
+
 log "Dienst neu starten"
 pi_ssh "sudo systemctl stop midireef-server; \
         if [ -f '$PI_DIR/bin/midireef-server.new' ]; then \

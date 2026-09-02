@@ -54,7 +54,7 @@ export function DevicePanel({
 
         <div style={{ minWidth: 120 }}>
           <div
-            style={{ fontSize: 26, fontWeight: 700, cursor: "pointer" }}
+            style={{ fontSize: "calc(26px * var(--fs-device-scale, 1))", fontWeight: 700, cursor: "pointer" }}
             onClick={() =>
               openKeyboard(dev.name, 24, (v) => {
                 if (v) send({ t: "device.rename", deviceId: dev.id, name: v });

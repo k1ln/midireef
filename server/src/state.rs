@@ -21,6 +21,24 @@ pub struct RecordArm {
     pub channel: u8,
 }
 
+/// Ein Melodie-Baustein, der gerade im Piano-Roll-Editor auf Eingabe wartet
+/// (`noteInput.listen`). Solange einer armiert ist, werden Noten JEDES
+/// MIDI-Eingangs als `noteInput.note` an die UI gemeldet — dort trägt der
+/// Editor sie an seinem Schreib-Cursor ein (siehe `PlayIn.tsx`).
+#[derive(Debug, Clone)]
+pub struct NoteInputArm {
+    pub block_id: String,
+    /// Ziel zum Mithören (Port, Kanal), beim Armieren aus den Lanes des
+    /// Bausteins aufgelöst. Der Server spielt eingehende Noten selbst dorthin
+    /// aus, statt die UI ein `block.previewNote` zurückschicken zu lassen —
+    /// über den Umweg käme der Ton eine WS-Runde später, und genau daran
+    /// merkt man beim Spielen jede Millisekunde.
+    pub echo: Option<(String, u8)>,
+    /// Tonhöhen, die dieses Mithören gerade hält — beim Entwaffnen bekommt
+    /// jede davon ihr Note-Off, sonst bliebe ein Ton hängen.
+    pub held: HashSet<u8>,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub project: Arc<Mutex<Project>>,
@@ -43,6 +61,12 @@ pub struct AppState {
     /// Aktuell an eine Melodie-Lane gelinktes Keyboard-Control (`record.arm`),
     /// falls eines armiert ist. Nur EINES gleichzeitig (v1).
     pub record_armed: Arc<Mutex<Option<RecordArm>>>,
+    /// Baustein, dessen Piano-Roll gerade eingespielt wird (`noteInput.listen`).
+    /// Auch hier nur EINER gleichzeitig — es ist immer genau ein Editor offen.
+    pub note_input: Arc<Mutex<Option<NoteInputArm>>>,
+    /// Soll-Zustand des Pi-WLAN-Access-Points (Einstellungen → „Wi-Fi access
+    /// point"). Persistiert als `<data_dir>/network.json`, siehe `net_ap`.
+    pub network: Arc<Mutex<crate::net_ap::NetworkConfig>>,
 }
 
 impl AppState {
@@ -191,24 +215,68 @@ impl AppState {
     /// Spiegelt eine physisch am Gerät ausgelöste MIDI-Nachricht auf ein
     /// bereits gelerntes Live-Control zurück, damit der Dashboard-Knopf sich
     /// mitdreht bzw. der Taster aufleuchtet — Gegenstück zu MIDI-Learn (das
-    /// nur EINMAL im Lern-Modus zuhört, hier läuft es dauerhaft mit).
+    /// nur EINMAL im Lern-Modus zuhört, hier läuft es dauerhaft mit) — und
+    /// leitet sie zugleich an das Ziel-Device dieses Controls weiter
+    /// (MIDI-Thru, s. [`thru_port`]).
+    ///
+    /// Erst das Weiterleiten macht ein angeschlossenes Keyboard spielbar:
+    /// bis dahin liess ein eingehender Ton den Dashboard-Knopf zwar
+    /// aufleuchten, es ging aber kein einziges Byte an einen Synth — während
+    /// derselbe Knopf per Touch sehr wohl sendete. Welches Gerät gespielt
+    /// wird, entscheidet „Device …" im Kontextmenü des Controls; ohne
+    /// zugewiesenes Device leitet nichts weiter.
+    ///
     /// Bewusst OHNE `broadcast_snapshot`: Regler können sehr schnell
     /// aufeinanderfolgende CCs schicken, ein voller Snapshot pro Nachricht
     /// (inkl. Autosave) wäre unnötige Last — siehe gleiche Überlegung beim
     /// `control.setValue`-Handler in ws.rs.
-    pub fn handle_midi_feedback(&self, msg: &[u8]) {
-        if msg.len() < 3 {
+    pub fn handle_midi_feedback(&self, source_port: &str, msg: &[u8]) {
+        // Nicht `< 3`: Channel-Aftertouch (0xD0) ist zwei Bytes lang und soll
+        // beim Spielen mit durchgereicht werden.
+        if msg.len() < 2 {
             return;
         }
         let status = msg[0] & 0xF0;
         let channel = (msg[0] & 0x0F) + 1;
+
+        // Welches Control ist für diese Nachricht zuständig? Für Note und CC
+        // das gelernte Mapping; für alles Übrige (Pitch-Bend, Aftertouch) und
+        // für nicht gelernte CCs (Mod-Wheel, Sustain-Pedal) das
+        // „keyboard"-Control des Kanals als Auffang-Eintrag — sonst käme beim
+        // Spielen nur die nackte Tonhöhe am Synth an.
+        let thru = {
+            let proj = self.project.lock().unwrap();
+            let ctrl = match status {
+                0x90 | 0x80 if msg.len() >= 3 => find_control_by_mapping(&proj, channel, "note", msg[1]),
+                0xB0 if msg.len() >= 3 => find_control_by_mapping(&proj, channel, "cc", msg[1])
+                    .or_else(|| find_keyboard_control(&proj, channel)),
+                0xE0 | 0xD0 | 0xA0 => find_keyboard_control(&proj, channel),
+                _ => None,
+            };
+            let Some(ctrl) = ctrl else { return };
+            thru_port(&proj, ctrl, source_port)
+        };
+
+        // Unverändert weiterreichen — insbesondere auf dem EINGEHENDEN Kanal,
+        // nicht auf dem des Devices: dieselbe Überlegung wie bei
+        // `control_trigger` in ws.rs (ein Keyboard sendet seine Zonen/Parts
+        // auf genau den Kanälen, die das Zielgerät erwartet).
+        if let Some(port) = thru {
+            self.clock.send(ClockCommand::Midi(port, msg.to_vec()));
+        }
+
+        // ── Rückmeldung an die UI ───────────────────────────────────────────
         match status {
-            0x90 | 0x80 => {
+            0x90 | 0x80 if msg.len() >= 3 => {
                 let (note, velocity) = (msg[1], msg[2]);
                 let note_on = status == 0x90 && velocity > 0;
                 let id = {
                     let proj = self.project.lock().unwrap();
-                    find_control_id_by_mapping(&proj, channel, "note", note)
+                    find_control_by_mapping(&proj, channel, "note", note)
+                        .as_ref()
+                        .and_then(|c| c.get("id"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
                 };
                 if let Some(id) = id {
                     let active = {
@@ -228,7 +296,10 @@ impl AppState {
                     }));
                 }
             }
-            0xB0 => {
+            0xB0 if msg.len() >= 3 => {
+                // Einen Wert führt nur ein Control mit eigenem CC-Mapping —
+                // das Keyboard-Control von oben ist für CCs reiner
+                // Durchleiter und hat keinen Regler auf dem Dashboard.
                 let (cc, value) = (msg[1], msg[2]);
                 let id = {
                     let mut proj = self.project.lock().unwrap();
@@ -275,6 +346,59 @@ impl AppState {
             on,
         });
     }
+
+    /// Meldet eine eingehende Note an den offenen Piano-Roll-Editor, FALLS
+    /// dort gerade `noteInput.listen` armiert ist — und spielt sie zugleich
+    /// auf dem Ziel des Bausteins mit, damit man hört, was man spielt.
+    ///
+    /// Bewusst OHNE Kanalfilter: das angeschlossene Keyboard ist hier keine
+    /// gelernte Zuordnung, sondern schlicht „das Ding, auf dem gespielt wird".
+    /// Wer beim Einspielen den Kanal seines Keyboards suchen muss, hat schon
+    /// verloren.
+    ///
+    /// Eingetragen wird die Note NICHT hier: an welchem Step sie landet, weiß
+    /// nur der Editor (sein Schreib-Cursor), und die Bildschirm-Klaviatur
+    /// nimmt denselben Weg — so gibt es für beide Quellen genau einen Pfad.
+    pub fn forward_note_input(&self, msg: &[u8]) {
+        if msg.len() < 3 {
+            return;
+        }
+        let status = msg[0] & 0xF0;
+        if status != 0x90 && status != 0x80 {
+            return;
+        }
+        let (note, velocity) = (msg[1], msg[2]);
+        // Note-On mit Velocity 0 ist die verbreitete Schreibweise fürs Note-Off.
+        let on = status == 0x90 && velocity > 0;
+
+        let mut guard = self.note_input.lock().unwrap();
+        let Some(arm) = guard.as_mut() else { return };
+        let block_id = arm.block_id.clone();
+        if let Some((port, ch)) = arm.echo.clone() {
+            // Nur wirklich neue bzw. wirklich gehaltene Töne durchlassen: ein
+            // Keyboard mit Aftertouch/Retrigger schickt sonst Note-Ons auf
+            // einen schon klingenden Ton, und beim Entwaffnen fehlte für den
+            // zweiten das Off.
+            let changed = if on { arm.held.insert(note) } else { arm.held.remove(&note) };
+            if changed {
+                let bytes = if on {
+                    vec![0x90 | (ch - 1), note, velocity.max(1)]
+                } else {
+                    vec![0x80 | (ch - 1), note, 0]
+                };
+                self.clock.send(ClockCommand::Midi(port, bytes));
+            }
+        }
+        drop(guard);
+
+        let _ = self.events.send(serde_json::json!({
+            "t": "noteInput.note",
+            "blockId": block_id,
+            "note": note,
+            "velocity": velocity,
+            "on": on,
+        }));
+    }
 }
 
 /// Ob das Mapping eines Live-Controls zu Kanal/Art/Nummer einer eingehenden
@@ -297,14 +421,36 @@ fn mapping_matches(control: &serde_json::Value, channel: u8, kind: &str, number:
     }
 }
 
-fn find_control_id_by_mapping(proj: &Project, channel: u8, kind: &str, number: u8) -> Option<String> {
+fn find_control_by_mapping(proj: &Project, channel: u8, kind: &str, number: u8) -> Option<serde_json::Value> {
     proj.controls
         .as_array()?
         .iter()
-        .find(|c| mapping_matches(c, channel, kind, number))?
-        .get("id")?
-        .as_str()
-        .map(str::to_string)
+        .find(|c| mapping_matches(c, channel, kind, number))
+        .cloned()
+}
+
+/// Findet das "keyboard"-Control (falls eines gelernt wurde) für den ganzen
+/// physischen Eingang auf `channel` — Auffang-Ziel fürs MIDI-Thru bei
+/// Nachrichten, die kein eigenes Control-Mapping haben (Pitch-Bend,
+/// Aftertouch, nicht gelernte CCs wie Mod-Wheel/Sustain-Pedal).
+fn find_keyboard_control(proj: &Project, channel: u8) -> Option<serde_json::Value> {
+    proj.controls.as_array()?.iter().find(|c| {
+        c.get("kind").and_then(|v| v.as_str()) == Some("keyboard")
+            && c.get("mapping")
+                .and_then(|m| m.get("channel"))
+                .and_then(|v| v.as_u64())
+                == Some(channel as u64)
+    }).cloned()
+}
+
+/// Ziel-Port fürs MIDI-Thru eines Controls: dessen zugewiesenes Device, sonst
+/// der virtuelle Ausgang (leerer Portname) — dieselbe Default-Regel wie beim
+/// Touch-Auslösen eines Controls (`control_port` in ws.rs).
+fn thru_port(proj: &Project, ctrl: serde_json::Value, _source_port: &str) -> Option<String> {
+    match ctrl.get("deviceId").and_then(|v| v.as_str()) {
+        Some(did) => proj.devices.iter().find(|d| d.id == did).map(|d| d.midi_out_port.clone()),
+        None => Some(String::new()),
+    }
 }
 
 /// Setzt `value` auf dem passenden Control und liefert dessen ID zurück.

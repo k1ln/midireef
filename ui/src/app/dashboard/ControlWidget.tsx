@@ -56,6 +56,16 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, onContextMenu,
   const lit = pressed || !!externalActive;
   const mode = useRef<"none" | "drag" | "turn">("none");
   const start = useRef({ gx: 0, gy: 0, x: 0, y: 0, value: 0 });
+  // Pointer IDs currently down on THIS widget — lets a second finger landing
+  // on the knob itself (not just one on the knob + one on the background)
+  // open the context menu too. Separate from Dashboard's own multi-touch
+  // tracking, which never sees this widget's pointers at all (see
+  // stopPropagation below).
+  const activePointers = useRef<Set<number>>(new Set());
+  // Which pointer's gesture (drag/turn/button) is actually in progress — a
+  // 2nd finger that only opened the context menu must NOT be able to end it
+  // early when that finger lifts while the 1st is still down.
+  const primaryPointer = useRef<number | null>(null);
 
   const x = dragPos?.x ?? ctrl.x ?? 60;
   const y = dragPos?.y ?? ctrl.y ?? 60;
@@ -66,11 +76,22 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, onContextMenu,
     // start the MIDI-learn long-press timer for what's actually a press on
     // this control.
     e.stopPropagation();
-    onPress();
     if (e.button === 2) {
+      onPress();
       onContextMenu(e.clientX, e.clientY);
       return;
     }
+    // A second finger landing on the knob while the first is still down →
+    // touch equivalent of two-finger-click. Don't start a 2nd drag/turn
+    // gesture with it; just open the menu for the gesture already in progress.
+    if (activePointers.current.size >= 1) {
+      activePointers.current.add(e.pointerId);
+      onContextMenu(e.clientX, e.clientY);
+      return;
+    }
+    activePointers.current.add(e.pointerId);
+    primaryPointer.current = e.pointerId;
+    onPress();
     e.currentTarget.setPointerCapture(e.pointerId);
     start.current = { gx: e.clientX, gy: e.clientY, x, y, value };
     if (editMode) {
@@ -89,6 +110,7 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, onContextMenu,
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.pointerId !== primaryPointer.current) return;
     if (mode.current === "drag") {
       setDragPos({
         x: start.current.x + (e.clientX - start.current.gx) / zoom,
@@ -102,7 +124,12 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, onContextMenu,
     }
   };
 
-  const endGesture = () => {
+  const endGesture = (e: React.PointerEvent<HTMLDivElement>) => {
+    activePointers.current.delete(e.pointerId);
+    // A 2nd finger that only opened the context menu isn't the one running
+    // the gesture — lifting it must not end/release what the 1st is doing.
+    if (e.pointerId !== primaryPointer.current) return;
+    primaryPointer.current = null;
     onRelease();
     if (mode.current === "drag") {
       send({ t: "control.move", controlId: ctrl.id, x: Math.round(x), y: Math.round(y - 30) });

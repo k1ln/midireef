@@ -132,7 +132,7 @@ export function LaneRow({
         </Button>
 
         <div
-          style={{ fontSize: 20, fontWeight: 600, cursor: "pointer", marginRight: 2 }}
+          style={{ fontSize: "calc(20px * var(--fs-lane-scale, 1))", fontWeight: 600, cursor: "pointer", marginRight: 2 }}
           onClick={() =>
             openKeyboard(lane.name, 24, (v) => {
               if (v) send({ t: "lane.rename", laneId: lane.id, name: v });

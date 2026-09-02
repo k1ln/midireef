@@ -35,7 +35,7 @@
               "blockId": "0b55b0e4-ee81-41b9-856e-f63de4e72219",
               "id": "cb41eb80-f298-4618-a6a6-4a6832c743d4",
               "loopCount": 24,
-              "loopMode": "loop",
+              "loopMode": "count",
               "speed": 1.0,
               "transpose": 0
             },
@@ -43,7 +43,7 @@
               "blockId": "b9045d6e-2050-432e-920b-0dfda61c3e11",
               "id": "dc196733-89ac-4710-a2e4-763677c91b3c",
               "loopCount": 0,
-              "loopMode": "loop",
+              "loopMode": "off",
               "speed": 1,
               "transpose": 0
             }

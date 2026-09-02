@@ -28,10 +28,11 @@ import type { Block } from "../../state";
 import { useSend } from "../store";
 import { useNotePicker, noteName } from "../NotePicker";
 import { Button } from "../widgets/Button";
-import { StepBars, StepCell, RollKey, ROLL_LOW_NOTE, ROLL_HIGH_NOTE, ROLL_MAX_H, type StepFlow } from "./StepGrid";
+import { StepBars, StepCell, RollKey, ROLL_LOW_NOTE, ROLL_HIGH_NOTE, type StepFlow } from "./StepGrid";
 import { useSetField } from "../useNumberEditor";
 import { useLongPress } from "../useLongPress";
 import { NoteEditorPopup, type NoteRef } from "./NoteEditor";
+import { usePlayIn, PlayInBar } from "./PlayIn";
 
 export type MelodyLayout = "stack" | "grid";
 
@@ -44,10 +45,17 @@ export function MelodyToolbar({
   block,
   layout,
   setLayout,
+  playIn,
+  setPlayIn,
 }: {
   block: Block;
   layout: MelodyLayout;
   setLayout: (v: MelodyLayout) => void;
+  /** „Play in" — s. PlayIn.tsx. Der Zustand liegt (wie `layout`) im
+   *  Baustein-Detail, weil sein Schalter hier oben und die Klaviatur unten
+   *  unter dem Raster sitzt. */
+  playIn: boolean;
+  setPlayIn: (v: boolean) => void;
 }) {
   const openNotePicker = useNotePicker();
   const setField = useSetField();
@@ -68,12 +76,39 @@ export function MelodyToolbar({
       >
         {layout === "stack" ? "▤ Columns" : "▦ Piano roll"}
       </Button>
+      {/* Nur in der Piano-Rolle: dort gibt es die Tonhöhen-Zeilen, an denen
+          man den Cursor und das Eingespielte SIEHT. In der Spalten-Ansicht
+          bliebe vom Einspielen nur eine wachsende Zahlenkolonne. */}
+      {layout === "grid" && (
+        <Button
+          variant={playIn ? "active" : "alt"}
+          style={{ width: 120, height: 40, fontSize: 14 }}
+          title="Play the melody in from a connected keyboard or the on-screen keys"
+          onClick={() => setPlayIn(!playIn)}
+        >
+          {playIn ? "● Play in" : "○ Play in"}
+        </Button>
+      )}
     </>
   );
 }
 
-export function MelodyEditor({ block, flow, layout }: { block: Block; flow: StepFlow; layout: MelodyLayout }) {
-  return layout === "stack" ? <MelodyStack block={block} flow={flow} /> : <MelodyGrid block={block} flow={flow} />;
+export function MelodyEditor({
+  block,
+  flow,
+  layout,
+  playIn,
+}: {
+  block: Block;
+  flow: StepFlow;
+  layout: MelodyLayout;
+  playIn: boolean;
+}) {
+  return layout === "stack" ? (
+    <MelodyStack block={block} flow={flow} />
+  ) : (
+    <MelodyGrid block={block} flow={flow} playIn={playIn} />
+  );
 }
 
 // ── Spalten-Ansicht ─────────────────────────────────────────────────────────
@@ -186,13 +221,17 @@ function MelodyStack({ block, flow }: { block: Block; flow: StepFlow }) {
 const ROW_H = 32;
 const CELL_W = 32;
 
-function MelodyGrid({ block, flow }: { block: Block; flow: StepFlow }) {
+function MelodyGrid({ block, flow, playIn }: { block: Block; flow: StepFlow; playIn: boolean }) {
   const send = useSend();
   const [editing, setEditing] = useState<NoteRef | null>(null);
   const stepsPerBar = block.stepsPerBar ?? 16;
   const totalSteps = stepsPerBar * (block.lengthBars ?? 1);
   const base = block.baseNote ?? 60;
   const notes = block.notes ?? [];
+  // Einspielen: Schreib-Cursor + Tastatur-Eingang. Der Hook läuft immer mit
+  // (Hooks dürfen nicht bedingt sein), armiert den Server aber nur, solange
+  // `playIn` steht — s. PlayIn.tsx.
+  const play = usePlayIn(block, totalSteps, playIn);
 
   // Tonumfang: die volle MIDI-Skala von C0 bis G9. Kein Fenster um die
   // Grundnote mehr — jede Tonhöhe, die ein Gerät spielen kann, soll auch im
@@ -217,8 +256,16 @@ function MelodyGrid({ block, flow }: { block: Block; flow: StepFlow }) {
     byPitch.get(pitch)?.find((n) => n.step < step && n.step + Math.max(1, n.lengthSteps ?? 1) > step);
 
   return (
-    <div>
-      <StepBars totalSteps={totalSteps} stepsPerBar={stepsPerBar} cellW={CELL_W} flow={flow} maxHeight={ROLL_MAX_H}>
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+      <StepBars
+        totalSteps={totalSteps}
+        stepsPerBar={stepsPerBar}
+        cellW={CELL_W}
+        flow={flow}
+        fillHeight
+        cursorStep={playIn ? play.cursor : undefined}
+        onPickStep={playIn ? play.setCursor : undefined}
+      >
         {(steps) =>
           rows.map((note) => {
             const isC = ((note % 12) + 12) % 12 === 0;
@@ -242,6 +289,8 @@ function MelodyGrid({ block, flow }: { block: Block; flow: StepFlow }) {
                   return (
                     <RollCell
                       key={step}
+                      // Die Spalte, auf die das nächste Gespielte geht.
+                      cursor={playIn && step === play.cursor}
                       // Gehaltene Note als eigener, DECKENDER Grauton statt
                       // als halbtransparentes Weiß — vorher schimmerte die
                       // Zeile darunter durch und die Note sah "leer" aus.
@@ -293,10 +342,21 @@ function MelodyGrid({ block, flow }: { block: Block; flow: StepFlow }) {
         }
       </StepBars>
 
-      <div style={{ marginTop: 10, fontSize: 12, color: "var(--pal-text-dim)" }}>
-        Tap an empty cell to place a note, tap the note again to remove it, tap its trail to end it there. Long-press a note for
-        pitch, length and velocity. Hold a key at the end of a row to hear that pitch.
+      <div style={{ marginTop: 10, fontSize: 12, color: "var(--pal-text-dim)", flexShrink: 0 }}>
+        {playIn ? (
+          <>
+            Play a connected MIDI keyboard or the keys below — notes land on the marked step, held keys become one chord, and the
+            cursor moves on when you let go. Tap the ruler to jump the cursor, "▶" leaves a rest. Editing by tap still works.
+          </>
+        ) : (
+          <>
+            Tap an empty cell to place a note, tap the note again to remove it, tap its trail to end it there. Long-press a note
+            for pitch, length and velocity. Hold a key at the end of a row to hear that pitch.
+          </>
+        )}
       </div>
+
+      {playIn && <PlayInBar playIn={play} totalSteps={totalSteps} stepsPerBar={stepsPerBar} baseNote={base} />}
 
       {editing && (
         <NoteEditorPopup block={block} target={editing} onRetarget={setEditing} onClose={() => setEditing(null)} />
@@ -309,10 +369,13 @@ function MelodyGrid({ block, flow }: { block: Block; flow: StepFlow }) {
  *  ist und deshalb nicht in der Zellen-Schleife stehen darf. */
 function RollCell({
   background,
+  cursor,
   onTap,
   onLongPress,
 }: {
   background: string;
+  /** Liegt die Zelle auf dem Schreib-Cursor des Einspielens? */
+  cursor?: boolean;
   onTap: () => void;
   /** Fehlt bei leeren Zellen — dort gibt es nichts zu entfernen. */
   onLongPress?: () => void;
@@ -325,5 +388,11 @@ function RollCell({
       // Drücken enden (s. dieselbe Stelle in StepGrid's StepCell).
       { ...press, onPointerCancel: press.onPointerLeave }
     : { onClick: onTap };
-  return <div className="step-cell" style={{ width: CELL_W - 2, height: ROW_H, background }} {...handlers} />;
+  return (
+    <div
+      className={`step-cell${cursor ? " step-cursor" : ""}`}
+      style={{ width: CELL_W - 2, height: ROW_H, background }}
+      {...handlers}
+    />
+  );
 }

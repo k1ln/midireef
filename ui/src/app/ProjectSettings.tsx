@@ -9,11 +9,13 @@
 //! OS-Keyboard, siehe ARCHITECTURE.md §7).
 
 import { useEffect, useRef, useState } from "react";
+import QRCode from "qrcode";
 import { useNet, useSend, useStoreValue } from "./store";
 import { useTouchKeyboard } from "./TouchKeyboard";
 import { Button } from "./widgets/Button";
 import { TRANSPORT_H } from "./layout";
 import { getUiScale, setUiScale, UI_SCALE_MIN, UI_SCALE_MAX, UI_SCALE_STEP } from "./uiScale";
+import { getSize, setSize, SIZE_MIN, SIZE_MAX, SIZE_STEP, type SizeKey } from "./uiSizes";
 import { getMotion, setMotion, type Motion } from "./motionConfig";
 import {
   getBgConfig,
@@ -21,6 +23,7 @@ import {
   bgFromPreset,
   BG_FIELDS,
   BG_PRESET_NAMES,
+  FPS_OPTIONS,
   type BgConfig,
   type BgCountField,
 } from "./bgConfig";
@@ -45,10 +48,19 @@ export function ProjectSettings({ onClose }: { onClose: () => void }) {
   /** ID der Zeile, deren Löschen gerade rückgefragt wird (Touch: kein confirm()). */
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [scale, setScale] = useState(getUiScale);
+  const [ctrlSize, setCtrlSize] = useState(() => getSize("control"));
+  const [deviceFont, setDeviceFont] = useState(() => getSize("fontDevice"));
+  const [laneFont, setLaneFont] = useState(() => getSize("fontLane"));
   const [motion, setMotionState] = useState<Motion>(getMotion);
   const [bg, setBg] = useState(getBgConfig);
 
   const changeScale = (next: number) => setScale(setUiScale(next));
+  const SIZE_SETTER: Record<SizeKey, (v: number) => void> = {
+    control: setCtrlSize,
+    fontDevice: setDeviceFont,
+    fontLane: setLaneFont,
+  };
+  const changeSize = (key: SizeKey, next: number) => SIZE_SETTER[key](setSize(key, next));
   const changeMotion = (next: Motion) => setMotionState(setMotion(next));
   const applyBg = (next: BgConfig) => setBg(setBgConfig(next));
   const bgOff = bg.preset === "off";
@@ -229,6 +241,16 @@ export function ProjectSettings({ onClose }: { onClose: () => void }) {
           </div>
         </section>
 
+        {/* ── Einzel-Größen: Knöpfe/Regler und je eine Schriftgröße für
+             Geräte-/Lane-Namen — getrennt vom groben Gesamt-Zoom oben, damit
+             man z.B. große Knöpfe mit kleiner Lane-Schrift kombinieren kann. */}
+        <section className="settings-card">
+          <div className="popup-subtitle">Controls & fonts — sized individually</div>
+          <SizeRow label="Buttons & knobs" value={ctrlSize} onChange={(v) => changeSize("control", v)} />
+          <SizeRow label="Device name font" value={deviceFont} onChange={(v) => changeSize("fontDevice", v)} />
+          <SizeRow label="Lane name font" value={laneFont} onChange={(v) => changeSize("fontLane", v)} />
+        </section>
+
         {/* ── Animationen: der mit Abstand größte CPU-Posten auf dem Pi ──
              Siehe motionConfig.ts für die Messwerte — „Off" nimmt Chromium
              im Leerlauf von ~71 % auf ~4 % eines Kerns zurück. */}
@@ -258,7 +280,7 @@ export function ProjectSettings({ onClose }: { onClose: () => void }) {
               key={p}
               variant={bg.preset === p ? "active" : "alt"}
               style={{ flex: 1, height: 42, fontSize: 13, textTransform: "capitalize" }}
-              onClick={() => applyBg(bgFromPreset(p, bg.showFps))}
+              onClick={() => applyBg(bgFromPreset(p, bg.showFps, bg.fps))}
             >
               {p}
             </Button>
@@ -283,6 +305,26 @@ export function ProjectSettings({ onClose }: { onClose: () => void }) {
           >
             {bg.showFps ? "On" : "Off"}
           </Button>
+        </div>
+
+        {/* Ebenfalls AUSSERHALB des bgOff-Wrappers: die Deckelung greift auch bei
+            abgeschalteter Szene (spart dann nichts zusätzlich, aber der Regler
+            soll nicht verschwinden). Niedrigere Werte = weniger CPU/GPU-Last,
+            aber sichtbar ruckeligere Animation. */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+          <div style={{ flex: 1, fontSize: 14 }}>Scene frame rate (lower = less CPU/GPU)</div>
+        </div>
+        <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+          {FPS_OPTIONS.map((f) => (
+            <Button
+              key={f}
+              variant={bg.fps === f ? "active" : "alt"}
+              style={{ flex: 1, height: 40, fontSize: 13 }}
+              onClick={() => applyBg({ ...bg, fps: f })}
+            >
+              {f}
+            </Button>
+          ))}
         </div>
 
         <div style={{ opacity: bgOff ? 0.4 : 1, pointerEvents: bgOff ? "none" : "auto" }}>
@@ -333,8 +375,203 @@ export function ProjectSettings({ onClose }: { onClose: () => void }) {
           </div>
         </div>
       </section>
+
+      <WifiApCard />
       </div>
     </div>
+  );
+}
+
+/** „Wi-Fi access point" — der Pi spannt sein eigenes WLAN auf, damit man ohne
+ *  vorhandenes Netz per Handy/Laptop an die UI kommt. Name + Passwort setzt man
+ *  hier, „Apply" schickt `network.setAp`; der Server treibt darüber den
+ *  privilegierten Helfer (`deploy/bin/midireef-net` → NetworkManager). Läuft der
+ *  AP, zeigt die Karte Adresse (`http://10.42.0.1:<port>`) und einen QR-Code
+ *  zum Beitreten. Auf dem Mac-Dev-Rechner fehlt der Helfer → `supported:false`,
+ *  die Karte ist dann deaktiviert. */
+function WifiApCard() {
+  const net = useNet();
+  const send = useSend();
+  const openKeyboard = useTouchKeyboard();
+  const network = useStoreValue((s) => s.network);
+
+  const [enabled, setEnabled] = useState(false);
+  const [ssid, setSsid] = useState("MidiReef");
+  const [password, setPassword] = useState("");
+  const [dirty, setDirty] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  /** Spiegel für den net.onEvent-Closure (wie bgRef oben). */
+  const dirtyRef = useRef(dirty);
+  useEffect(() => {
+    dirtyRef.current = dirty;
+  }, [dirty]);
+
+  // network.state kommt über den Store (App.tsx); network.error nur hier.
+  useEffect(() => {
+    const off = net.onEvent((evt) => {
+      if (evt.t === "network.error") {
+        setError(evt.message ?? "Unknown error");
+        setPending(false);
+      }
+    });
+    send({ t: "network.getState" });
+    return off;
+  }, [net, send]);
+
+  // Felder aus dem Server-Zustand nachziehen, solange nichts Ungespeichertes
+  // im Formular steht. Jede Server-Meldung beendet außerdem einen „pending".
+  useEffect(() => {
+    if (!network) return;
+    setPending(false);
+    if (!dirtyRef.current) {
+      setEnabled(network.apEnabled);
+      setSsid(network.ssid);
+      setPassword(network.password);
+    }
+  }, [network]);
+
+  // QR zum WLAN-Beitritt — aus dem, was WIRKLICH sendet (Server-Zustand), nicht
+  // aus dem Formular-Puffer.
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el || !network?.active) return;
+    const esc = (s: string) => s.replace(/([\\;,:"])/g, "\\$1");
+    const secured = network.password.length > 0;
+    const payload = `WIFI:T:${secured ? "WPA" : "nopass"};S:${esc(network.ssid)};${
+      secured ? `P:${esc(network.password)};` : ""
+    };`;
+    QRCode.toCanvas(el, payload, { width: 176, margin: 1 }).catch(() => {
+      /* ignorieren — dann eben nur der Text darunter */
+    });
+  }, [network?.active, network?.ssid, network?.password]);
+
+  const supported = network?.supported ?? false;
+  const ssidTrim = ssid.trim();
+  const ssidValid = ssidTrim.length >= 1 && ssidTrim.length <= 32;
+  const pwValid = password.length === 0 || (password.length >= 8 && password.length <= 63);
+  const canApply = supported && ssidValid && pwValid && dirty && !pending;
+
+  const edit = (fn: () => void) => {
+    fn();
+    setDirty(true);
+    setError(null);
+  };
+
+  return (
+    <section className="settings-card">
+      <div className="popup-subtitle">Wi-Fi access point — the Pi hosts its own network to reach this page</div>
+
+      {!supported && (
+        <div style={{ color: "var(--pal-text-dim)", fontSize: 14, marginBottom: 12 }}>
+          Runs only on the Pi.
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, opacity: supported ? 1 : 0.4 }}>
+        {([true, false] as boolean[]).map((on) => (
+          <Button
+            key={String(on)}
+            variant={enabled === on ? (on ? "active" : undefined) : "alt"}
+            style={{ flex: 1, height: 48, fontSize: 15 }}
+            disabled={!supported}
+            onClick={() => edit(() => setEnabled(on))}
+          >
+            {on ? "On" : "Off"}
+          </Button>
+        ))}
+      </div>
+
+      <div style={{ opacity: supported ? 1 : 0.4, pointerEvents: supported ? "auto" : "none" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+          <div style={{ flex: 1, fontSize: 14 }}>Network name</div>
+          <Button
+            style={{ height: 44, padding: "0 14px", fontSize: 15, maxWidth: 220, overflow: "hidden" }}
+            onClick={() => openKeyboard(ssid, 32, (v) => v != null && edit(() => setSsid(v)))}
+          >
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {ssid || "—"}
+            </span>
+          </Button>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+          <div style={{ flex: 1, fontSize: 14 }}>Password</div>
+          <Button
+            style={{ height: 44, padding: "0 14px", fontSize: 15, maxWidth: 220, overflow: "hidden" }}
+            onClick={() => openKeyboard(password, 63, (v) => v != null && edit(() => setPassword(v)))}
+          >
+            <span className="mono" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {password || "open network"}
+            </span>
+          </Button>
+        </div>
+        <div style={{ fontSize: 12, color: "var(--pal-text-dim)", marginBottom: 12 }}>
+          8–63 characters — leave empty for an open network. The app itself has no password.
+        </div>
+
+        {!pwValid && (
+          <div style={{ fontSize: 13, color: "var(--pal-warn, #d88)", marginBottom: 8 }}>
+            Password must be 8–63 characters, or empty.
+          </div>
+        )}
+
+        <Button
+          variant="active"
+          style={{ width: "100%", height: 50, fontSize: 16 }}
+          disabled={!canApply}
+          onClick={() => {
+            setError(null);
+            setPending(true);
+            setDirty(false);
+            send({ t: "network.setAp", enabled, ssid: ssidTrim, password });
+          }}
+        >
+          {pending ? "Applying…" : "Apply"}
+        </Button>
+
+        {error && (
+          <div style={{ fontSize: 13, color: "var(--pal-warn, #d88)", marginTop: 10 }}>{error}</div>
+        )}
+
+        <div style={{ fontSize: 12, color: "var(--pal-text-dim)", marginTop: 10 }}>
+          Switching this on drops the Pi's other Wi-Fi connections. A wired network keeps working
+          and is shared to anyone who joins.
+        </div>
+
+        {network?.active && (
+          <div
+            style={{
+              marginTop: 14,
+              paddingTop: 14,
+              borderTop: "1px solid var(--pal-line, rgba(255,255,255,0.12))",
+              display: "flex",
+              gap: 14,
+              alignItems: "center",
+              flexWrap: "wrap",
+            }}
+          >
+            <canvas
+              ref={canvasRef}
+              style={{ width: 176, height: 176, background: "#fff", borderRadius: 8, flex: "0 0 auto" }}
+            />
+            <div style={{ flex: 1, minWidth: 180 }}>
+              <div style={{ fontSize: 13, color: "var(--pal-text-dim)" }}>Access point is live</div>
+              <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 6 }}>{network.ssid}</div>
+              <div style={{ fontSize: 13, color: "var(--pal-text-dim)" }}>Then open</div>
+              <div className="mono" style={{ fontSize: 16, fontWeight: 700 }}>
+                http://{network.apAddress}:{network.port}
+              </div>
+              <div style={{ fontSize: 12, color: "var(--pal-text-dim)", marginTop: 8 }}>
+                Scan the code to join the Wi-Fi.
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -394,6 +631,38 @@ function HoldStepper({
     >
       {label}
     </Button>
+  );
+}
+
+/** Eine Zeile im „Controls & fonts"-Abschnitt: Label + −/Prozent/+/Reset, wie
+ *  die Display-size-Zeile oben, nur je Größe einzeln (s. app/uiSizes.ts). */
+function SizeRow({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+      <div style={{ flex: 1, fontSize: 14 }}>{label}</div>
+      <Button
+        variant="alt"
+        style={{ width: 40, height: 40, fontSize: 18 }}
+        disabled={value <= SIZE_MIN}
+        onClick={() => onChange(value - SIZE_STEP)}
+      >
+        −
+      </Button>
+      <div className="mono" style={{ width: 46, textAlign: "center", fontWeight: 700 }}>
+        {Math.round(value * 100)}%
+      </div>
+      <Button
+        variant="alt"
+        style={{ width: 40, height: 40, fontSize: 18 }}
+        disabled={value >= SIZE_MAX}
+        onClick={() => onChange(value + SIZE_STEP)}
+      >
+        +
+      </Button>
+      <Button style={{ height: 40, padding: "0 10px", fontSize: 13 }} disabled={value === 1} onClick={() => onChange(1)}>
+        Reset
+      </Button>
+    </div>
   );
 }
 

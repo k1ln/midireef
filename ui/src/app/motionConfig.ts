@@ -2,22 +2,25 @@
 //! Raspi-Touchdisplay darf sie abschalten, während der Entwicklungs-Mac sie
 //! zeigt.
 //!
-//! Warum es diesen Schalter gibt: die Dauer-Animationen der Oberfläche
-//! (`hifi-sheen`, `hifi-glint`, `transport-stop-glow`) animieren
-//! `background-position` bzw. `box-shadow` — Eigenschaften, die der Compositor
-//! NICHT beschleunigen kann. Jede laufende solche Animation zwingt den Browser,
-//! die Seite ~60×/s komplett neu zu rastern, und zwar unabhängig davon, wie
-//! klein das animierte Element ist.
-//!
-//! Auf dem Pi 5 gemessen (Anteil EINES Kerns, Chromium gesamt):
+//! Geschichte: früher animierten die Dauer-Animationen (`transport-stop-glow`,
+//! `queued-pulse`) `box-shadow` bzw. `outline-color` — Eigenschaften, die der
+//! Compositor NICHT beschleunigt. Jede laufende solche Animation zwang den
+//! Browser, die Seite ~60×/s komplett neu zu rastern, egal wie klein das
+//! Element war. Auf dem Pi 5 gemessen (Anteil EINES Kerns, Chromium gesamt;
+//! damals liefen zusätzlich `hifi-glint`/`hifi-sheen`, längst entfallen):
 //!
 //!   Szene an  + Animationen an : 50 %      Szene aus + Animationen an : 71 %
 //!   Szene an  + Animationen aus: 39 %      Szene aus + Animationen aus:  4 %
 //!
-//! Der Effekt ist eine Klippe, keine Rampe: EINE übrig gebliebene Animation
-//! hält das Neurastern komplett am Laufen (einzeln abschalten brachte je nur
-//! ~11 %, beide zusammen den Sprung auf 4 %). Deshalb schaltet dieser Schalter
-//! pauschal ALLE ab und nicht einzelne.
+//! Der Effekt war eine Klippe, keine Rampe: EINE übrig gebliebene box-shadow-
+//! Animation hielt das Neurastern komplett am Laufen. Inzwischen läuft in
+//! `theme.css` KEINE Animation mehr über `box-shadow`/`outline-color`: der
+//! Schein steht fest auf einem eigenen Layer (Pseudo-Element), animiert wird
+//! nur dessen `opacity` — das macht der Compositor allein, ohne Neurastern.
+//!
+//! Der Schalter bleibt trotzdem: eine Dauer-Animation ist auch als reiner
+//! Compositor-Job Bewegung im Blickfeld, die man an einem Live-Werkzeug soll
+//! abstellen können. Er schaltet pauschal ALLE ab, damit nichts durchrutscht.
 
 const KEY = "ui.motion";
 /** Feuert nach jeder Änderung — Komponenten können sich neu zeichnen. */

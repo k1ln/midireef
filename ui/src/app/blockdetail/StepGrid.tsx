@@ -27,10 +27,6 @@ export type StepFlow = "wrap" | "scroll";
  *  jede Note, die ein Gerät spielen kann, ist damit auch erreichbar. */
 export const ROLL_LOW_NOTE = 12;
 export const ROLL_HIGH_NOTE = 127;
-/** Höhe eines Piano-Roll-Ausschnitts: gut zwei Handbreit, damit auf dem
- *  Pi-Display auch bei taktweisem Layout mehr als ein Takt aufs Bild passt.
- *  Der Rest ist im Raster selbst scrollbar (senkrecht). */
-export const ROLL_MAX_H = 300;
 
 /** Breite der Klaviatur am Rand der Piano-Rolle. Ein Notenname allein käme mit
  *  der halben Breite aus — die Taste ist so breit, WEIL man sie mit dem Finger
@@ -102,20 +98,21 @@ export function RollKey({
 export function StepScroller({
   children,
   playhead,
-  maxHeight,
+  fillHeight,
 }: {
   children: ReactNode;
   /** Geometrie des Spalten-Playheads; fehlt sie, wird keiner gezeichnet. */
   playhead?: { cellW: number; count: number; from: number; offsetX?: number };
-  /** Hohe Raster (Piano-Roll) auf diese Höhe deckeln und senkrecht scrollbar
-   *  machen, sonst schiebt EIN Takt schon den halben Screen voll. Beim ersten
-   *  Anzeigen wird die mit `data-roll-center` markierte Zeile in den Blick
-   *  gerückt (die Grundnote); ohne Markierung bleibt es bei der Mitte. */
-  maxHeight?: number;
+  /** Hohe Raster (Piano-Roll) auf den Rest des Screens strecken (statt einen
+   *  festen Deckel zu setzen) und senkrecht scrollbar machen, sonst schiebt
+   *  EIN Takt schon den halben Screen voll. Beim ersten Anzeigen wird die mit
+   *  `data-roll-center` markierte Zeile in den Blick gerückt (die
+   *  Grundnote); ohne Markierung bleibt es bei der Mitte. */
+  fillHeight?: boolean;
 }) {
   const centered = useRef(false);
   const ref = (el: HTMLDivElement | null) => {
-    if (!el || !maxHeight || centered.current) return;
+    if (!el || !fillHeight || centered.current) return;
     centered.current = true;
     // Über die ganze MIDI-Skala ist die Mitte der Zeilen NICHT die Mitte des
     // Interesses — ohne das hier startete die Rolle irgendwo um F#4 statt bei
@@ -128,7 +125,11 @@ export function StepScroller({
     el.scrollTop = Math.max(0, Math.min(wanted, el.scrollHeight - el.clientHeight));
   };
   return (
-    <div className="step-scroller" ref={ref} style={maxHeight ? { maxHeight, overflowY: "auto" } : undefined}>
+    <div
+      className="step-scroller"
+      ref={ref}
+      style={fillHeight ? { flex: 1, minHeight: 0, overflowY: "auto" } : undefined}
+    >
       {/* Wandert mit --play-step über das Raster; die Variable und die Klasse
           `playing` setzt runtime.ts auf der Editor-Wurzel, geerbt wird beides.
           Bewusst absolut positioniert INNERHALB des Scrollers: so scrollt der
@@ -169,7 +170,9 @@ export function StepBars({
   flow,
   leftColumn,
   leftWidth = 0,
-  maxHeight,
+  fillHeight,
+  cursorStep,
+  onPickStep,
   children,
 }: {
   totalSteps: number;
@@ -179,8 +182,14 @@ export function StepBars({
   /** Beat-Editor: Zeilennamen links neben dem Raster (pro Takt wiederholt). */
   leftColumn?: ReactNode;
   leftWidth?: number;
-  /** Deckel für hohe Raster — s. StepScroller. */
-  maxHeight?: number;
+  /** Piano-Roll: bis zum unteren Bildschirmrand strecken statt einen festen
+   *  Deckel zu setzen — s. StepScroller. Bei mehreren Takt-Zeilen (Layout
+   *  "wrap") teilen sie sich den Rest gleich auf, jede für sich scrollbar. */
+  fillHeight?: boolean;
+  /** Schreib-Cursor des Einspielens (s. PlayIn.tsx): wird im Lineal markiert
+   *  und ist dort — mit `onPickStep` — auch direkt setzbar. */
+  cursorStep?: number;
+  onPickStep?: (step: number) => void;
   children: (steps: number[], barStart: number) => ReactNode;
 }) {
   const perRow = flow === "wrap" ? Math.max(1, stepsPerBar) : Math.max(1, totalSteps);
@@ -190,15 +199,25 @@ export function StepBars({
   }
 
   return (
-    <div>
+    <div style={fillHeight ? { display: "flex", flexDirection: "column", flex: 1, minHeight: 0 } : undefined}>
       {rows.map((steps) => (
-        <div key={steps[0]} className="step-bar">
+        <div
+          key={steps[0]}
+          className="step-bar"
+          style={fillHeight ? { display: "flex", flexDirection: "column", flex: 1, minHeight: 0 } : undefined}
+        >
           {rows.length > 1 && <div className="bar-label">Bar {Math.floor(steps[0] / stepsPerBar) + 1}</div>}
-          <StepScroller playhead={{ cellW, count: steps.length, from: steps[0], offsetX: leftWidth }} maxHeight={maxHeight}>
+          <StepScroller playhead={{ cellW, count: steps.length, from: steps[0], offsetX: leftWidth }} fillHeight={fillHeight}>
             <div style={{ display: "flex" }}>
               {leftColumn !== undefined && <div style={{ width: leftWidth, flexShrink: 0 }}>{leftColumn}</div>}
               <div>
-                <StepRuler steps={steps} stepsPerBar={stepsPerBar} cellW={cellW} />
+                <StepRuler
+                  steps={steps}
+                  stepsPerBar={stepsPerBar}
+                  cellW={cellW}
+                  cursorStep={cursorStep}
+                  onPickStep={onPickStep}
+                />
                 {children(steps, steps[0])}
               </div>
             </div>
@@ -209,7 +228,19 @@ export function StepBars({
   );
 }
 
-export function StepRuler({ steps, stepsPerBar, cellW }: { steps: number[]; stepsPerBar: number; cellW: number }) {
+export function StepRuler({
+  steps,
+  stepsPerBar,
+  cellW,
+  cursorStep,
+  onPickStep,
+}: {
+  steps: number[];
+  stepsPerBar: number;
+  cellW: number;
+  cursorStep?: number;
+  onPickStep?: (step: number) => void;
+}) {
   // Gerundet: stepsPerBar ist frei wählbar (auch 6, 12, 24 …), ein krummer
   // Divisor würde die Beat-Zahlen sonst willkürlich verteilen.
   const marker = Math.max(1, Math.round(stepsPerBar / 4));
@@ -218,8 +249,12 @@ export function StepRuler({ steps, stepsPerBar, cellW }: { steps: number[]; step
       {steps.map((step) => (
         <div
           key={step}
-          className="mono"
-          style={{ width: cellW, flexShrink: 0, fontSize: 10, color: "var(--pal-text-dim)" }}
+          className={`mono step-ruler-cell${step === cursorStep ? " cursor" : ""}${onPickStep ? " pickable" : ""}`}
+          style={{ width: cellW - 2, marginRight: 2 }}
+          // Beim Einspielen ist das Lineal zugleich der schnellste Weg zu
+          // einem Step: der Cursor per ◀/▶ über 64 Steps zu schieben wäre
+          // Arbeit für etwas, das ein Tipper erledigt.
+          onClick={onPickStep ? () => onPickStep(step) : undefined}
         >
           {step % marker === 0 ? step + 1 : ""}
         </div>

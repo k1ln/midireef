@@ -867,9 +867,10 @@ impl Engine {
                     if self.playback[idx].loops_done >= max_loops {
                         self.playback[idx].loops_done = 0;
                         next_slot = if self.lanes[idx].play_mode == "random" && n_blocks > 1 {
+                            // Echt zufällig — darf auch wieder denselben Slot treffen,
+                            // statt ihn zwanghaft auszuschließen.
                             let h = global_pulse.wrapping_mul(2654435761).wrapping_add(idx as u64);
-                            let pick = (h % (n_blocks - 1) as u64) as usize;
-                            if pick >= slot { pick + 1 } else { pick }
+                            (h % n_blocks as u64) as usize
                         } else {
                             (slot + 1) % n_blocks
                         };

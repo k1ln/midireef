@@ -205,6 +205,19 @@ export interface RecordArm {
   laneId: string;
 }
 
+/** Zustand des Pi-WLAN-Access-Points (Einstellungen → „Wi-Fi access point").
+ *  Spiegelt das ServerEvent `network.state`. `supported` ist false, wo der
+ *  privilegierte Helfer fehlt (Mac-Dev) — die Karte ist dann deaktiviert. */
+export interface NetworkState {
+  supported: boolean;
+  apEnabled: boolean;
+  ssid: string;
+  password: string;
+  apAddress: string;
+  port: number;
+  active: boolean;
+}
+
 export class Store {
   project?: Project;
   transport?: TransportState;
@@ -212,6 +225,8 @@ export class Store {
   /** Which keyboard control is currently linked to which melody lane for
    *  live recording (`record.arm`) — null when nothing is armed. */
   recordArmed: RecordArm | null = null;
+  /** Latest `network.state` from the server — null until it first arrives. */
+  network: NetworkState | null = null;
   private listeners: Listener[] = [];
 
   /** Returns an unsubscribe function — React components mount/unmount
@@ -244,6 +259,11 @@ export class Store {
 
   setRecordArmed(arm: RecordArm | null) {
     this.recordArmed = arm;
+    this.emit();
+  }
+
+  setNetwork(n: NetworkState) {
+    this.network = n;
     this.emit();
   }
 

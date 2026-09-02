@@ -1,0 +1,7 @@
+# MidiReef — erlaubt dem Dienst-Benutzer, NUR den WLAN-Helfer als root und ohne
+# Passwort auszuführen. Von deploy/bootstrap.sh nach /etc/sudoers.d/midireef-net
+# gerendert (Platzhalter gefüllt) und mit `visudo -cf` geprüft.
+#
+# Der Helfer selbst lässt nur `apply` und `status` zu (siehe deploy/bin/midireef-net).
+Defaults!__PI_DIR__/bin/midireef-net !requiretty
+__PI_USER__ ALL=(root) NOPASSWD: __PI_DIR__/bin/midireef-net

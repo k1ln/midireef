@@ -2,6 +2,7 @@
 //! Steps (Beat/CC/…) editieren. Geöffnet von der Sequencer-Übersicht per
 //! langem Druck auf eine Slot-Kachel.
 
+import { useState } from "react";
 import type { Block, BlockType } from "../state";
 import { useSend, useStoreValue, useRuntimeBlock } from "./store";
 import { useTouchKeyboard } from "./TouchKeyboard";
@@ -32,7 +33,18 @@ export function BlockDetail({ blockId, onClose, onMove }: BlockDetailProps) {
   const block = blocks.find((b) => b.id === blockId);
 
   return (
-    <div style={{ position: "fixed", inset: 0, top: TRANSPORT_H, background: "var(--pal-water-deep)", overflowY: "auto", padding: 16 }}>
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        top: TRANSPORT_H,
+        background: "var(--pal-water-deep)",
+        display: "flex",
+        flexDirection: "column",
+        overflowY: "auto",
+        padding: 16,
+      }}
+    >
       {!block ? (
         <>
           {/* Ohne Baustein gibt es keine Kopfzeile, die das Zurück tragen
@@ -71,10 +83,14 @@ function BlockDetailBody({
   // Wie `flow` eine reine Ansichtssache — sie liegt hier, weil ihr Schalter in
   // der Kopfzeile sitzt (s. MelodyToolbar) und das Raster darunter.
   const [melodyLayout, setMelodyLayout] = useLocalPref<MelodyLayout>("blockdetail.melodyLayout", "stack");
+  // „Play in" ist bewusst KEINE gemerkte Vorliebe: der Modus armiert den
+  // MIDI-Eingang und blendet die Klaviatur ein — beim nächsten Öffnen eines
+  // Bausteins stünde man sonst ungefragt in einem Aufnahme-Modus.
+  const [playIn, setPlayIn] = useState(false);
 
   return (
-    <div ref={runtimeRef} className="block-detail">
-      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, marginBottom: 16 }}>
+    <div ref={runtimeRef} className="block-detail" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, marginBottom: 16, flexShrink: 0 }}>
         {/* Zurück als reiner Pfeil und IN der Kopfzeile: die eigene Zeile
             darüber kostete auf dem kleinen Display nur Höhe, und "Back" neben
             dem Pfeil sagt nichts, was der Pfeil nicht schon sagt. */}
@@ -100,7 +116,13 @@ function BlockDetailBody({
         {/* Grundnote und Spalten/Piano-Roll — die Schalter der Melodie gehören
             in dieselbe Leiste wie Länge und Raster, nicht in eine zweite. */}
         {block.type === "melody" && (
-          <MelodyToolbar block={block} layout={melodyLayout} setLayout={setMelodyLayout} />
+          <MelodyToolbar
+            block={block}
+            layout={melodyLayout}
+            setLayout={setMelodyLayout}
+            playIn={playIn}
+            setPlayIn={setPlayIn}
+          />
         )}
 
         {/* Nur sinnvoll, solange es überhaupt mehr als einen Takt gibt. */}
@@ -143,9 +165,13 @@ function BlockDetailBody({
         </Button>
       </div>
 
-      <BlockRuntimeStatus block={block} />
+      <div style={{ flexShrink: 0 }}>
+        <BlockRuntimeStatus block={block} />
+      </div>
 
-      {block.type === "melody" && <MelodyEditor block={block} flow={flow} layout={melodyLayout} />}
+      {block.type === "melody" && (
+        <MelodyEditor block={block} flow={flow} layout={melodyLayout} playIn={playIn && melodyLayout === "grid"} />
+      )}
       {block.type === "beat" && <BeatEditor block={block} flow={flow} />}
       {block.type === "chord" && <ChordEditor block={block} flow={flow} />}
       {block.type === "arp" && <ArpEditor block={block} />}

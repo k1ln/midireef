@@ -28,7 +28,17 @@ export interface BgConfig {
    *  Gehört bewusst NICHT zu den Presets: die Anzeige ist ein Messwerkzeug für
    *  genau diese Regler und soll beim Preset-Wechsel stehen bleiben. */
   showFps: boolean;
+  /** Obergrenze für den Szene-Ticker (siehe FPS_OPTIONS). Wie `showFps` bewusst
+   *  NICHT Teil der Presets — das ist eine reine Performance-Einstellung und
+   *  soll beim Preset-Wechsel unangetastet bleiben. */
+  fps: number;
 }
+
+/** Auswählbare Ticker-Obergrenzen. 30 war bisher fest verdrahtet (background.ts);
+ *  niedrigere Werte sparen auf schwacher Hardware (Raspberry Pi) weitere
+ *  Shader-Last, kosten aber sichtbar Flüssigkeit der Animation. */
+export const FPS_OPTIONS = [10, 15, 24, 30, 45, 60] as const;
+export const DEFAULT_FPS = 30;
 
 /** Obergrenzen je Regler. Ein Tipp auf +/– zählt immer 1 hoch/runter;
  *  Gedrückthalten läuft schnell und beschleunigend weiter (s. ProjectSettings).
@@ -44,7 +54,7 @@ export const BG_FIELDS = {
 
 export type BgCountField = keyof typeof BG_FIELDS;
 
-type PresetBody = Omit<BgConfig, "preset" | "showFps">;
+type PresetBody = Omit<BgConfig, "preset" | "showFps" | "fps">;
 
 const PRESETS: Record<Exclude<BgPreset, "custom">, PresetBody> = {
   off: { fish: 0, squid: 0, jellyfish: 0, crabs: 0, chimneys: 0, kelp: 0, reactNotes: false, reactBpm: false },
@@ -55,14 +65,15 @@ const PRESETS: Record<Exclude<BgPreset, "custom">, PresetBody> = {
 
 export const BG_PRESET_NAMES: Exclude<BgPreset, "custom">[] = ["off", "calm", "reef", "deep"];
 
-export const DEFAULT_BG: BgConfig = { preset: "reef", showFps: false, ...PRESETS.reef };
+export const DEFAULT_BG: BgConfig = { preset: "reef", showFps: false, fps: DEFAULT_FPS, ...PRESETS.reef };
 
-/** `showFps` wird durchgereicht statt zurückgesetzt — s. Feld-Kommentar. */
+/** `showFps`/`fps` werden durchgereicht statt zurückgesetzt — s. Feld-Kommentare. */
 export function bgFromPreset(
   preset: Exclude<BgPreset, "custom">,
   showFps = false,
+  fps = DEFAULT_FPS,
 ): BgConfig {
-  return { preset, showFps, ...PRESETS[preset] };
+  return { preset, showFps, fps, ...PRESETS[preset] };
 }
 
 /** Master-Schalter: jeder Preset außer "off" heißt "Szene läuft". */
@@ -109,5 +120,6 @@ function sanitize(p: Partial<BgConfig>): BgConfig {
     reactNotes: !!p.reactNotes,
     reactBpm: !!p.reactBpm,
     showFps: !!p.showFps,
+    fps: FPS_OPTIONS.includes(p.fps as (typeof FPS_OPTIONS)[number]) ? (p.fps as number) : DEFAULT_FPS,
   };
 }

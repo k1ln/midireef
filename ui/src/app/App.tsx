@@ -19,6 +19,7 @@ import { Dashboard } from "./Dashboard";
 import { ProjectSettings } from "./ProjectSettings";
 import { applyUiScale, getUiScale } from "./uiScale";
 import { applyMotion, getMotion } from "./motionConfig";
+import { applyAllSizes } from "./uiSizes";
 
 /** Top-level pages, all reached from the transport bar — no back button, no
  *  modal. Dashboard, Sequencer, Block library and Project settings are peers;
@@ -53,6 +54,7 @@ export function App() {
   useEffect(() => {
     applyUiScale(getUiScale());
     applyMotion(getMotion());
+    applyAllSizes();
   }, []);
 
   useEffect(() => {
@@ -69,6 +71,9 @@ export function App() {
           break;
         case "midi.ports":
           store.setPorts(evt.outputs ?? []);
+          break;
+        case "network.state":
+          store.setNetwork(evt);
           break;
         case "record.armState":
           store.setRecordArmed(evt.controlId && evt.laneId ? { controlId: evt.controlId, laneId: evt.laneId } : null);

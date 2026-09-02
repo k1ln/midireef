@@ -147,6 +147,37 @@ Danach deployt jeder `git push` auf `main` von selbst.
 
 ---
 
+## WLAN-Access-Point
+
+Der Pi kann sein eigenes WLAN aufspannen — praktisch, wenn kein Netz da ist und
+man trotzdem per Handy/Laptop an die UI will. Bedient wird das **in der UI**
+(Einstellungen → „Wi-Fi access point"), nicht per Skript: WLAN-Name + Passwort
+eintippen, „Apply". Läuft der AP, zeigt die Karte die Adresse
+`http://10.42.0.1:8787` und einen QR-Code zum Beitreten. Das Passwort gilt fürs
+WLAN; die App selbst hat keins.
+
+Was `make setup` dafür einrichtet:
+
+| Was | Wofür |
+|-----|-------|
+| Paket `network-manager` | treibt den AP (`nmcli`, `ipv4.method shared` → DHCP + NAT) |
+| `$PI_DIR/bin/midireef-net` | der einzige Befehl, den der Server als root ausführen darf — schreibt die NM-Verbindung `midireef-ap` |
+| `/etc/sudoers.d/midireef-net` | erlaubt genau diesem Skript passwortloses `sudo` (mit `visudo -cf` geprüft) |
+
+Annahmen & Grenzen:
+
+- **Schnittstelle `wlan0`.** Andere per `MIDIREEF_AP_IFACE` in der
+  `midireef-server.service`-Umgebung überschreiben.
+- **Ein Radio.** AP an ⇒ der Pi ist in keinem anderen WLAN mehr. Ein
+  **Ethernet**-Uplink bleibt und wird an die AP-Clients weitergereicht (die
+  haben dann auch Internet).
+- Der Soll-Zustand liegt in `$PI_DIR/data/network.json`; beim Server-Start wird
+  er re-appliziert, der AP übersteht also Reboots.
+- Prüfen, dass der Dienst-Benutzer den Helfer aufrufen darf:
+  `make shell`, dann `sudo -n ~/midireef/bin/midireef-net status`.
+
+---
+
 ## Betrieb
 
 ```bash

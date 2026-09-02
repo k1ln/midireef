@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# Privilegierter Helfer: schaltet den MidiReef-WLAN-Access-Point über
+# NetworkManager. Das EINZIGE, was der Server als root ausführen darf — die
+# passende sudoers-Zeile (`/etc/sudoers.d/midireef-net`) erlaubt exakt dieses
+# Skript ohne Passwort und nichts sonst.
+#
+# Unterbefehle:
+#   apply    liest 3 Zeilen von STDIN (enabled=1/0, ssid, psk) und bringt die
+#            AP-Verbindung `midireef-ap` in genau diesen Zustand. Geheimnisse
+#            laufen bewusst über STDIN, nicht über argv — sonst stünde das
+#            WLAN-Passwort in `ps`.
+#   status   gibt eine Zeile aus:  active|inactive|absent \t <ssid>
+#
+# Der Pi hat EIN WLAN-Radio: sobald der AP läuft, ist keine WLAN-Uplink-
+# Verbindung mehr möglich. Ethernet-Uplink bleibt und wird per
+# `ipv4.method shared` (DHCP + NAT + dnsmasq von NetworkManager) an die
+# AP-Clients weitergereicht. Clients landen in 10.42.0.0/24, der Pi ist
+# 10.42.0.1 — die UI also unter http://10.42.0.1:<port>.
+set -euo pipefail
+
+CON="midireef-ap"
+IFACE="${MIDIREEF_AP_IFACE:-wlan0}"
+KEYFILE="/etc/NetworkManager/system-connections/${CON}.nmconnection"
+
+die() { echo "midireef-net: $*" >&2; exit 1; }
+
+command -v nmcli >/dev/null 2>&1 || die "nmcli nicht gefunden — NetworkManager installiert?"
+
+cmd_apply() {
+  local enabled ssid psk
+  IFS= read -r enabled || true
+  IFS= read -r ssid || true
+  IFS= read -r psk || true
+
+  if [[ "$enabled" != "1" ]]; then
+    nmcli -t connection show "$CON" >/dev/null 2>&1 && \
+      nmcli connection modify "$CON" connection.autoconnect no 2>/dev/null || true
+    nmcli connection down "$CON" 2>/dev/null || true
+    echo "ap down"
+    return 0
+  fi
+
+  [[ -n "$ssid" ]] || die "leere SSID"
+  # SSID: NetworkManager/802.11 erlauben bis 32 Byte.
+  (( ${#ssid} <= 32 )) || die "SSID länger als 32 Zeichen"
+
+  # Keyfile direkt schreiben statt `nmcli connection add/modify` mit dem PSK auf
+  # der Kommandozeile — so taucht das Passwort nirgends in der Prozessliste auf.
+  umask 077
+  {
+    printf '[connection]\n'
+    printf 'id=%s\n' "$CON"
+    printf 'type=wifi\n'
+    printf 'interface-name=%s\n' "$IFACE"
+    printf 'autoconnect=true\n'
+    printf 'autoconnect-priority=100\n'
+    printf '\n[wifi]\n'
+    printf 'mode=ap\n'
+    printf 'band=bg\n'
+    printf 'ssid=%s\n' "$ssid"
+    if [[ -n "$psk" ]]; then
+      (( ${#psk} >= 8 && ${#psk} <= 63 )) || die "WPA2-Passwort muss 8–63 Zeichen haben"
+      printf '\n[wifi-security]\n'
+      printf 'key-mgmt=wpa-psk\n'
+      printf 'psk=%s\n' "$psk"
+    fi
+    printf '\n[ipv4]\n'
+    printf 'method=shared\n'
+    printf '\n[ipv6]\n'
+    printf 'method=ignore\n'
+  } > "$KEYFILE"
+  chmod 600 "$KEYFILE"
+
+  nmcli connection reload
+  # `up` ist idempotent; bei geänderter SSID/PSK zieht es die neue Config.
+  nmcli connection up "$CON"
+  echo "ap up ssid=$ssid secured=$([[ -n "$psk" ]] && echo yes || echo no)"
+}
+
+cmd_status() {
+  if ! nmcli -t connection show "$CON" >/dev/null 2>&1; then
+    printf 'absent\t\n'
+    return 0
+  fi
+  local ssid state
+  ssid="$(nmcli -t -g 802-11-wireless.ssid connection show "$CON" 2>/dev/null || true)"
+  if nmcli -t -f NAME connection show --active 2>/dev/null | grep -qx "$CON"; then
+    state="active"
+  else
+    state="inactive"
+  fi
+  printf '%s\t%s\n' "$state" "$ssid"
+}
+
+case "${1:-}" in
+  apply)  cmd_apply ;;
+  status) cmd_status ;;
+  *)      die "unbekannter Unterbefehl: ${1:-<keiner>} (erlaubt: apply, status)" ;;
+esac

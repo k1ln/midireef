@@ -12,7 +12,7 @@ import { useSend } from "../store";
 import { noteName } from "../NotePicker";
 import { Button } from "../widgets/Button";
 import { Popup } from "../widgets/Popup";
-import { StepScroller, StepBars, StepCell, ROLL_LOW_NOTE, ROLL_HIGH_NOTE, ROLL_MAX_H, type StepFlow } from "./StepGrid";
+import { StepScroller, StepBars, StepCell, ROLL_LOW_NOTE, ROLL_HIGH_NOTE, type StepFlow } from "./StepGrid";
 import { useNumberEditor, useSetField } from "../useNumberEditor";
 
 const DIRECTIONS = ["up", "down", "upDown", "random", "asPlayed"];
@@ -96,13 +96,14 @@ export function ChordEditor({ block, flow }: { block: Block; flow: StepFlow }) {
   const chords = block.chords ?? [];
   const hasNote = (step: number, note: number) => chords.some((c) => c.step === step && c.notes.includes(note));
 
-  // Volle MIDI-Skala wie in der Melodie-Rolle (s. MelodyGrid), gedeckelt und
-  // senkrecht scrollbar — der Ausschnitt startet auf der Grundnote.
+  // Volle MIDI-Skala wie in der Melodie-Rolle (s. MelodyGrid), auf den Rest
+  // des Screens gestreckt und senkrecht scrollbar — der Ausschnitt startet
+  // auf der Grundnote.
   const rows: number[] = [];
   for (let note = ROLL_HIGH_NOTE; note >= ROLL_LOW_NOTE; note--) rows.push(note);
 
   return (
-    <div>
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
       <Button
         style={{ width: 150, height: 30, fontSize: 13, marginBottom: 16 }}
         onClick={() => numberEdit(base, 0, 127, (n) => setField(block.id, "baseNote", n))}
@@ -110,7 +111,7 @@ export function ChordEditor({ block, flow }: { block: Block; flow: StepFlow }) {
         Base {noteName(base)}
       </Button>
 
-      <StepBars totalSteps={totalSteps} stepsPerBar={stepsPerBar} cellW={34} flow={flow} maxHeight={ROLL_MAX_H}>
+      <StepBars totalSteps={totalSteps} stepsPerBar={stepsPerBar} cellW={34} flow={flow} fillHeight>
         {(steps) =>
           rows.map((note) => {
             const isC = ((note % 12) + 12) % 12 === 0;

@@ -7,11 +7,13 @@ require_pi
 log "Richte $PI ein …"
 
 # --- Pakete ---------------------------------------------------------------
-log "Pakete installieren (chromium, alsa, git …)"
+# network-manager: treibt den WLAN-Access-Point (Einstellungen → „Wi-Fi access
+# point"). Auf Bookworm i.d.R. schon da; mitinstallieren schadet nicht.
+log "Pakete installieren (chromium, alsa, network-manager, git …)"
 pi_ssh "sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-  chromium-browser libasound2 alsa-utils curl rsync git nodejs npm \
+  chromium-browser libasound2 alsa-utils network-manager curl rsync git nodejs npm \
   || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-  chromium libasound2 alsa-utils curl rsync git nodejs npm"
+  chromium libasound2 alsa-utils network-manager curl rsync git nodejs npm"
 
 # --- Verzeichnisse --------------------------------------------------------
 pi_ssh "mkdir -p '$PI_DIR'/bin '$PI_DIR'/ui '$PI_DIR'/data/projects \
@@ -38,9 +40,10 @@ if ! pi_ssh "test -x \$HOME/.cargo/bin/cargo"; then
 fi
 
 # --- Skripte + Dienste ----------------------------------------------------
-log "Kiosk-Skript und systemd-Units installieren"
+log "Kiosk-Skript, WLAN-Helfer und systemd-Units installieren"
 pi_rsync -a deploy/kiosk.sh "$PI:$PI_DIR/bin/kiosk.sh"
-pi_ssh "chmod +x '$PI_DIR/bin/kiosk.sh'"
+pi_rsync -a deploy/bin/midireef-net "$PI:$PI_DIR/bin/midireef-net"
+pi_ssh "chmod +x '$PI_DIR/bin/kiosk.sh' '$PI_DIR/bin/midireef-net'"
 
 render() {  # Platzhalter der Unit-Templates füllen
   sed -e "s|__PI_DIR__|$PI_DIR|g" \
@@ -52,6 +55,25 @@ render deploy/systemd/midireef-server.service \
   | pi_ssh "cat | sudo tee /etc/systemd/system/midireef-server.service >/dev/null"
 render deploy/systemd/midireef-kiosk.service \
   | pi_ssh "cat > \$HOME/.config/systemd/user/midireef-kiosk.service"
+
+# sudoers-Zeile: der Server (läuft als $PI_USER) darf NUR den WLAN-Helfer als
+# root und ohne Passwort aufrufen. In eine Temp-Datei rendern, mit `visudo -cf`
+# prüfen, erst dann nach /etc/sudoers.d verschieben — eine kaputte sudoers-Datei
+# sperrt sonst jedes `sudo` auf dem Pi aus.
+log "sudoers-Regel für den WLAN-Helfer installieren"
+render deploy/systemd/midireef-net.sudoers | pi_ssh "
+  set -e
+  tmp=\$(mktemp)
+  cat > \"\$tmp\"
+  chmod 440 \"\$tmp\"
+  if sudo visudo -cf \"\$tmp\"; then
+    sudo install -m 440 -o root -g root \"\$tmp\" /etc/sudoers.d/midireef-net
+    echo '  installiert: /etc/sudoers.d/midireef-net'
+  else
+    echo '  FEHLER: sudoers-Datei ungültig — nicht installiert' >&2
+  fi
+  rm -f \"\$tmp\"
+" || warn "sudoers-Regel nicht installiert — der WLAN-Schalter bleibt wirkungslos"
 
 # Standard-Ziel des Kiosk: der Rust-Server, der auch das gebaute UI ausliefert.
 pi_ssh "echo 'http://localhost:$MIDIREEF_PORT' > \$HOME/.config/midireef/kiosk-url"
