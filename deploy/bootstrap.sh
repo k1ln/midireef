@@ -68,4 +68,26 @@ log "Bildschirm-Blanking abschalten"
 pi_ssh "sudo raspi-config nonint do_blanking 1" 2>/dev/null \
   || warn "raspi-config nicht verfügbar — Blanking ggf. manuell abschalten"
 
+# --- Touch als Touch ausliefern -------------------------------------------
+# Pi OS setzt für das Touchdisplay standardmässig mouseEmulation="yes". labwc
+# wandelt dann JEDE Berührung in Maus-Events um, bevor sie den Browser
+# erreichen: Tippen funktioniert (Mausklick), aber Wischen scrollt nicht und
+# Mehrfinger-Gesten gibt es überhaupt nicht — Chromium sieht nie einen
+# TouchEvent. Ausserdem klebt ein Mauszeiger auf dem Kiosk.
+#
+# Nachgemessen mit einem Event-Mitschnitt in der Seite: vorher ausschliesslich
+# `pointerdown type=mouse`, danach `touchstart n=1` wie erwartet.
+log "Touch-Eingabe: Maus-Emulation abschalten"
+pi_ssh 'RC="$HOME/.config/labwc/rc.xml"
+        if [ -f "$RC" ] && grep -q "mouseEmulation=\"yes\"" "$RC"; then
+          cp "$RC" "$RC.bak"
+          sed -i "s/mouseEmulation=\"yes\"/mouseEmulation=\"no\"/" "$RC"
+          # labwc liest rc.xml bei SIGHUP neu — kein Session-Neustart nötig.
+          killall -HUP labwc 2>/dev/null || true
+          echo "  umgestellt (Original: $RC.bak)"
+        else
+          echo "  nichts zu tun"
+        fi' \
+  || warn "labwc-Konfiguration nicht angepasst — Touch bleibt ggf. Maus-emuliert"
+
 ok "Pi eingerichtet. Jetzt: make dev  (schneller Loop)  oder  make deploy  (Release)"
