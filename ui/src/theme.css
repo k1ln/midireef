@@ -322,12 +322,12 @@ textarea {
 }
 
 /* ── Slot tile (Sequencer Overview lane row). ──
-   Großes Mittenfeld (Trigger, ~75 %) plus sechs kleine Quadrate an den Ecken
-   und den Mittelkanten oben/unten. Alles absolut im 200×200-Quadrat. */
+   Klein gehalten, damit auf dem 1280×720-Pi mehrere Kachel-Reihen gleichzeitig
+   passen. Körper (Auswahl) oben, Trigger-Leiste unten. */
 .slot-tile {
   position: relative;
-  width: 200px;
-  height: 200px;
+  width: 132px;
+  height: 132px;
   flex: 0 0 auto;
   border-radius: 12px;
   /* Durchscheinend wie `.panel` — die Unterwasser-Szene bleibt hinter den
@@ -360,12 +360,12 @@ textarea {
    gestapelt). */
 .slot-tile .slot-body {
   top: 0;
-  bottom: 60%;
+  bottom: 46%;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 3px;
-  padding: 4px 6px;
+  gap: 2px;
+  padding: 3px 5px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.14);
 }
 .slot-tile .slot-body:active {
@@ -373,10 +373,10 @@ textarea {
 }
 .slot-tile .slot-trigger {
   bottom: 0;
-  top: 40%;
+  top: 54%;
   align-items: center;
   justify-content: center;
-  font-size: 34px;
+  font-size: 20px;
   font-weight: 800;
   letter-spacing: 0.06em;
   background: rgba(255, 255, 255, 0.05);
@@ -389,41 +389,49 @@ textarea {
   top: 0;
 }
 
-/* Id ist die wichtigste Information im Kopfstreifen (Ort im Raster) — deutlich
-   größer als Name/Badges. Die stehen zu zweit in EINER Zeile darunter
-   (`.slot-meta`), statt wie zuvor jeweils eine eigene Zeile zu belegen. */
+/* Rasterort: klein in der oberen linken Ecke, nimmt dem Körper keine Höhe. */
 .slot-tile .slot-id {
-  font-size: 22px;
-  font-weight: 800;
-  line-height: 1.1;
+  position: absolute;
+  top: 3px;
+  left: 5px;
+  z-index: 3;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  opacity: 0.5;
+  pointer-events: none;
 }
+/* Körper zeigt jetzt Name GROSS und darunter die Badges — Name und
+   Loop-Zähler sind die Blickfänger. */
 .slot-tile .slot-meta {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 3px;
   max-width: 100%;
   overflow: hidden;
 }
 .slot-tile .slot-name {
-  flex: 0 1 auto;
+  max-width: 100%;
   min-width: 0;
   overflow: hidden;
-  font-size: 15px;
-  font-weight: 700;
-  line-height: 1.1;
+  font-size: 19px;
+  font-weight: 800;
+  line-height: 1.05;
   white-space: nowrap;
   text-overflow: ellipsis;
-  opacity: 0.8;
 }
 .slot-tile .slot-badges {
   display: flex;
   flex: 0 0 auto;
-  gap: 3px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
   overflow: hidden;
 }
 .slot-tile .slot-badge {
-  padding: 0 5px;
+  padding: 0 4px;
   border: 1px solid rgba(255, 255, 255, 0.28);
   border-radius: 5px;
   font-size: 12px;
@@ -431,6 +439,19 @@ textarea {
   line-height: 1.5;
   white-space: nowrap;
   color: var(--pal-text-dim);
+}
+/* Wie oft der Baustein wiederholt wird — bewusst groß und kräftig. */
+.slot-tile .slot-badge.loop {
+  font-size: 17px;
+  font-weight: 800;
+  padding: 0 6px;
+  color: var(--pal-text);
+  border-color: rgba(255, 255, 255, 0.45);
+}
+/* Transpose steht immer da (auch ±0) und etwas kräftiger als die Nebenbadges. */
+.slot-tile .slot-badge.transpose-value {
+  font-size: 14px;
+  color: var(--pal-text);
 }
 
 /* Ausgewählt → das Dock rechts bearbeitet DIESE Kachel. */
@@ -443,7 +464,7 @@ textarea {
 .slot-tile.slot-add {
   align-items: center;
   justify-content: center;
-  font-size: 44px;
+  font-size: 30px;
   font-weight: 300;
   font-family: inherit;
   color: var(--pal-text-dim);
@@ -572,7 +593,7 @@ textarea {
 .lane-slots {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 6px;
   flex: 1;
   min-width: 0;
   align-content: flex-start;
@@ -1230,6 +1251,176 @@ textarea {
    die Beschriftung aus dem Knopf. */
 .block-dock-confirm .btn {
   font-size: 13px;
+}
+
+/* ── Schnell-Start/Stop einer Lane — ganz links in der Zeile, volle Höhe,
+   damit man sie live blind trifft. „on" = Lane läuft (■ = stoppen). ── */
+.lane-run {
+  flex: 0 0 auto;
+  align-self: stretch;
+  width: 44px;
+  min-height: 44px;
+  border: 1.5px solid rgba(255, 255, 255, 0.3);
+  border-radius: 10px;
+  background: var(--pal-btn);
+  color: var(--pal-text-dim);
+  font-size: 18px;
+  font-weight: 800;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+.lane-run:active {
+  opacity: 0.55;
+}
+.lane-run.on {
+  background: color-mix(in srgb, var(--pal-run) 26%, var(--pal-btn));
+  border-color: var(--pal-run);
+  color: var(--pal-run);
+}
+
+/* ── Namensknopf in den Lane-/Geräte-Zeilen (Sequencer Overview) ──
+   Trägt nur den Namen; Tippen öffnet das Einstellungs-Menü (SettingsDock).
+   Senkrecht an der linken Kante, damit die Kacheln die Breite bekommen. */
+.overview-name-btn {
+  border: 1.5px solid rgba(255, 255, 255, 0.3);
+  border-radius: 10px;
+  background: var(--pal-btn);
+  color: var(--pal-text);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 6px 8px;
+  flex: 0 0 auto;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+.overview-name-btn:active {
+  opacity: 0.55;
+}
+.overview-name-btn.vertical {
+  position: absolute;
+  inset: 0;
+  padding: 8px 4px;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  transform: rotate(180deg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* 0-hoher Stretch-Wrapper: kommt auf die von den Kacheln/Lanes bestimmte
+   Höhe; der absolut gesetzte Knopf darin klippt lange Namen, statt die
+   Zeile/das Panel nach unten auszutreiben. */
+.overview-name-wrap {
+  position: relative;
+  flex: 0 0 auto;
+  width: 42px;
+  align-self: stretch;
+}
+.overview-name-wrap.device {
+  width: 48px;
+}
+.overview-dim {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--pal-text-dim);
+}
+.overview-warn {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--pal-warn, #f6ad55);
+}
+
+/* ── Einstellungs-Menü rechts (SettingsDock) — wie .block-dock, aber breiter
+   und mit größeren Schaltern (der Nutzer bedient es am Touchscreen). ── */
+.settings-dock {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  width: 232px;
+  padding: 10px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: rgba(10, 10, 10, 0.94);
+  border-left: 1.5px solid rgba(255, 255, 255, 0.22);
+  z-index: 30;
+}
+.settings-dock-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.settings-dock-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 20px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-dock-close {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  padding: 0;
+  font-size: 18px;
+}
+.settings-dock-sub {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--pal-text-dim);
+}
+.settings-dock-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.settings-dock-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--pal-text-dim);
+}
+.settings-dock-row {
+  width: 100%;
+  height: 54px;
+  padding: 0 10px;
+  font-size: 17px;
+  font-weight: 700;
+}
+.settings-dock-warn {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--pal-warn, #f6ad55);
+}
+.settings-dock-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+}
+.settings-dock-actions {
+  display: flex;
+  gap: 6px;
+}
+.settings-dock-actions .btn {
+  flex: 1;
+  height: 50px;
+  min-width: 0;
+  padding: 0;
+  font-size: 15px;
 }
 
 /* ── Animationen aus (Einstellung, pro Gerät — s. app/motionConfig.ts) ──────

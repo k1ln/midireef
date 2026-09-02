@@ -97,10 +97,7 @@ export function App() {
           {view === "start" && <Dashboard />}
 
           {view === "seq" && (
-            <Overview
-              onOpenBlock={(blockId) => setSub({ kind: "blockDetail", blockId })}
-              onOpenLaneControls={(laneId) => setSub({ kind: "laneControls", laneId })}
-            />
+            <Overview onOpenBlock={(blockId) => setSub({ kind: "blockDetail", blockId })} />
           )}
 
           {view === "library" && (

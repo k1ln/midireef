@@ -7,6 +7,13 @@
 
 export const UI_SIZE_EVENT = "ui-size-change";
 
+// Sequencer-Übersicht: EINE Schrift- und EINE Knopfgröße für alles (Namen,
+// Kanal, Knöpfe) und ein einziger schmaler Abstand — schlicht statt gestaffelt.
+// Über die --fs-* / --ctrl-scale-Variablen bleibt es pro Gerät regelbar.
+export const OVERVIEW_FS = 13;
+export const OVERVIEW_BTN = 28;
+export const OVERVIEW_GAP = 3;
+
 export type SizeKey = "control" | "fontDevice" | "fontLane";
 
 const STORAGE_KEY: Record<SizeKey, string> = {

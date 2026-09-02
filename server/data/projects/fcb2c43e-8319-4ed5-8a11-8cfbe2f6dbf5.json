@@ -49,6 +49,32 @@
             }
           ],
           "controls": []
+        },
+        {
+          "id": "bfbf7b38-24f2-40f0-9a3c-210f812d012d",
+          "name": "Lane 2",
+          "role": "melody",
+          "color": "#4fd1c5",
+          "enabled": true,
+          "visible": true,
+          "muted": false,
+          "solo": false,
+          "collapsed": false,
+          "height": 64.0,
+          "playMode": "sequential",
+          "triggerQuantize": "nextBar",
+          "channel": 1,
+          "slots": [
+            {
+              "blockId": "56ce203f-f5b7-4210-9785-568b01072fad",
+              "id": "a77cb3c7-4c46-46c8-8b90-ed733f86afa3",
+              "loopCount": 0,
+              "loopMode": "off",
+              "speed": 1,
+              "transpose": 0
+            }
+          ],
+          "controls": []
         }
       ]
     }
@@ -122,6 +148,21 @@
       "notes": [],
       "slot": {
         "col": 5,
+        "row": 1,
+        "type": "melody"
+      },
+      "stepsPerBar": 16,
+      "timeSignature": "4/4",
+      "type": "melody"
+    },
+    {
+      "baseNote": 60,
+      "id": "56ce203f-f5b7-4210-9785-568b01072fad",
+      "lengthBars": 1,
+      "name": "Mel",
+      "notes": [],
+      "slot": {
+        "col": 6,
         "row": 1,
         "type": "melody"
       },

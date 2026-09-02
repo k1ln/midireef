@@ -6,10 +6,12 @@
 import { useState } from "react";
 import type { Block, Device, Lane, Slot } from "../../state";
 import { useStoreValue } from "../store";
+import { OVERVIEW_BTN, OVERVIEW_FS, OVERVIEW_GAP } from "../uiSizes";
 import { Button } from "../widgets/Button";
 import { TRANSPORT_H } from "../layout";
 import { DevicePanel } from "./DevicePanel";
 import { BlockDock } from "./BlockDock";
+import { LaneSettingsDock, DeviceSettingsDock } from "./SettingsDock";
 import {
   PortPickerPopup,
   RolePickerPopup,
@@ -27,6 +29,8 @@ const EMPTY_BLOCKS: Block[] = [];
 
 // Schmal gehalten: Zielgerät ist ein 7"-Raspi-Display (800×480) — s. .block-dock.
 const DOCK_W = 148;
+// Das Einstellungs-Menü (SettingsDock) trägt größere, touch-sichere Schalter.
+const SETTINGS_W = 232;
 
 type PopupState =
   | { kind: "port" }
@@ -35,19 +39,32 @@ type PopupState =
   | { kind: "swap"; laneId: string; deviceId: string; slotId: string; currentBlockId: string }
   | { kind: "ccTarget"; laneId: string; deviceId: string };
 
+type SettingsState = { kind: "lane"; laneId: string } | { kind: "device"; deviceId: string };
+
 export interface OverviewProps {
   onOpenBlock: (blockId: string) => void;
-  onOpenLaneControls: (laneId: string) => void;
 }
 
-export function Overview({ onOpenBlock, onOpenLaneControls }: OverviewProps) {
+export function Overview({ onOpenBlock }: OverviewProps) {
   const devices = useStoreValue((s) => s.project?.devices ?? EMPTY_DEVICES);
   const blocks = useStoreValue((s) => (s.project?.blocks as Block[] | undefined) ?? EMPTY_BLOCKS);
   const ports = useStoreValue((s) => s.midiOutputs);
   const [popup, setPopup] = useState<PopupState | null>(null);
   const [sel, setSel] = useState<{ laneId: string; slotId: string } | null>(null);
   const [pinned, setPinned] = useState(false);
+  const [settings, setSettings] = useState<SettingsState | null>(null);
   const closePopup = () => setPopup(null);
+
+  const openLaneSettings = (laneId: string) => {
+    setPinned(false);
+    setSel(null);
+    setSettings({ kind: "lane", laneId });
+  };
+  const openDeviceSettings = (deviceId: string) => {
+    setPinned(false);
+    setSel(null);
+    setSettings({ kind: "device", deviceId });
+  };
 
   const findDevice = (id: string): Device | undefined => devices.find((d) => d.id === id);
 
@@ -71,8 +88,28 @@ export function Overview({ onOpenBlock, onOpenLaneControls }: OverviewProps) {
   const selBlk = selSlot ? blocks.find((b) => b.id === selSlot!.blockId) : undefined;
   const dockOpen = !!(selLane && selSlot);
 
+  // Einstellungs-Ziel auflösen — verschwindet Lane/Gerät, fällt das Menü weg.
+  let settingsLane: { lane: Lane; device: Device } | null = null;
+  let settingsDevice: Device | null = null;
+  if (settings?.kind === "lane") {
+    for (const d of devices) {
+      const l = d.lanes.find((x) => x.id === settings.laneId);
+      if (l) {
+        settingsLane = { lane: l, device: d };
+        break;
+      }
+    }
+  } else if (settings?.kind === "device") {
+    settingsDevice = devices.find((d) => d.id === settings.deviceId) ?? null;
+  }
+  if (settings && !settingsLane && !settingsDevice && devices.length > 0) {
+    queueMicrotask(() => setSettings((cur) => (cur === settings ? null : cur)));
+  }
+  const settingsOpen = !!(settingsLane || settingsDevice);
+
   const selectSlot = (laneId: string, slotId: string) => {
     if (pinned) return; // angepinnt: Dock bleibt, bis man löst
+    setSettings(null);
     setSel({ laneId, slotId });
   };
 
@@ -86,29 +123,30 @@ export function Overview({ onOpenBlock, onOpenLaneControls }: OverviewProps) {
           right: 0,
           bottom: 0,
           overflowY: "auto",
-          padding: 16,
-          paddingRight: dockOpen ? DOCK_W + 16 : 16,
+          padding: OVERVIEW_GAP * 2,
+          paddingRight:
+            (settingsOpen ? SETTINGS_W : dockOpen ? DOCK_W : 0) + OVERVIEW_GAP * 2,
           display: "flex",
           flexDirection: "column",
-          gap: 16,
+          gap: OVERVIEW_GAP,
         }}
       >
         {ports.length > 0 ? (
           <Button
             variant="alt"
-            style={{ width: 200, height: 48, fontSize: 22, alignSelf: "flex-start" }}
+            style={{ height: OVERVIEW_BTN, padding: "0 10px", fontSize: OVERVIEW_FS, alignSelf: "flex-start" }}
             onClick={() => setPopup({ kind: "port" })}
           >
             ＋ Device
           </Button>
         ) : (
-          <div style={{ color: "var(--pal-text-dim)", fontSize: 18, fontWeight: 600 }}>
+          <div style={{ color: "var(--pal-text-dim)", fontSize: OVERVIEW_FS, fontWeight: 600 }}>
             No MIDI devices found — connect a device.
           </div>
         )}
 
         {devices.length === 0 ? (
-          <div style={{ color: "var(--pal-text-dim)", fontSize: 18 }}>
+          <div style={{ color: "var(--pal-text-dim)", fontSize: OVERVIEW_FS }}>
             {ports.length > 0 ? "No devices yet — tap “＋ Device” above." : ""}
           </div>
         ) : (
@@ -116,12 +154,11 @@ export function Overview({ onOpenBlock, onOpenLaneControls }: OverviewProps) {
             <DevicePanel
               key={dev.id}
               dev={dev}
-              onOpenRolePicker={() => setPopup({ kind: "role", deviceId: dev.id })}
+              onOpenDeviceSettings={() => openDeviceSettings(dev.id)}
+              onOpenLaneSettings={openLaneSettings}
               onOpenAddBlock={(laneId) => setPopup({ kind: "addBlock", laneId, deviceId: dev.id })}
               onSelectSlot={selectSlot}
               selectedSlotId={sel?.slotId ?? null}
-              onOpenLaneControls={onOpenLaneControls}
-              onOpenCcTarget={(laneId) => setPopup({ kind: "ccTarget", laneId, deviceId: dev.id })}
             />
           ))
         )}
@@ -159,7 +196,25 @@ export function Overview({ onOpenBlock, onOpenLaneControls }: OverviewProps) {
           })()}
       </div>
 
-      {dockOpen && (
+      {settingsLane && (
+        <LaneSettingsDock
+          lane={settingsLane.lane}
+          onOpenCcTarget={() =>
+            setPopup({ kind: "ccTarget", laneId: settingsLane!.lane.id, deviceId: settingsLane!.device.id })
+          }
+          onClose={() => setSettings(null)}
+        />
+      )}
+
+      {settingsDevice && (
+        <DeviceSettingsDock
+          device={settingsDevice}
+          onOpenAddLane={() => setPopup({ kind: "role", deviceId: settingsDevice!.id })}
+          onClose={() => setSettings(null)}
+        />
+      )}
+
+      {dockOpen && !settingsOpen && (
         <BlockDock
           lane={selLane!}
           slot={selSlot!}

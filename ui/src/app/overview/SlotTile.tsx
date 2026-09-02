@@ -82,23 +82,26 @@ export function SlotTile({ lane, slot, blk, locked, selected, onSelect }: SlotTi
       <div className="play-fill" aria-hidden="true" />
       <div className="play-glow" aria-hidden="true" />
 
+      {/* Rasterort klein in der Ecke — nimmt dem Körper keine Höhe. */}
+      <span className="slot-id" aria-hidden="true">{idLabel}</span>
+
       {/* ── Körper: auswählen (kein Ton) ── */}
       {!locked && (
         <button
           type="button"
           className="slot-body"
-          style={{ color: lane.color || undefined }}
           title="Select — load this block into the dock (no sound)"
           onClick={onSelect}
         >
-          <span className="slot-id">{idLabel}</span>
-          {/* Name + Status-Badges (Transpose/Loop/Speed) NEBENEINANDER in einer
-              Zeile, nicht mehr gestapelt — s. .slot-meta in theme.css. */}
+          {/* Name groß oben, darunter die Status-Badges. Transpose steht IMMER
+              (auch bei 0), Loop-Zähler ist hervorgehoben — s. .slot-meta. */}
           <span className="slot-meta">
-            {blk?.name ? <span className="slot-name">{blk.name}</span> : null}
+            <span className="slot-name">{blk?.name || idLabel}</span>
             <span className="slot-badges">
-              {transpose !== 0 && <span className="slot-badge">{transpose > 0 ? `▲+${transpose}` : `▼${transpose}`}</span>}
-              {loop && <span className="slot-badge">{loop}</span>}
+              <span className="slot-badge transpose-value">
+                {transpose > 0 ? `+${transpose}` : transpose < 0 ? `−${-transpose}` : "±0"}
+              </span>
+              {loop && <span className="slot-badge loop">{loop}</span>}
               {speed !== 1 && <span className="slot-badge">×{speed}</span>}
             </span>
           </span>
