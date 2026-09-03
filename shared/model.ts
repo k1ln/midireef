@@ -955,6 +955,7 @@ export type Command =
   // sitzen an der Lane (siehe lane.setChannel / lane.setCcControl).
   | { t: "block.setField"; blockId: Id; field: string; value: unknown }
   | { t: "beat.setLineMuted"; blockId: Id; lineId: Id; muted: boolean }
+  | { t: "beat.setLineNote"; blockId: Id; lineId: Id; note: MidiNote } // welche MIDI-Note diese Drum-Line auslöst (z.B. 36 = Kick am TR-6S)
   | { t: "beat.setEuclid"; blockId: Id; lineId: Id; euclid: EuclidConfig }
   // Neue Note an Step hinzufügen — Steps können mehrere gleichzeitige Noten
   // tragen (Akkord-Stack). Gibt es die Tonhöhe an diesem Step schon, entsteht

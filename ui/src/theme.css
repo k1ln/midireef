@@ -401,56 +401,46 @@ textarea {
   opacity: 0.5;
   pointer-events: none;
 }
-/* Körper zeigt jetzt Name GROSS und darunter die Badges — Name und
-   Loop-Zähler sind die Blickfänger. */
+/* Eine waagerechte Zeile: die Baustein-ID zuerst und am größten, dahinter die
+   Status-Badges — alle Badges in EINER Schriftgröße (früher trugen Name, Loop
+   und Transpose je eine eigene). */
 .slot-tile .slot-meta {
   display: flex;
-  flex-direction: column;
-  align-items: center;
+  flex-flow: row wrap;
+  align-items: baseline;
   justify-content: center;
-  gap: 3px;
+  gap: 4px;
   max-width: 100%;
   overflow: hidden;
 }
-.slot-tile .slot-name {
-  max-width: 100%;
-  min-width: 0;
-  overflow: hidden;
-  font-size: 19px;
+/* Baustein-ID (Rasterort, z.B. „3-5") — der Blickfänger der Kachel. */
+.slot-tile .slot-id-lead {
+  flex: 0 0 auto;
+  font-size: 18px;
   font-weight: 800;
   line-height: 1.05;
   white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.slot-tile .slot-badges {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  overflow: hidden;
 }
 .slot-tile .slot-badge {
+  flex: 0 0 auto;
   padding: 0 4px;
   border: 1px solid rgba(255, 255, 255, 0.28);
   border-radius: 5px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   line-height: 1.5;
   white-space: nowrap;
   color: var(--pal-text-dim);
 }
-/* Wie oft der Baustein wiederholt wird — bewusst groß und kräftig. */
+/* Loop-Zähler und Transpose kräftiger (heller), aber gleiche Größe wie die
+   übrigen Badges. */
 .slot-tile .slot-badge.loop {
-  font-size: 17px;
-  font-weight: 800;
   padding: 0 6px;
+  font-weight: 800;
   color: var(--pal-text);
   border-color: rgba(255, 255, 255, 0.45);
 }
-/* Transpose steht immer da (auch ±0) und etwas kräftiger als die Nebenbadges. */
 .slot-tile .slot-badge.transpose-value {
-  font-size: 14px;
   color: var(--pal-text);
 }
 

@@ -14,9 +14,9 @@ import { useRuntimeBlockStatus, useStoreValue } from "../store";
 
 /** Baustein-Typen, die die Engine wirklich abspielt (s. `compile_block` in
  *  engine.rs — alles andere fällt dort raus und taucht nie im Runtime-Feed
- *  auf). Ohne diesen Hinweis stünde der Editor eines Chord-Bausteins bei
+ *  auf). Ohne diesen Hinweis stünde der Editor eines solchen Bausteins bei
  *  laufendem Transport auf „idle" und man suchte den Fehler bei sich. */
-const PLAYABLE = ["melody", "beat", "cc"];
+const PLAYABLE = ["melody", "beat", "cc", "chord", "arp"];
 
 export function BlockRuntimeStatus({ block }: { block: Block }) {
   const idleText = useStoreValue((s) => idleReason(s, block));

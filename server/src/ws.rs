@@ -1006,6 +1006,25 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 broadcast_snapshot(state);
             }
         }
+        // Welche MIDI-Note diese Drum-Line schickt (0–127). Der Engine-Zweig für
+        // Beat liest `line.note` direkt (s. `compile_block`), also reicht das
+        // Umschreiben im Projekt.
+        "beat.setLineNote" => {
+            if let (Some(id), Some(line_id), Some(note)) = (
+                str_field(&cmd, "blockId"),
+                str_field(&cmd, "lineId"),
+                cmd.get("note").and_then(|v| v.as_u64()),
+            ) {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(b) = find_block_mut(&mut proj, &id) {
+                    if let Some(line) = find_beat_line_mut(b, &line_id) {
+                        line["note"] = serde_json::json!(note.min(127));
+                    }
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
         // Chord-Detail: Note bei (step, note) im Akkord an diesem Step an/aus.
         // Gleiches Piano-Roll-Grid wie Melodie, aber mehrere Noten pro Step
         // (ChordEvent.notes) statt einzelner MelodyNote-Einträge.

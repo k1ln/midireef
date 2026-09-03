@@ -298,6 +298,12 @@ enum CKind {
     /// pro Step eine Liste aus (Note, Velocity)
     Beat(Vec<Vec<(u8, u8)>>),
     Cc(CcAutomation),
+    /// Akkord: mehrere Noten pro Step. Spielt exakt wie `Melody` — der eigene
+    /// Zweig existiert nur, damit der Runtime-Snapshot den Typ korrekt meldet.
+    Chord(Vec<CNote>),
+    /// Arpeggio: aus dem Notenvorrat vorab erzeugte Einzelnoten. Spielt wie
+    /// `Melody` (s. `Chord`).
+    Arp(Vec<CNote>),
 }
 
 struct CBlock {
@@ -895,7 +901,7 @@ impl Engine {
         // (note, vel, off_at) einsammeln, dann senden (Borrow-Konflikt vermeiden).
         let mut hits: Vec<(u8, u8, u64)> = Vec::new();
         match &block.kind {
-            CKind::Melody(notes) => {
+            CKind::Melody(notes) | CKind::Chord(notes) | CKind::Arp(notes) => {
                 for n in notes {
                     if n.step == step {
                         let off = global_pulse + (n.len_steps.max(1) * pps) as u64;
@@ -973,6 +979,8 @@ impl Engine {
             let (kind, cc_number, cc_value) = match &block.kind {
                 CKind::Melody(_) => ("melody", None, None),
                 CKind::Beat(_) => ("beat", None, None),
+                CKind::Chord(_) => ("chord", None, None),
+                CKind::Arp(_) => ("arp", None, None),
                 CKind::Cc(auto) => (
                     "cc",
                     auto.target.as_ref().map(|t| t.cc_number),
@@ -1085,6 +1093,24 @@ struct BeatStepJson {
 }
 
 #[derive(Deserialize)]
+struct ChordEventJson {
+    step: u32,
+    #[serde(rename = "lengthSteps", default = "one_u32")]
+    len_steps: u32,
+    #[serde(default)]
+    notes: Vec<i32>,
+    #[serde(default = "vel_100")]
+    velocity: u8,
+}
+
+fn vel_100() -> u8 {
+    100
+}
+fn arp_up() -> String {
+    "up".to_string()
+}
+
+#[derive(Deserialize)]
 struct BeatLineJson {
     note: u8,
     #[serde(default)]
@@ -1117,6 +1143,20 @@ struct BlockJson {
     out_max: Option<u8>,
     #[serde(default)]
     layers: Vec<serde_json::Value>,
+    // ── Akkord ──
+    #[serde(default)]
+    chords: Vec<ChordEventJson>,
+    // ── Arp ──
+    #[serde(rename = "chordNotes", default)]
+    chord_notes: Vec<i32>,
+    #[serde(default = "arp_up")]
+    direction: String,
+    #[serde(rename = "gateSteps", default = "one_u32")]
+    gate_steps: u32,
+    #[serde(rename = "rateSteps", default = "one_u32")]
+    rate_steps: u32,
+    #[serde(default = "vel_100")]
+    velocity: u8,
 }
 
 fn one_u32() -> u32 {
@@ -1220,7 +1260,43 @@ fn compile_block(
             target: cc_target.clone(),
             layers: compile_cc_layers(&b.layers),
         }),
-        _ => return None, // andere Typen (arp/…) folgen später
+        // Akkord: jeder ChordEvent wird zu mehreren gleichzeitigen Noten am
+        // selben Step — von da an identisch zu Melody.
+        "chord" => {
+            let notes = b
+                .chords
+                .iter()
+                .flat_map(|c| {
+                    let step = c.step;
+                    let len = c.len_steps.max(1);
+                    let vel = c.velocity.clamp(1, 127);
+                    c.notes.iter().map(move |n| CNote {
+                        step,
+                        len_steps: len,
+                        note: (n + transpose).clamp(0, 127) as u8,
+                        vel,
+                    })
+                })
+                .collect();
+            CKind::Chord(notes)
+        }
+        // Arp: den Notenvorrat vorab in eine Einzelnoten-Folge ausrollen.
+        "arp" => {
+            let pool: Vec<u8> = b
+                .chord_notes
+                .iter()
+                .map(|n| (n + transpose).clamp(0, 127) as u8)
+                .collect();
+            CKind::Arp(build_arp(
+                &pool,
+                &b.direction,
+                b.rate_steps.max(1),
+                b.gate_steps.max(1),
+                b.velocity.clamp(1, 127),
+                total_steps,
+            ))
+        }
+        _ => return None,
     };
 
     Some(CBlock {
@@ -1233,6 +1309,60 @@ fn compile_block(
         channel,
         kind,
     })
+}
+
+/// Rollt den Notenvorrat eines Arp-Bausteins in eine feste Einzelnoten-Folge
+/// aus: alle `rate_steps` Steps die nächste Note laut `direction`, je
+/// `gate_steps` lang, bis `total_steps` voll ist. Vorab statt zur Laufzeit,
+/// damit der Rest der Engine ihn wie eine gewöhnliche Melodie behandelt.
+fn build_arp(
+    pool: &[u8],
+    direction: &str,
+    rate_steps: u32,
+    gate_steps: u32,
+    vel: u8,
+    total_steps: u32,
+) -> Vec<CNote> {
+    if pool.is_empty() {
+        return Vec::new();
+    }
+    // Index-Reihenfolge EINES Durchlaufs durch den Vorrat.
+    let order: Vec<usize> = match direction {
+        "down" => (0..pool.len()).rev().collect(),
+        "upDown" if pool.len() > 2 => (0..pool.len())
+            .chain((1..pool.len() - 1).rev())
+            .collect(),
+        // "up" | "asPlayed" | "upDown" (≤2 Noten) | Unbekanntes: Vorrat wie
+        // gespeichert. „asPlayed" ist die Speicherreihenfolge, weil es beim
+        // Sequencer-Baustein kein Live-Anschlagen gibt.
+        _ => (0..pool.len()).collect(),
+    };
+    let random = direction == "random";
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    let mut step = 0u32;
+    while step < total_steps {
+        let idx = if random {
+            // Aus dem Step abgeleitet, nicht aus einem Thread-RNG: derselbe
+            // Baustein klingt bei jedem Loop gleich und der Audiopfad bleibt
+            // deterministisch.
+            let h = (step as u64)
+                .wrapping_mul(2654435761)
+                .wrapping_add(0x9E3779B9);
+            (h % pool.len() as u64) as usize
+        } else {
+            order[i % order.len()]
+        };
+        out.push(CNote {
+            step,
+            len_steps: gate_steps,
+            note: pool[idx],
+            vel,
+        });
+        i += 1;
+        step += rate_steps;
+    }
+    out
 }
 
 /// Löst `Lane.ccControlId` → `LiveControl` (aus `Project.controls`) → Ziel auf.

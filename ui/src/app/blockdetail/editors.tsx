@@ -9,7 +9,7 @@
 import { useState } from "react";
 import type { Block } from "../../state";
 import { useSend } from "../store";
-import { noteName } from "../NotePicker";
+import { noteName, useNotePicker } from "../NotePicker";
 import { Button } from "../widgets/Button";
 import { Popup } from "../widgets/Popup";
 import { StepScroller, StepBars, StepCell, ROLL_LOW_NOTE, ROLL_HIGH_NOTE, type StepFlow } from "./StepGrid";
@@ -22,25 +22,36 @@ const MSG_KINDS = ["programChange", "cc", "note"];
 
 export function BeatEditor({ block, flow }: { block: Block; flow: StepFlow }) {
   const send = useSend();
+  const openNotePicker = useNotePicker();
   const stepsPerBar = block.stepsPerBar ?? 16;
   const totalSteps = stepsPerBar * (block.lengthBars ?? 1);
   const lines = block.lines ?? [];
 
   // Zeilennamen links; bei taktweisem Layout wiederholt StepBars sie je Takt,
   // damit man auch in Takt 3 noch weiß, welche Zeile die Snare ist.
+  //   • Name antippen  → Line stummschalten
+  //   • Note antippen  → welche MIDI-Note die Line schickt (Note-Picker)
   const names = (
     <>
       <div style={{ height: 20 }} />
       {lines.map((line) => (
-        <div
-          key={line.id}
-          style={{ height: 46, display: "flex", flexDirection: "column", justifyContent: "center", cursor: "pointer" }}
-          onClick={() => send({ t: "beat.setLineMuted", blockId: block.id, lineId: line.id, muted: !line.muted })}
-        >
-          <span style={{ fontSize: 15, fontWeight: 600, color: line.muted ? "var(--pal-text-dim)" : "var(--pal-text)" }}>
+        <div key={line.id} style={{ height: 46, display: "flex", flexDirection: "column", justifyContent: "center", gap: 2 }}>
+          <span
+            style={{ fontSize: 15, fontWeight: 600, cursor: "pointer", color: line.muted ? "var(--pal-text-dim)" : "var(--pal-text)" }}
+            onClick={() => send({ t: "beat.setLineMuted", blockId: block.id, lineId: line.id, muted: !line.muted })}
+          >
             {line.name}
+            {line.muted && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "var(--pal-danger)" }}>MUTE</span>}
           </span>
-          {line.muted && <span style={{ fontSize: 10, fontWeight: 700, color: "var(--pal-danger)" }}>MUTE</span>}
+          <span
+            style={{ fontSize: 12, fontWeight: 700, color: "var(--pal-text-dim)", cursor: "pointer" }}
+            title="Which MIDI note this line triggers"
+            onClick={() =>
+              openNotePicker(line.note, (n) => send({ t: "beat.setLineNote", blockId: block.id, lineId: line.id, note: n }))
+            }
+          >
+            ♪ {noteName(line.note)} ({line.note})
+          </span>
         </div>
       ))}
     </>

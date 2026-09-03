@@ -82,8 +82,9 @@ export function SlotTile({ lane, slot, blk, locked, selected, onSelect }: SlotTi
       <div className="play-fill" aria-hidden="true" />
       <div className="play-glow" aria-hidden="true" />
 
-      {/* Rasterort klein in der Ecke — nimmt dem Körper keine Höhe. */}
-      <span className="slot-id" aria-hidden="true">{idLabel}</span>
+      {/* Im Sperr-Modus fällt der Körper weg — dann ist die Ecke die einzige
+          Beschriftung. Sonst steht die ID groß in der Meta-Zeile (s.u.). */}
+      {locked && <span className="slot-id" aria-hidden="true">{idLabel}</span>}
 
       {/* ── Körper: auswählen (kein Ton) ── */}
       {!locked && (
@@ -93,17 +94,17 @@ export function SlotTile({ lane, slot, blk, locked, selected, onSelect }: SlotTi
           title="Select — load this block into the dock (no sound)"
           onClick={onSelect}
         >
-          {/* Name groß oben, darunter die Status-Badges. Transpose steht IMMER
-              (auch bei 0), Loop-Zähler ist hervorgehoben — s. .slot-meta. */}
+          {/* Eine Zeile, eine Schriftgröße: die Baustein-ID zuerst und am
+              größten, dahinter die Status-Badges (Transpose steht IMMER, auch
+              bei ±0). Der Baustein-Name stand hier früher groß darüber — er
+              sagt nichts, was ID und Lane-Typ nicht schon sagen. */}
           <span className="slot-meta">
-            <span className="slot-name">{blk?.name || idLabel}</span>
-            <span className="slot-badges">
-              <span className="slot-badge transpose-value">
-                {transpose > 0 ? `+${transpose}` : transpose < 0 ? `−${-transpose}` : "±0"}
-              </span>
-              {loop && <span className="slot-badge loop">{loop}</span>}
-              {speed !== 1 && <span className="slot-badge">×{speed}</span>}
+            <span className="slot-id-lead">{idLabel}</span>
+            <span className="slot-badge transpose-value">
+              {transpose > 0 ? `+${transpose}` : transpose < 0 ? `−${-transpose}` : "±0"}
             </span>
+            {loop && <span className="slot-badge loop">{loop}</span>}
+            {speed !== 1 && <span className="slot-badge">×{speed}</span>}
           </span>
         </button>
       )}
