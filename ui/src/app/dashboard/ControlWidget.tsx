@@ -29,7 +29,10 @@ export interface ControlWidgetProps {
   deviceName: string | undefined;
   editMode: boolean;
   zoom: number;
-  onContextMenu: (x: number, y: number) => void;
+  /** Highlight-Ring, solange dieses Control im rechten Dock bearbeitet wird. */
+  selected?: boolean;
+  /** Zwei-Finger / Rechtsklick → dieses Control auswählen (Dock rechts). */
+  onContextMenu: () => void;
   /** Fired at the start/end of any gesture (drag, button hold, knob turn) —
    *  Dashboard tracks "which control is currently pressed" so a 2nd finger
    *  landing on the background can open that control's context menu. */
@@ -44,7 +47,7 @@ export interface ControlWidgetProps {
   recording?: boolean;
 }
 
-export function ControlWidget({ ctrl, deviceName, editMode, zoom, onContextMenu, onPress, onRelease, externalActive, recording }: ControlWidgetProps) {
+export function ControlWidget({ ctrl, deviceName, editMode, zoom, selected, onContextMenu, onPress, onRelease, externalActive, recording }: ControlWidgetProps) {
   const send = useSend();
   const isKeyboard = ctrl.kind === "keyboard";
   const isButton = ctrl.kind === "button" || isKeyboard || ctrl.mapping?.kind === "note";
@@ -78,7 +81,7 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, onContextMenu,
     e.stopPropagation();
     if (e.button === 2) {
       onPress();
-      onContextMenu(e.clientX, e.clientY);
+      onContextMenu();
       return;
     }
     // A second finger landing on the knob while the first is still down →
@@ -86,7 +89,7 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, onContextMenu,
     // gesture with it; just open the menu for the gesture already in progress.
     if (activePointers.current.size >= 1) {
       activePointers.current.add(e.pointerId);
-      onContextMenu(e.clientX, e.clientY);
+      onContextMenu();
       return;
     }
     activePointers.current.add(e.pointerId);
@@ -150,6 +153,10 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, onContextMenu,
       onPointerCancel={endGesture}
       onContextMenu={(e) => e.preventDefault()}
     >
+      {/* Innen zoomt die Regler-Größe (Settings → Controls & fonts) mit — wie
+          bei den .btn-Elementen. Die Position (left/top oben) bleibt davon
+          unberührt, nur die sichtbare Größe skaliert. */}
+      <div style={{ position: "relative", zoom: "var(--ctrl-scale, 1)" }}>
       {recording && (
         <div
           style={{
@@ -177,12 +184,23 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, onContextMenu,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
+            outline: selected ? "3px solid var(--pal-shimmer)" : undefined,
+            outlineOffset: 3,
           }}
         >
           <div style={{ width: size - 16, height: size - 16, background: "var(--pal-btn)", opacity: lit ? 0.6 : 0.95 }} />
         </div>
       ) : (
-        <svg width={size} height={size} style={{ display: "block" }}>
+        <svg
+          width={size}
+          height={size}
+          style={{
+            display: "block",
+            borderRadius: "50%",
+            outline: selected ? "3px solid var(--pal-shimmer)" : undefined,
+            outlineOffset: 3,
+          }}
+        >
           <circle cx={size / 2} cy={size / 2} r={size / 2 - 6} fill="none" stroke="rgba(255,255,255,0.7)" strokeWidth={3} />
           <circle cx={size / 2} cy={size / 2} r={size / 2 - 14} fill="var(--pal-btn)" opacity={0.9} />
           <line
@@ -213,6 +231,7 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, onContextMenu,
             )}
           </>
         )}
+      </div>
       </div>
     </div>
   );

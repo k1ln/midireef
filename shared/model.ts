@@ -1034,6 +1034,7 @@ export type Command =
   | { t: "control.setDevice"; controlId: Id; deviceId: Id | null } // Ziel-Device (Name erscheint am Button)
   | { t: "control.setKind"; controlId: Id; kind: ControlKind } // z.B. CC als Taster statt Regler reproduzieren
   | { t: "control.move"; controlId: Id; x: number; y: number }
+  | { t: "control.setSize"; controlId: Id; w: number; h: number } // Dashboard: einzelnen Taster/Regler frei skalieren
   | { t: "control.delete"; controlId: Id }
   | { t: "control.press"; controlId: Id } // Touch-Down (Note-On/Program-Change)
   | { t: "control.release"; controlId: Id } // Touch-Up (Note-Off)

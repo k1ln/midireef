@@ -12,6 +12,7 @@ import { Transport } from "./Transport";
 import { TouchKeyboardProvider } from "./TouchKeyboard";
 import { NotePickerProvider } from "./NotePicker";
 import { Overview } from "./overview/Overview";
+import { PortPickerPopup } from "./overview/popups";
 import { BlockDetail } from "./BlockDetail";
 import { BlockLibrary } from "./BlockLibrary";
 import { LaneControls } from "./LaneControls";
@@ -42,10 +43,18 @@ export function App() {
    *  block armed for re-placing; cleared when the library is opened plainly
    *  from the transport bar. */
   const [libMove, setLibMove] = useState<{ blockId: string; type: BlockType } | null>(null);
+  /** „＋ Device"-Port-Picker — der Knopf sitzt in der Transport-Leiste (nur im
+   *  Sequencer), das Popup rendert hier auf oberster Ebene. */
+  const [addDeviceOpen, setAddDeviceOpen] = useState(false);
+  /** Zähler, den „Center" in der Transport-Leiste hochzählt — das Dashboard
+   *  hört darauf und setzt Pan/Zoom zurück (kein eigener Knopf mehr auf dem
+   *  Dashboard selbst). */
+  const [centerSignal, setCenterSignal] = useState(0);
 
   const navigate = (next: View) => {
     setSub(null);
     setLibMove(null);
+    setAddDeviceOpen(false);
     setView(next);
   };
 
@@ -92,13 +101,20 @@ export function App() {
     <AppProvider value={{ store, send: (cmd) => net.send(cmd), net, runtime }}>
       <TouchKeyboardProvider>
         <NotePickerProvider>
-          <Transport view={view} onNav={navigate} />
+          <Transport
+            view={view}
+            onNav={navigate}
+            onAddDevice={() => setAddDeviceOpen(true)}
+            onCenter={() => setCenterSignal((n) => n + 1)}
+          />
 
-          {view === "start" && <Dashboard />}
+          {view === "start" && <Dashboard centerSignal={centerSignal} />}
 
           {view === "seq" && (
             <Overview onOpenBlock={(blockId) => setSub({ kind: "blockDetail", blockId })} />
           )}
+
+          {view === "seq" && addDeviceOpen && <PortPickerPopup onClose={() => setAddDeviceOpen(false)} />}
 
           {view === "library" && (
             <BlockLibrary

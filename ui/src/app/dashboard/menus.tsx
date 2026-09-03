@@ -47,53 +47,6 @@ function AnchoredPopup({
   );
 }
 
-export function ContextMenuPopup({
-  x,
-  y,
-  onClose,
-  onMove,
-  onDevice,
-  onRemove,
-  showRecord,
-  isRecording,
-  onRecord,
-}: {
-  x: number;
-  y: number;
-  onClose: () => void;
-  onMove: () => void;
-  onDevice: () => void;
-  onRemove: () => void;
-  /** Only "keyboard"-kind controls can be linked to a melody lane. */
-  showRecord?: boolean;
-  isRecording?: boolean;
-  onRecord?: () => void;
-}) {
-  return (
-    <AnchoredPopup x={x} y={y} width={200} onClose={onClose}>
-      <Button className="popup-row" style={{ marginBottom: 8 }} onClick={onMove}>
-        Move
-      </Button>
-      <Button className="popup-row" style={{ marginBottom: 8 }} onClick={onDevice}>
-        Device …
-      </Button>
-      {showRecord && (
-        <Button
-          variant={isRecording ? "danger" : "default"}
-          className="popup-row"
-          style={{ marginBottom: 8 }}
-          onClick={onRecord}
-        >
-          {isRecording ? "Stop recording" : "Record into lane …"}
-        </Button>
-      )}
-      <Button variant="danger" className="popup-row" onClick={onRemove}>
-        Remove
-      </Button>
-    </AnchoredPopup>
-  );
-}
-
 export function DevicePickerPopup({
   x,
   y,

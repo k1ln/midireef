@@ -444,6 +444,22 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 broadcast_snapshot(state);
             }
         }
+        "control.setSize" => {
+            if let (Some(id), Some(w), Some(h)) = (
+                str_field(&cmd, "controlId"),
+                cmd.get("w").and_then(|v| v.as_f64()),
+                cmd.get("h").and_then(|v| v.as_f64()),
+            ) {
+                {
+                    let mut proj = state.project.lock().unwrap();
+                    if let Some(c) = find_control_mut(&mut proj, &id) {
+                        c["w"] = serde_json::json!(w.clamp(60.0, 400.0));
+                        c["h"] = serde_json::json!(h.clamp(60.0, 400.0));
+                    }
+                }
+                broadcast_snapshot(state);
+            }
+        }
         "control.setDevice" => {
             if let Some(id) = str_field(&cmd, "controlId") {
                 let device_id = str_field(&cmd, "deviceId");

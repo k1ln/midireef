@@ -21,6 +21,11 @@ export function useTouchKeyboard(): OpenFn {
 interface Session {
   value: string;
   maxLen: number;
+  /** true = der vorhandene Text ist "markiert": der nächste Tastendruck
+   *  ersetzt ihn komplett (wie Select-All beim Fokussieren eines Feldes).
+   *  ⌫ oder ein Tipp auf den Text hebt die Markierung auf → normales Weiter-
+   *  tippen am bestehenden String. */
+  primed: boolean;
   done: (v: string | null) => void;
 }
 
@@ -28,7 +33,7 @@ export function TouchKeyboardProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
 
   const open: OpenFn = (current, maxLen, done) => {
-    setSession({ value: current, maxLen, done });
+    setSession({ value: current, maxLen, primed: current.length > 0, done });
   };
 
   const close = (result: string | null) => {
@@ -37,11 +42,23 @@ export function TouchKeyboardProvider({ children }: { children: ReactNode }) {
   };
 
   const type = (ch: string) => {
-    setSession((s) => (s && s.value.length < s.maxLen ? { ...s, value: s.value + ch } : s));
+    setSession((s) => {
+      if (!s) return s;
+      // Markiert → der erste Tastendruck fängt einen frischen String an.
+      if (s.primed) return { ...s, value: ch.slice(0, s.maxLen), primed: false };
+      return s.value.length < s.maxLen ? { ...s, value: s.value + ch } : s;
+    });
   };
 
   const backspace = () => {
-    setSession((s) => (s ? { ...s, value: s.value.slice(0, -1) } : s));
+    // ⌫ editiert den bestehenden Text weiter, statt ihn (markiert) zu ersetzen.
+    setSession((s) => (s ? { ...s, value: s.value.slice(0, -1), primed: false } : s));
+  };
+
+  // Tipp auf die Anzeige: Text wieder "markieren" (nächster Tastendruck ersetzt)
+  // bzw. Markierung lösen, wenn er schon markiert war.
+  const toggleSelect = () => {
+    setSession((s) => (s && s.value.length > 0 ? { ...s, primed: !s.primed } : s));
   };
 
   return (
@@ -56,11 +73,28 @@ export function TouchKeyboardProvider({ children }: { children: ReactNode }) {
             display: "flex",
             flexDirection: "column",
             justifyContent: "flex-end",
-            zIndex: 20,
+            // Über den angedockten Menüs (block-dock / settings-dock, z-index 30)
+            // — von dort aus wird umbenannt, und das Menü darf die Tastatur
+            // nicht verdecken.
+            zIndex: 100,
           }}
         >
-          <div style={{ textAlign: "center", fontSize: 34, fontWeight: 700, padding: "0 16px 12px" }}>
-            {session.value || " "}
+          <div style={{ textAlign: "center", padding: "0 16px 12px" }}>
+            <span
+              onClick={toggleSelect}
+              style={{
+                display: "inline-block",
+                fontSize: 34,
+                fontWeight: 700,
+                cursor: "pointer",
+                padding: "2px 12px",
+                borderRadius: 8,
+                background: session.primed ? "var(--pal-btn-active)" : "transparent",
+                color: session.primed ? "var(--pal-white)" : "inherit",
+              }}
+            >
+              {session.value || " "}
+            </span>
           </div>
           <div
             style={{

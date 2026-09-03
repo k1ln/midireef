@@ -15,11 +15,15 @@ import { useTouchKeyboard } from "./TouchKeyboard";
 import { useViewportSize } from "./useViewportSize";
 import { Button } from "./widgets/Button";
 import { ControlWidget, type LiveControl } from "./dashboard/ControlWidget";
-import { ContextMenuPopup, DevicePickerPopup, KindPickerPopup, LanePickerPopup } from "./dashboard/menus";
+import { DevicePickerPopup, KindPickerPopup, LanePickerPopup } from "./dashboard/menus";
+import { ControlDock } from "./dashboard/ControlDock";
 import type { Device } from "../state";
 
 const TOP = 100;
 const LONG_PRESS_MS = 700;
+// Rechts angedocktes Menü für das ausgewählte Control — wie in der Sequencer-
+// Übersicht (BlockDock/SettingsDock).
+const DOCK_W = 252;
 
 // Stable references so the useSyncExternalStore selector below returns the
 // same identity across calls when there's no project yet — a fresh `[]`
@@ -39,7 +43,7 @@ function clampZoom(z: number): number {
   return Math.min(2, Math.max(0.3, z));
 }
 
-export function Dashboard() {
+export function Dashboard({ centerSignal }: { centerSignal?: number }) {
   const send = useSend();
   const net = useNet();
   const store = useStore();
@@ -54,9 +58,9 @@ export function Dashboard() {
   const [editMode, setEditMode] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [menu, setMenu] = useState<{ ctrl: LiveControl; x: number; y: number } | null>(null);
-  const [devicePicker, setDevicePicker] = useState<{ ctrl: LiveControl; x: number; y: number } | null>(null);
-  const [lanePicker, setLanePicker] = useState<{ ctrl: LiveControl; x: number; y: number } | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [devicePicker, setDevicePicker] = useState<{ ctrl: LiveControl } | null>(null);
+  const [lanePicker, setLanePicker] = useState<{ ctrl: LiveControl } | null>(null);
   const [kindPicker, setKindPicker] = useState<{ controlId: string; mappingKind: "cc" | "note" } | null>(null);
   // Controls currently "on" because the physical device sent a matching
   // Note-On (not persisted project state — purely a live UI light-up, mirrors
@@ -137,13 +141,13 @@ export function Dashboard() {
     return off;
   }, [net, store]);
 
-  const openContextMenu = (ctrl: LiveControl, x: number, y: number) => {
+  const selectControl = (ctrl: LiveControl) => {
     // Stuck-note safety net: if this control has a note currently held,
-    // release it before the context menu takes over the gesture.
+    // release it before the dock takes over the gesture.
     if (ctrl.kind === "button" || ctrl.mapping?.kind === "note") {
       send({ t: "control.release", controlId: ctrl.id });
     }
-    setMenu({ ctrl, x, y });
+    setSelectedId(ctrl.id);
   };
 
   // ── Hintergrund-Gesten (Pan, MIDI-Learn, Zwei-Finger, Pinch) ───────────────
@@ -163,7 +167,7 @@ export function Dashboard() {
       panStart.current = null;
       isPanning.current = false;
       if (pressedControl.current) {
-        openContextMenu(pressedControl.current, e.clientX, e.clientY);
+        selectControl(pressedControl.current);
       } else {
         const pts = [...pointers.current.values()];
         pinch.current = { startDist: dist(pts[0], pts[1]), startZoom: zoom };
@@ -220,8 +224,23 @@ export function Dashboard() {
     setPan({ x: 0, y: 0 });
   };
 
+  // „Center" sitzt jetzt in der Transport-Leiste (App zählt `centerSignal`
+  // hoch) — hier nur die Reaktion, den ersten Wert überspringen.
+  const centerSeen = useRef(centerSignal);
+  useEffect(() => {
+    if (centerSignal === centerSeen.current) return;
+    centerSeen.current = centerSignal;
+    resetView();
+  }, [centerSignal]);
+
   const cx = w / 2;
   const cy = (TOP + h) / 2;
+
+  const selectedCtrl = selectedId ? controls.find((c) => c.id === selectedId) : undefined;
+  // Auswahl zeigt ins Leere (Control gelöscht) → aufräumen.
+  useEffect(() => {
+    if (selectedId && !controls.some((c) => c.id === selectedId)) setSelectedId(null);
+  }, [selectedId, controls]);
 
   const deviceName = (deviceId?: string | null) => devices.find((d) => d.id === deviceId)?.name;
 
@@ -232,7 +251,15 @@ export function Dashboard() {
     // the top of the screen, since this renders after <Transport> in App.
     <>
       <div
-        style={{ position: "fixed", top: TOP, left: 0, right: 0, bottom: 0, overflow: "hidden", touchAction: "none" }}
+        style={{
+          position: "fixed",
+          top: TOP,
+          left: 0,
+          right: selectedCtrl ? DOCK_W : 0,
+          bottom: 0,
+          overflow: "hidden",
+          touchAction: "none",
+        }}
         onPointerDown={onBgPointerDown}
         onPointerMove={onBgPointerMove}
         onPointerUp={onBgPointerUp}
@@ -248,13 +275,11 @@ export function Dashboard() {
             transform: `translate(${cx * (1 - zoom) + pan.x}px, ${cy * (1 - zoom) + pan.y}px) scale(${zoom})`,
           }}
         >
-          <div style={{ position: "absolute", left: 16, top: 8, fontSize: 18, color: "var(--pal-text-dim)", fontWeight: 600 }}>
-            {controls.length === 0
-              ? "Dashboard — long-press an empty area to learn MIDI."
-              : editMode
-                ? "Dashboard (Move mode)"
-                : "Dashboard"}
-          </div>
+          {controls.length === 0 && (
+            <div style={{ position: "absolute", left: 16, top: 8, fontSize: 18, color: "var(--pal-text-dim)", fontWeight: 600 }}>
+              Long-press an empty area to learn a MIDI control.
+            </div>
+          )}
 
           {controls.map((ctrl) => (
             <ControlWidget
@@ -263,9 +288,10 @@ export function Dashboard() {
               deviceName={deviceName(ctrl.deviceId)}
               editMode={editMode}
               zoom={zoom}
+              selected={ctrl.id === selectedId}
               externalActive={physicallyActive.has(ctrl.id)}
               recording={recordArmed?.controlId === ctrl.id}
-              onContextMenu={(x, y) => openContextMenu(ctrl, x, y)}
+              onContextMenu={() => selectControl(ctrl)}
               onPress={() => (pressedControl.current = ctrl)}
               onRelease={() => {
                 if (pressedControl.current?.id === ctrl.id) pressedControl.current = null;
@@ -274,10 +300,6 @@ export function Dashboard() {
           ))}
         </div>
       </div>
-
-      <Button variant="alt" style={{ position: "fixed", top: TOP + 8, right: 16, width: 110, height: 36, fontSize: 14 }} onClick={resetView}>
-        Center
-      </Button>
 
       {editMode && (
         <div style={{ position: "fixed", top: TOP + 12, left: 16 }}>
@@ -335,43 +357,38 @@ export function Dashboard() {
         </div>
       )}
 
-      {menu && (
-        <ContextMenuPopup
-          x={menu.x}
-          y={menu.y}
-          onClose={() => setMenu(null)}
+      {selectedCtrl && (
+        <ControlDock
+          ctrl={selectedCtrl}
+          deviceName={deviceName(selectedCtrl.deviceId)}
+          isRecording={recordArmed?.controlId === selectedCtrl.id}
+          onClose={() => setSelectedId(null)}
+          onRename={(name) => send({ t: "control.assignName", controlId: selectedCtrl.id, name })}
+          onSetSize={(px) => send({ t: "control.setSize", controlId: selectedCtrl.id, w: px, h: px })}
           onMove={() => {
-            setMenu(null);
+            setSelectedId(null);
             setEditMode(true);
           }}
-          onDevice={() => {
-            const m = menu;
-            setMenu(null);
-            setDevicePicker({ ctrl: m.ctrl, x: m.x, y: m.y });
+          onDevice={() => setDevicePicker({ ctrl: selectedCtrl })}
+          onRecord={() => {
+            if (recordArmed?.controlId === selectedCtrl.id) {
+              // Bereits armiert → nochmal senden hebt es auf (Toggle, siehe Server).
+              send({ t: "record.arm", controlId: selectedCtrl.id, laneId: recordArmed.laneId });
+            } else {
+              setLanePicker({ ctrl: selectedCtrl });
+            }
           }}
           onRemove={() => {
-            send({ t: "control.delete", controlId: menu.ctrl.id });
-            setMenu(null);
-          }}
-          showRecord={menu.ctrl.kind === "keyboard"}
-          isRecording={recordArmed?.controlId === menu.ctrl.id}
-          onRecord={() => {
-            const m = menu;
-            setMenu(null);
-            if (recordArmed?.controlId === m.ctrl.id) {
-              // Bereits armiert → nochmal senden hebt es auf (Toggle, siehe Server).
-              send({ t: "record.arm", controlId: m.ctrl.id, laneId: recordArmed.laneId });
-            } else {
-              setLanePicker({ ctrl: m.ctrl, x: m.x, y: m.y });
-            }
+            send({ t: "control.delete", controlId: selectedCtrl.id });
+            setSelectedId(null);
           }}
         />
       )}
 
       {lanePicker && (
         <LanePickerPopup
-          x={lanePicker.x}
-          y={lanePicker.y}
+          x={window.innerWidth - DOCK_W - 280}
+          y={TOP + 16}
           devices={devices}
           onClose={() => setLanePicker(null)}
           onPick={(lane) => {
@@ -383,8 +400,8 @@ export function Dashboard() {
 
       {devicePicker && (
         <DevicePickerPopup
-          x={devicePicker.x}
-          y={devicePicker.y}
+          x={window.innerWidth - DOCK_W - 260}
+          y={TOP + 16}
           devices={devices}
           activeDeviceId={devicePicker.ctrl.deviceId}
           onClose={() => setDevicePicker(null)}

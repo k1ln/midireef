@@ -6,14 +6,12 @@
 import { useState } from "react";
 import type { Block, Device, Lane, Slot } from "../../state";
 import { useStoreValue } from "../store";
-import { OVERVIEW_BTN, OVERVIEW_FS, OVERVIEW_GAP } from "../uiSizes";
-import { Button } from "../widgets/Button";
+import { OVERVIEW_FS, OVERVIEW_GAP } from "../uiSizes";
 import { TRANSPORT_H } from "../layout";
 import { DevicePanel } from "./DevicePanel";
 import { BlockDock } from "./BlockDock";
 import { LaneSettingsDock, DeviceSettingsDock } from "./SettingsDock";
 import {
-  PortPickerPopup,
   RolePickerPopup,
   AddBlockPickerPopup,
   SwapPickerPopup,
@@ -35,7 +33,6 @@ const DOCK_W = 148;
 const SETTINGS_W = 252;
 
 type PopupState =
-  | { kind: "port" }
   | { kind: "role"; deviceId: string }
   | { kind: "addBlock"; laneId: string; deviceId: string }
   | { kind: "swap"; laneId: string; deviceId: string; slotId: string; currentBlockId: string }
@@ -133,15 +130,7 @@ export function Overview({ onOpenBlock }: OverviewProps) {
           gap: OVERVIEW_GAP,
         }}
       >
-        {ports.length > 0 ? (
-          <Button
-            variant="alt"
-            style={{ height: OVERVIEW_BTN, padding: "0 10px", fontSize: OVERVIEW_FS, alignSelf: "flex-start" }}
-            onClick={() => setPopup({ kind: "port" })}
-          >
-            ＋ Device
-          </Button>
-        ) : (
+        {ports.length === 0 && (
           <div style={{ color: "var(--pal-text-dim)", fontSize: OVERVIEW_FS, fontWeight: 600 }}>
             No MIDI devices found — connect a device.
           </div>
@@ -149,7 +138,7 @@ export function Overview({ onOpenBlock }: OverviewProps) {
 
         {devices.length === 0 ? (
           <div style={{ color: "var(--pal-text-dim)", fontSize: OVERVIEW_FS }}>
-            {ports.length > 0 ? "No devices yet — tap “＋ Device” above." : ""}
+            {ports.length > 0 ? "No devices yet — tap “＋ Device” in the top bar." : ""}
           </div>
         ) : (
           devices.map((dev) => (
@@ -165,7 +154,6 @@ export function Overview({ onOpenBlock }: OverviewProps) {
           ))
         )}
 
-        {popup?.kind === "port" && <PortPickerPopup onClose={closePopup} />}
 
         {popup?.kind === "role" && <RolePickerPopup deviceId={popup.deviceId} onClose={closePopup} />}
 

@@ -34,9 +34,15 @@ export interface TransportProps {
    *  matching button lights up rather than opening a modal. */
   view: TransportView;
   onNav: (view: TransportView) => void;
+  /** „＋ Device" — nur im Sequencer sinnvoll, steht deshalb hier in der Leiste
+   *  (statt klein im Übersichts-Body) und öffnet den Port-Picker. */
+  onAddDevice?: () => void;
+  /** „Center" — nur im Dashboard: setzt dessen Pan/Zoom zurück. Steht hier,
+   *  weil das Dashboard selbst keine eigene Beschriftung/Leiste mehr trägt. */
+  onCenter?: () => void;
 }
 
-export function Transport({ view, onNav }: TransportProps) {
+export function Transport({ view, onNav, onAddDevice, onCenter }: TransportProps) {
   const net = useNet();
   const send = useSend();
   const [t, setT] = useState<TransportState | null>(null);
@@ -57,20 +63,28 @@ export function Transport({ view, onNav }: TransportProps) {
     const off = net.onEvent((evt) => {
       if ((evt.t === "transport.tick" || evt.t === "state.snapshot") && evt.transport) {
         setT(evt.transport);
-        bpmRef.current = Math.round(evt.transport.bpm);
-        setBpmDisplay(bpmRef.current);
+        if (!bpmDragging.current) {
+          bpmRef.current = Math.round(evt.transport.bpm);
+          setBpmDisplay(bpmRef.current);
+        }
       }
       if (evt.t === "midi.ports") setPorts(evt.outputs ?? []);
     });
     return off;
   }, [net]);
 
-  const nudgeBpm = (delta: number) => {
-    const next = Math.min(300, Math.max(20, bpmRef.current + delta));
+  // Solange am BPM-Wert gezogen wird, die (evtl. noch alten) Server-Ticks NICHT
+  // zurückschreiben lassen — sonst ruckelt die Zahl beim Ziehen.
+  const bpmDragging = useRef(false);
+
+  const setBpm = (value: number) => {
+    const next = Math.min(300, Math.max(20, Math.round(value)));
+    if (next === bpmRef.current) return;
     bpmRef.current = next;
     setBpmDisplay(next);
     send({ t: "transport.setBpm", bpm: next });
   };
+  const nudgeBpm = (delta: number) => setBpm(bpmRef.current + delta);
 
   const posText = t ? `${t.bar} : ${t.beat}` : "1 : 1";
   const portText = ports.length > 0 ? `MIDI: ${ports.length} Out` : "MIDI: no ports";
@@ -118,10 +132,11 @@ export function Transport({ view, onNav }: TransportProps) {
       </Button>
       <Button
         className={view === "start" ? "transport-nav on" : "transport-nav"}
-        style={{ width: BTN, height: BTN, fontSize: 26 }}
+        style={{ width: BTN, height: BTN, fontSize: 20 }}
+        title="Dashboard"
         onClick={() => onNav("start")}
       >
-        ⌂
+        DB
       </Button>
       <Button
         className={view === "library" ? "transport-nav on" : "transport-nav"}
@@ -133,20 +148,50 @@ export function Transport({ view, onNav }: TransportProps) {
       </Button>
       <Button
         className={view === "settings" ? "transport-nav on" : "transport-nav"}
-        style={{ width: BTN, height: BTN, fontSize: 26, marginRight: 16 }}
+        style={{
+          width: BTN,
+          height: BTN,
+          fontSize: 26,
+          marginRight:
+            (view === "seq" && onAddDevice && ports.length > 0) || (view === "start" && onCenter) ? 6 : 16,
+        }}
         title="Projects"
         onClick={() => onNav("settings")}
       >
         ⚙
       </Button>
 
+      {view === "seq" && onAddDevice && ports.length > 0 && (
+        <Button
+          className="transport-nav"
+          style={{ height: BTN, padding: "0 16px", fontSize: 20, fontWeight: 700, marginRight: 16 }}
+          title="Add a MIDI device"
+          onClick={onAddDevice}
+        >
+          ＋ Device
+        </Button>
+      )}
+
+      {view === "start" && onCenter && (
+        <Button
+          className="transport-nav"
+          style={{ height: BTN, padding: "0 16px", fontSize: 18, fontWeight: 700, marginRight: 16 }}
+          title="Reset the dashboard pan / zoom"
+          onClick={onCenter}
+        >
+          Center
+        </Button>
+      )}
+
       <RepeatButton width={NUDGE} height={NUDGE} onFire={() => nudgeBpm(-1)}>
         −
       </RepeatButton>
-      <div className="mono" style={{ width: 84, textAlign: "center", fontSize: 18, fontWeight: 700 }}>
-        {bpmDisplay}
-        <span style={{ fontSize: 11, color: "var(--pal-text-dim)", marginLeft: 3 }}>BPM</span>
-      </div>
+      <BpmReadout
+        bpm={bpmDisplay}
+        onSet={setBpm}
+        onDragStart={() => (bpmDragging.current = true)}
+        onDragEnd={() => (bpmDragging.current = false)}
+      />
       <RepeatButton width={NUDGE} height={NUDGE} onFire={() => nudgeBpm(1)}>
         +
       </RepeatButton>
@@ -188,6 +233,76 @@ export function Transport({ view, onNav }: TransportProps) {
         <span>MIDI</span>
         <span>REEF</span>
       </div>
+    </div>
+  );
+}
+
+/** BPM-Zahl als Zieh-Regler: mit dem Finger hoch/runter ziehen ändert das Tempo
+ *  schnell (≈1 BPM pro 3 px, hoch = schneller). Die −/+ Wippen daneben bleiben
+ *  für die Feinkorrektur. */
+function BpmReadout({
+  bpm,
+  onSet,
+  onDragStart,
+  onDragEnd,
+}: {
+  bpm: number;
+  onSet: (v: number) => void;
+  onDragStart: () => void;
+  onDragEnd: () => void;
+}) {
+  const drag = useRef<{ startY: number; startBpm: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const PX_PER_BPM = 3;
+
+  const end = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!drag.current) return;
+    drag.current = null;
+    setDragging(false);
+    onDragEnd();
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      /* pointer already gone */
+    }
+  };
+
+  return (
+    <div
+      className="mono"
+      style={{
+        width: 84,
+        height: NUDGE,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        textAlign: "center",
+        fontSize: 18,
+        fontWeight: 700,
+        borderRadius: 8,
+        cursor: "ns-resize",
+        touchAction: "none",
+        userSelect: "none",
+        transition: "background 90ms",
+        background: dragging ? "rgba(var(--pal-run-rgb), 0.28)" : "rgba(255, 255, 255, 0.06)",
+        boxShadow: dragging ? "inset 0 0 0 1.5px rgba(var(--pal-run-rgb), 0.8)" : "none",
+      }}
+      title="Drag up / down to change tempo"
+      onPointerDown={(e) => {
+        e.currentTarget.setPointerCapture(e.pointerId);
+        drag.current = { startY: e.clientY, startBpm: bpm };
+        setDragging(true);
+        onDragStart();
+      }}
+      onPointerMove={(e) => {
+        if (!drag.current) return;
+        onSet(drag.current.startBpm + Math.round((drag.current.startY - e.clientY) / PX_PER_BPM));
+      }}
+      onPointerUp={end}
+      onPointerCancel={end}
+    >
+      {bpm}
+      <span style={{ fontSize: 11, color: "var(--pal-text-dim)", marginLeft: 3 }}>BPM</span>
     </div>
   );
 }
