@@ -5,6 +5,7 @@
 
 import type { Device } from "../../state";
 import { useLocalPref } from "../useLocalPref";
+import { useSend } from "../store";
 import { LaneRow } from "./LaneRow";
 
 export interface DevicePanelProps {
@@ -24,11 +25,26 @@ export function DevicePanel({
   onSelectSlot,
   selectedSlotId,
 }: DevicePanelProps) {
+  const send = useSend();
   // Einklapp-Zustand ist eine reine Ansichts-Vorliebe (localStorage),
   // umgeschaltet im SettingsDock — hier nur gelesen.
   const [collapsedPref] = useLocalPref<"0" | "1">(`device.collapsed.${dev.id}`, "0");
   const collapsed = collapsedPref === "1";
   const laneCount = dev.lanes.length;
+  const muted = !!dev.muted;
+
+  // Stopp-Schild ganz links: mutet in EINEM Griff alle Lanes des Geräts
+  // (sie laufen weiter, s. `dev_muted` in engine.rs). Rot = gemutet.
+  const muteButton = (
+    <button
+      type="button"
+      className={`device-mute${muted ? " on" : ""}`}
+      title={muted ? "Unmute this device" : "Mute the whole device"}
+      onClick={() => send({ t: "device.setMuted", deviceId: dev.id, muted: !muted })}
+    >
+      <span className="octagon" aria-hidden="true" />
+    </button>
+  );
 
   const nameButton = (vertical: boolean) => (
     <button
@@ -44,6 +60,7 @@ export function DevicePanel({
   if (collapsed) {
     return (
       <div className="panel" style={{ padding: 6, display: "flex", alignItems: "center", gap: 8 }}>
+        {muteButton}
         {nameButton(false)}
         <span className="overview-dim">
           · {laneCount} lane{laneCount === 1 ? "" : "s"}
@@ -55,6 +72,7 @@ export function DevicePanel({
 
   return (
     <div className="panel" style={{ padding: 6, display: "flex", gap: 6, alignItems: "stretch" }}>
+      {muteButton}
       {/* Name in einem 0-hohen Stretch-Wrapper: er kommt auf die von den Lanes
           bestimmte Höhe und darf lange Portnamen NICHT nach unten austreiben. */}
       <div className="overview-name-wrap device">{nameButton(true)}</div>

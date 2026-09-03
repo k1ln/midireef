@@ -695,6 +695,7 @@ impl Engine {
         // Bausteine liegen projektweit (nicht mehr je Device) — einmal referenzieren.
         let blocks_json = &project.blocks;
         for dev in &project.devices {
+            let dev_muted = dev.muted;
             for lane in &dev.lanes {
                 let port = if dev.midi_out_port.is_empty() {
                     String::new()
@@ -710,7 +711,7 @@ impl Engine {
                 lanes.push(CLane {
                     id: lane.id.clone(),
                     port,
-                    enabled: lane.enabled && !lane.muted,
+                    enabled: lane.enabled && !lane.muted && !dev_muted,
                     play_mode: lane.play_mode.clone(),
                     trigger_quantize: lane.trigger_quantize.clone(),
                     blocks,

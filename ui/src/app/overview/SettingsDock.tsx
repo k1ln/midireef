@@ -45,14 +45,33 @@ const QUANTIZE_SHORT: Record<string, string> = {
   nextBlock: "⊣ Next block",
 };
 
-function DockShell({ title, sub, onClose, children }: { title: string; sub?: string; onClose: () => void; children: React.ReactNode }) {
+function DockShell({
+  title,
+  sub,
+  onClose,
+  onRename,
+  children,
+}: {
+  title: string;
+  sub?: string;
+  onClose: () => void;
+  /** Rename sitzt als „✎" in der Kopfzeile statt als eigene Zeile — auf dem
+   *  480px-Display zählt jede gesparte Zeile (das Menü scrollte sonst). */
+  onRename?: () => void;
+  children: React.ReactNode;
+}) {
   return (
     <div className="settings-dock" style={{ top: TRANSPORT_H }}>
       <div className="settings-dock-head">
         <span className="settings-dock-title" title={title}>
           {title}
         </span>
-        <Button variant="alt" className="settings-dock-close" title="Close" onClick={onClose}>
+        {onRename && (
+          <Button variant="alt" className="settings-dock-icon" title="Rename" onClick={onRename}>
+            ✎
+          </Button>
+        )}
+        <Button variant="alt" className="settings-dock-icon" title="Close" onClick={onClose}>
           ✕
         </Button>
       </div>
@@ -102,19 +121,12 @@ export function LaneSettingsDock({ lane, onOpenCcTarget, onClose }: LaneSettings
       title={lane.name}
       sub={lane.role.toUpperCase()}
       onClose={onClose}
+      onRename={() =>
+        openKeyboard(lane.name, 24, (v) => {
+          if (v) send({ t: "lane.rename", laneId: lane.id, name: v });
+        })
+      }
     >
-      <Button
-        variant="alt"
-        className="settings-dock-row"
-        onClick={() =>
-          openKeyboard(lane.name, 24, (v) => {
-            if (v) send({ t: "lane.rename", laneId: lane.id, name: v });
-          })
-        }
-      >
-        ✎ Rename
-      </Button>
-
       <Field label="Channel">
         <SelectMenu
           variant="alt"
@@ -127,28 +139,25 @@ export function LaneSettingsDock({ lane, onOpenCcTarget, onClose }: LaneSettings
         />
       </Field>
 
-      <Field label="Play mode">
-        <SelectMenu
-          variant="alt"
-          className="settings-dock-row"
-          title="Play mode"
-          buttonLabel={PLAY_MODE_SHORT[playMode] ?? playMode}
-          value={playMode}
-          options={PLAY_MODE_OPTIONS}
-          onChange={(v) => send({ t: "lane.setPlayMode", laneId: lane.id, mode: v })}
-        />
-      </Field>
-
-      <Field label="Trigger timing">
-        <SelectMenu
-          variant="alt"
-          className="settings-dock-row"
-          title="Trigger timing"
-          buttonLabel={QUANTIZE_SHORT[quantize] ?? quantize}
-          value={quantize}
-          options={QUANTIZE_OPTIONS}
-          onChange={(v) => send({ t: "lane.setTriggerQuantize", laneId: lane.id, quantize: v })}
-        />
+      <Field label="Play mode / Trigger timing">
+        <div className="settings-dock-grid">
+          <SelectMenu
+            variant="alt"
+            title="Play mode"
+            buttonLabel={PLAY_MODE_SHORT[playMode] ?? playMode}
+            value={playMode}
+            options={PLAY_MODE_OPTIONS}
+            onChange={(v) => send({ t: "lane.setPlayMode", laneId: lane.id, mode: v })}
+          />
+          <SelectMenu
+            variant="alt"
+            title="Trigger timing"
+            buttonLabel={QUANTIZE_SHORT[quantize] ?? quantize}
+            value={quantize}
+            options={QUANTIZE_OPTIONS}
+            onChange={(v) => send({ t: "lane.setTriggerQuantize", laneId: lane.id, quantize: v })}
+          />
+        </div>
       </Field>
 
       {lane.role === "cc" && (
@@ -165,30 +174,32 @@ export function LaneSettingsDock({ lane, onOpenCcTarget, onClose }: LaneSettings
       )}
 
       <Field label="State">
-        <Toggle
-          on={lane.enabled}
-          onLabel="Enabled"
-          offLabel="Disabled"
-          onToggle={() => send({ t: "lane.setEnabled", laneId: lane.id, enabled: !lane.enabled })}
-        />
-        <Toggle
-          on={lane.solo}
-          onLabel="Solo on"
-          offLabel="Solo off"
-          onToggle={() => send({ t: "lane.setSolo", laneId: lane.id, solo: !lane.solo })}
-        />
-        <Toggle
-          on={locked}
-          onLabel="Locked"
-          offLabel="Unlocked"
-          onToggle={() => setLockedPref(locked ? "0" : "1")}
-        />
-        <Toggle
-          on={collapsed}
-          onLabel="Collapsed"
-          offLabel="Expanded"
-          onToggle={() => send({ t: "lane.setCollapsed", laneId: lane.id, collapsed: !collapsed })}
-        />
+        <div className="settings-dock-grid">
+          <Toggle
+            on={lane.enabled}
+            onLabel="Enabled"
+            offLabel="Disabled"
+            onToggle={() => send({ t: "lane.setEnabled", laneId: lane.id, enabled: !lane.enabled })}
+          />
+          <Toggle
+            on={lane.solo}
+            onLabel="Solo on"
+            offLabel="Solo off"
+            onToggle={() => send({ t: "lane.setSolo", laneId: lane.id, solo: !lane.solo })}
+          />
+          <Toggle
+            on={locked}
+            onLabel="Locked"
+            offLabel="Unlocked"
+            onToggle={() => setLockedPref(locked ? "0" : "1")}
+          />
+          <Toggle
+            on={collapsed}
+            onLabel="Collapsed"
+            offLabel="Expanded"
+            onToggle={() => send({ t: "lane.setCollapsed", laneId: lane.id, collapsed: !collapsed })}
+          />
+        </div>
       </Field>
 
       {confirmDelete ? (
@@ -211,7 +222,7 @@ export function LaneSettingsDock({ lane, onOpenCcTarget, onClose }: LaneSettings
         </div>
       ) : (
         <Button variant="danger" className="settings-dock-row" disabled={locked} onClick={() => setConfirmDelete(true)}>
-          ✕ Delete lane
+          ✕ Delete
         </Button>
       )}
     </DockShell>
@@ -233,36 +244,40 @@ export function DeviceSettingsDock({ device, onOpenAddLane, onClose }: DeviceSet
   const laneCount = device.lanes.length;
 
   return (
-    <DockShell title={device.name} sub={`${laneCount} lane${laneCount === 1 ? "" : "s"}`} onClose={onClose}>
-      <Button
-        variant="alt"
-        className="settings-dock-row"
-        onClick={() =>
-          openKeyboard(device.name, 24, (v) => {
-            if (v) send({ t: "device.rename", deviceId: device.id, name: v });
-          })
-        }
-      >
-        ✎ Rename
-      </Button>
-
+    <DockShell
+      title={device.name}
+      sub={`${laneCount} lane${laneCount === 1 ? "" : "s"}`}
+      onClose={onClose}
+      onRename={() =>
+        openKeyboard(device.name, 24, (v) => {
+          if (v) send({ t: "device.rename", deviceId: device.id, name: v });
+        })
+      }
+    >
       {!device.midiOutPort && <div className="settings-dock-warn">no MIDI port</div>}
 
-      <Field label="Clock">
-        <Toggle
-          on={!!device.sendClock}
-          onLabel="Clock On"
-          offLabel="Clock Off"
-          onToggle={() => send({ t: "device.setSendClock", deviceId: device.id, sendClock: !device.sendClock })}
-        />
+      <Field label="State">
+        <div className="settings-dock-grid">
+          <Toggle
+            on={!device.muted}
+            onLabel="Sounding"
+            offLabel="Muted"
+            onToggle={() => send({ t: "device.setMuted", deviceId: device.id, muted: !device.muted })}
+          />
+          <Toggle
+            on={!!device.sendClock}
+            onLabel="Clock On"
+            offLabel="Clock Off"
+            onToggle={() => send({ t: "device.setSendClock", deviceId: device.id, sendClock: !device.sendClock })}
+          />
+          <Toggle
+            on={collapsed}
+            onLabel="Collapsed"
+            offLabel="Expanded"
+            onToggle={() => setCollapsedPref(collapsed ? "0" : "1")}
+          />
+        </div>
       </Field>
-
-      <Toggle
-        on={collapsed}
-        onLabel="Collapsed"
-        offLabel="Expanded"
-        onToggle={() => setCollapsedPref(collapsed ? "0" : "1")}
-      />
 
       <Button
         variant="alt"
@@ -295,7 +310,7 @@ export function DeviceSettingsDock({ device, onOpenAddLane, onClose }: DeviceSet
         </div>
       ) : (
         <Button variant="danger" className="settings-dock-row" onClick={() => setConfirmDelete(true)}>
-          ✕ Delete device
+          ✕ Delete
         </Button>
       )}
     </DockShell>

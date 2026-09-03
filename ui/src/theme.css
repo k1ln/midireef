@@ -1269,6 +1269,42 @@ textarea {
   color: var(--pal-run);
 }
 
+/* ── Schnell-Mute des ganzen Geräts — Stopp-Schild ganz links am Geräte-Panel.
+   „on" = Gerät gemutet (rot), alle Lanes schweigen (laufen aber weiter). ── */
+.device-mute {
+  flex: 0 0 auto;
+  align-self: stretch;
+  width: 44px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid rgba(255, 255, 255, 0.3);
+  border-radius: 10px;
+  background: var(--pal-btn);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+.device-mute:active {
+  opacity: 0.55;
+}
+.device-mute .octagon {
+  width: 22px;
+  height: 22px;
+  background: var(--pal-text-dim);
+  clip-path: polygon(
+    30% 0%, 70% 0%, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0% 70%, 0% 30%
+  );
+}
+.device-mute.on {
+  background: color-mix(in srgb, var(--pal-stop) 26%, var(--pal-btn));
+  border-color: var(--pal-stop);
+}
+.device-mute.on .octagon {
+  background: var(--pal-stop);
+}
+
 /* ── Namensknopf in den Lane-/Geräte-Zeilen (Sequencer Overview) ──
    Trägt nur den Namen; Tippen öffnet das Einstellungs-Menü (SettingsDock).
    Senkrecht an der linken Kante, damit die Kacheln die Breite bekommen. */
@@ -1332,12 +1368,12 @@ textarea {
   position: fixed;
   right: 0;
   bottom: 0;
-  width: 232px;
-  padding: 10px;
+  width: 252px;
+  padding: 8px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 5px;
   background: rgba(10, 10, 10, 0.94);
   border-left: 1.5px solid rgba(255, 255, 255, 0.22);
   z-index: 30;
@@ -1351,17 +1387,17 @@ textarea {
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  font-size: 20px;
+  font-size: 19px;
   font-weight: 800;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.settings-dock-close {
-  width: 44px;
-  height: 44px;
+.settings-dock-icon {
+  width: 42px;
+  height: 42px;
   flex: 0 0 auto;
   padding: 0;
-  font-size: 18px;
+  font-size: 17px;
 }
 .settings-dock-sub {
   font-size: 11px;
@@ -1372,7 +1408,7 @@ textarea {
 .settings-dock-field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 .settings-dock-label {
   font-size: 10px;
@@ -1383,10 +1419,28 @@ textarea {
 }
 .settings-dock-row {
   width: 100%;
-  height: 54px;
+  height: 44px;
   padding: 0 10px;
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 700;
+}
+/* Zwei Schalter pro Zeile — spart auf dem 480px-Display die halbe Höhe der
+   „State"- und „Play mode"-Blöcke, sodass das Menü ohne Scrollen passt. */
+.settings-dock-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+}
+.settings-dock-grid .btn {
+  width: 100%;
+  height: 44px;
+  min-width: 0;
+  padding: 0 6px;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .settings-dock-warn {
   font-size: 13px;

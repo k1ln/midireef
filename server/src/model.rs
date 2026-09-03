@@ -130,6 +130,11 @@ pub struct Device {
     #[serde(rename = "channel", default, skip_serializing)]
     pub legacy_channel: Option<u8>,
     pub send_clock: bool,
+    /// Schnell-Mute des GANZEN Geräts: alle seine Lanes schweigen (laufen aber
+    /// weiter, wie ein einzelnes `Lane.muted`). `#[serde(default)]` → Altprojekte
+    /// laden als „nicht gemutet".
+    #[serde(default)]
+    pub muted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile_id: Option<Id>,
     pub latency_offset_ms: f64,
@@ -150,6 +155,7 @@ impl Device {
             midi_in_port: None,
             legacy_channel: None,
             send_clock: true,
+            muted: false,
             profile_id: None,
             latency_offset_ms: 0.0,
             legacy_blocks: serde_json::Value::Null,

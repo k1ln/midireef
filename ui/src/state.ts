@@ -183,6 +183,7 @@ export interface Device {
   name: string;
   midiOutPort: string;
   sendClock: boolean;
+  muted?: boolean;
   latencyOffsetMs: number;
   lanes: Lane[];
 }

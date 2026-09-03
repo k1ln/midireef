@@ -30,7 +30,9 @@ const EMPTY_BLOCKS: Block[] = [];
 // Schmal gehalten: Zielgerät ist ein 7"-Raspi-Display (800×480) — s. .block-dock.
 const DOCK_W = 148;
 // Das Einstellungs-Menü (SettingsDock) trägt größere, touch-sichere Schalter.
-const SETTINGS_W = 232;
+// Etwas breiter als früher, damit auch bei hochgestellter Regler-Größe
+// (--ctrl-scale) Beschriftungen wie „✕ Delete" nicht aus dem Knopf laufen.
+const SETTINGS_W = 252;
 
 type PopupState =
   | { kind: "port" }

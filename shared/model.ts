@@ -563,6 +563,7 @@ export interface Device {
   midiOutPort: string; // Portname
   midiInPort?: string;
   sendClock: boolean; // erhält dieses Device die MIDI-Clock?
+  muted: boolean; // Schnell-Mute: alle Lanes des Geräts schweigen (laufen aber weiter)
 
   /** Verknüpftes Geräte-Profil (benannte CC/PC-Maps). */
   profileId?: Id;
@@ -1016,6 +1017,7 @@ export type Command =
   | { t: "mod.removeRoute"; routeId: Id }
   // ── Device & Profile ──
   | { t: "device.setSendClock"; deviceId: Id; sendClock: boolean }
+  | { t: "device.setMuted"; deviceId: Id; muted: boolean } // Schnell-Mute des ganzen Geräts (alle Lanes schweigen, laufen aber weiter)
   | { t: "device.setProfile"; deviceId: Id; profileId?: Id }
   | { t: "device.setLatency"; deviceId: Id; latencyOffsetMs: number }
   | { t: "profile.create"; profile: DeviceProfile }

@@ -253,6 +253,16 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 with_device(state, &id, |d| d.send_clock = on);
             }
         }
+        // Schnell-Mute des ganzen Geräts — alle Lanes schweigen (s.
+        // `dev_muted` in engine.rs), Positionen laufen weiter.
+        "device.setMuted" => {
+            if let (Some(id), Some(on)) = (
+                str_field(&cmd, "deviceId"),
+                cmd.get("muted").and_then(|v| v.as_bool()),
+            ) {
+                with_device(state, &id, |d| d.muted = on);
+            }
+        }
         // ── Lanes ──
         "lane.create" => {
             if let Some(device_id) = str_field(&cmd, "deviceId") {
