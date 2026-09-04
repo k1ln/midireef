@@ -236,6 +236,14 @@ impl AppState {
         if msg.len() < 2 {
             return;
         }
+        // Kommt die Nachricht von unserem EIGENEN virtuellen Ausgang zurück
+        // (ALSA listet ihn auch als Eingang), niemals weiterverarbeiten — sonst
+        // schleift die CC-Automation über Thru endlos zurück und legt den
+        // Server lahm. `MidiInManager` öffnet ihn eigentlich gar nicht mehr;
+        // dies ist die zweite Sicherung.
+        if crate::midi::is_own_port(source_port) {
+            return;
+        }
         let status = msg[0] & 0xF0;
         let channel = (msg[0] & 0x0F) + 1;
 
@@ -468,11 +476,18 @@ fn find_keyboard_control(proj: &Project, channel: u8) -> Option<serde_json::Valu
 /// Ziel-Port fürs MIDI-Thru eines Controls: dessen zugewiesenes Device, sonst
 /// der virtuelle Ausgang (leerer Portname) — dieselbe Default-Regel wie beim
 /// Touch-Auslösen eines Controls (`control_port` in ws.rs).
-fn thru_port(proj: &Project, ctrl: serde_json::Value, _source_port: &str) -> Option<String> {
-    match ctrl.get("deviceId").and_then(|v| v.as_str()) {
-        Some(did) => proj.devices.iter().find(|d| d.id == did).map(|d| d.midi_out_port.clone()),
-        None => Some(String::new()),
+fn thru_port(proj: &Project, ctrl: serde_json::Value, source_port: &str) -> Option<String> {
+    let target = match ctrl.get("deviceId").and_then(|v| v.as_str()) {
+        Some(did) => proj.devices.iter().find(|d| d.id == did).map(|d| d.midi_out_port.clone())?,
+        None => String::new(),
+    };
+    // Nie auf den Port zurücksenden, von dem die Nachricht kam: ein Gerät an
+    // einem bidirektionalen Port (oder mit eigenem Soft-Thru) bekäme seine
+    // eigene CC-Automation zurückgespielt → Endlosschleife.
+    if !target.is_empty() && crate::midi::same_port(&target, source_port) {
+        return None;
     }
+    Some(target)
 }
 
 /// Setzt `value` auf dem passenden Control und liefert dessen ID zurück.

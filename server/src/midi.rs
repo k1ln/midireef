@@ -47,11 +47,12 @@ pub fn list_ports() -> (Vec<String>, Vec<String>) {
         })
         .unwrap_or_default();
 
-    let inputs = MidiInput::new("midireef-scan")
+    let inputs: Vec<String> = MidiInput::new("midireef-scan")
         .map(|i| {
             i.ports()
                 .iter()
                 .filter_map(|p| i.port_name(p).ok())
+                .filter(|n| !is_own_port(n))
                 .collect()
         })
         .unwrap_or_default();
@@ -226,6 +227,29 @@ fn open_matching(needle: &str) -> Option<(String, MidiOutputConnection)> {
     Some((id, conn))
 }
 
+/// Ist das einer UNSERER eigenen Ports (der virtuelle Ausgang „MidiReef Out"
+/// bzw. die daraus abgeleiteten ALSA-Clients wie `midireef-out`)? Solche Ports
+/// dürfen NICHT als MIDI-Eingang geöffnet werden: der virtuelle Ausgang taucht
+/// unter ALSA auch in der Eingangsliste auf, und würde die Automation (CC/LFO)
+/// direkt zurück in `handle_midi_feedback` schleifen — eine MIDI-Rückkopplung,
+/// die den Server lahmlegt. Kein reales Gerät heißt je „midireef".
+pub(crate) fn is_own_port(name: &str) -> bool {
+    normalize_port_name(name).contains("midireef")
+}
+
+/// Ob zwei Portnamen dasselbe Gerät meinen. Toleranter Vergleich, weil reale
+/// Ausgänge per Namens-Substring geöffnet werden (`open_matching`): der
+/// gespeicherte Gerätename kann eine Teilzeichenkette des vollen OS-Portnamens
+/// sein (oder umgekehrt). Leere Namen (= virtueller Ausgang) matchen nur
+/// untereinander.
+pub(crate) fn same_port(a: &str, b: &str) -> bool {
+    let (a, b) = (normalize_port_name(a), normalize_port_name(b));
+    if a.is_empty() || b.is_empty() {
+        return a == b;
+    }
+    a.contains(&b) || b.contains(&a)
+}
+
 /// Normalisiert einen Portnamen für toleranten Vergleich: Kleinbuchstaben,
 /// nur alphanumerische Zeichen (Leer-/Sonderzeichen entfernt).
 fn normalize_port_name(name: &str) -> String {
@@ -308,6 +332,12 @@ impl MidiInManager {
             let Ok(port_name) = scan.port_name(p) else {
                 continue;
             };
+            // Unseren eigenen virtuellen Ausgang NICHT als Eingang öffnen —
+            // sonst schleift die CC-Automation zurück (MIDI-Rückkopplung, s.
+            // `is_own_port`).
+            if is_own_port(&port_name) {
+                continue;
+            }
             if self.conns.contains_key(&port_name) {
                 continue;
             }
@@ -416,4 +446,26 @@ fn create_virtual(out: MidiOutput, name: &str) -> Option<MidiOutputConnection> {
 #[cfg(not(unix))]
 fn create_virtual(_out: MidiOutput, _name: &str) -> Option<MidiOutputConnection> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn own_virtual_port_is_recognised() {
+        assert!(is_own_port("midireef-out:midireef-out 128:0"));
+        assert!(is_own_port("MidiReef Out"));
+        assert!(!is_own_port("TR-6S MIDI 1"));
+        assert!(!is_own_port("Arturia KeyStep 32"));
+    }
+
+    #[test]
+    fn same_port_tolerates_substring_names() {
+        assert!(same_port("TR-6S", "TR-6S MIDI 1"));
+        assert!(same_port("TR-6S MIDI 1", "tr6s"));
+        assert!(same_port("", "")); // beide virtueller Ausgang
+        assert!(!same_port("", "TR-6S"));
+        assert!(!same_port("TR-6S", "KeyStep"));
+    }
 }
