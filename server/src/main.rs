@@ -137,6 +137,8 @@ async fn main() {
         record_armed: Arc::new(Mutex::new(None)),
         note_input: Arc::new(Mutex::new(None)),
         network: network.clone(),
+        last_streamed_snapshot: Arc::new(Mutex::new(None)),
+        snapshot_pending: Arc::new(AtomicBool::new(false)),
     };
 
     // MIDI-Input öffnen + Learn-Handler-Thread starten.

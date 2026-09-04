@@ -67,6 +67,15 @@ pub struct AppState {
     /// Soll-Zustand des Pi-WLAN-Access-Points (Einstellungen → „Wi-Fi access
     /// point"). Persistiert als `<data_dir>/network.json`, siehe `net_ap`.
     pub network: Arc<Mutex<crate::net_ap::NetworkConfig>>,
+    /// Zeitpunkt des letzten gedrosselten Snapshots (s. `broadcast_snapshot_throttled`
+    /// in ws.rs) — CC-Step-/Envelope-Balken und Velocity-Balken ziehen sonst bei
+    /// jedem Zwischenwert einen vollen Engine-Rebuild + JSON-Snapshot + Autosave
+    /// nach sich, was den Clock-Thread bei laufendem Transport ausbremst.
+    pub last_streamed_snapshot: Arc<Mutex<Option<Instant>>>,
+    /// Ob für die aktuelle Drossel-Periode schon ein Nachzügler-Snapshot
+    /// eingeplant ist — verhindert, dass jeder gedrosselte Aufruf einen
+    /// eigenen `tokio::spawn` anhäuft.
+    pub snapshot_pending: Arc<AtomicBool>,
 }
 
 impl AppState {

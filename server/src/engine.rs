@@ -373,6 +373,9 @@ struct CcSendState {
 /// Vorschau (das aktuell offene Baustein-Detail), ein neuer Start (oder das
 /// Schließen des Editors) löst die alte einfach ab.
 struct PreviewPlayback {
+    /// Für `refresh_preview` — welchen Baustein neu kompilieren, wenn sich das
+    /// Projekt ändert (Live-Edits während einer laufenden Schleife).
+    block_id: String,
     port: String,
     cb: CBlock,
     /// Position im Baustein — läuft bei `looping` am Ende auf 0 zurück.
@@ -1308,72 +1311,12 @@ impl Engine {
     /// die erste Lane derselben Rolle, sonst irgendeine. Ein `Err` trägt einen
     /// UI-tauglichen Grund, warum es nicht ging.
     pub fn start_block_preview(&mut self, project: &Project, block_id: &str, looping: bool) -> Result<(), String> {
-        let blocks = project.blocks.as_array().map(|a| a.as_slice()).unwrap_or(&[]);
-        let block_json = blocks
-            .iter()
-            .find(|b| b.get("id").and_then(|v| v.as_str()) == Some(block_id))
-            .ok_or_else(|| "This block no longer exists.".to_string())?;
-        let block_type = block_json.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        if !matches!(block_type, "melody" | "beat" | "cc" | "chord" | "arp") {
-            return Err(format!("Preview isn't supported for {block_type} blocks yet."));
-        }
-
-        let mut found: Option<(&Device, &Lane)> = None;
-        let mut same_role: Option<(&Device, &Lane)> = None;
-        let mut any: Option<(&Device, &Lane)> = None;
-        'outer: for dev in &project.devices {
-            for lane in &dev.lanes {
-                if any.is_none() {
-                    any = Some((dev, lane));
-                }
-                if same_role.is_none() && lane.role == block_type {
-                    same_role = Some((dev, lane));
-                }
-                if lane
-                    .slots
-                    .as_array()
-                    .is_some_and(|s| s.iter().any(|s| s.get("blockId").and_then(|v| v.as_str()) == Some(block_id)))
-                {
-                    found = Some((dev, lane));
-                    break 'outer;
-                }
-            }
-        }
-        let (dev, lane) = found
-            .or(same_role)
-            .or(any)
-            .ok_or_else(|| "No device/lane set up yet to preview through.".to_string())?;
-        if dev.midi_out_port.is_empty() {
-            return Err(format!("\"{}\" has no MIDI output port set.", dev.name));
-        }
-        let channel = lane.channel.clamp(1, 16);
-        let cc_target = if block_type == "cc" {
-            let target = resolve_cc_target(&lane.cc_control_id, dev, channel, &project.controls);
-            if target.is_none() {
-                return Err(format!("Lane \"{}\" has no CC target knob set yet.", lane.name));
-            }
-            target
-        } else {
-            None
-        };
-
-        let block: BlockJson = serde_json::from_value(block_json.clone())
-            .map_err(|_| "Could not read this block.".to_string())?;
-        let slot = SlotJson {
-            id: String::new(),
-            block_id: block_id.to_string(),
-            transpose: 0,
-            speed: 1.0,
-            loop_mode: if looping { "loop".to_string() } else { String::new() },
-            loop_count: 0,
-        };
-        let cb = compile_block(&block, &slot, channel, &cc_target)
-            .ok_or_else(|| "Could not compile this block.".to_string())?;
-
+        let (port, cb) = resolve_and_compile_preview(project, block_id, looping)?;
         self.stop_preview();
         let now = Instant::now();
         self.preview = Some(PreviewPlayback {
-            port: dev.midi_out_port.clone(),
+            block_id: block_id.to_string(),
+            port,
             cb,
             pos: 0,
             global_pulse: 0,
@@ -1384,6 +1327,34 @@ impl Engine {
             cc_last_sent: now.checked_sub(MIN_CC_SEND_INTERVAL).unwrap_or(now),
         });
         Ok(())
+    }
+
+    /// Nach jedem Rebuild (Projektänderung) aufgerufen: eine laufende
+    /// Baustein-Vorschau zeigte sonst weiter den Stand von `start_block_preview`
+    /// — Live-Edits am offenen Baustein (Note gesetzt/gelöscht, CC-Layer
+    /// verändert, …) blieben unhörbar, solange die Schleife läuft. Kompiliert
+    /// neu, behält aber Position, freilaufenden Puls-Zähler und noch fällige
+    /// Note-Offs bei — ein Edit soll die laufende Runde nicht abwürgen. Schlägt
+    /// die Neuauflösung fehl (Baustein gelöscht, Lane weg, …), endet die
+    /// Vorschau sauber statt mit veraltetem Stand weiterzuspielen.
+    pub fn refresh_preview(&mut self, project: &Project) {
+        let Some(p) = &self.preview else { return };
+        let (block_id, looping) = (p.block_id.clone(), p.looping);
+        match resolve_and_compile_preview(project, &block_id, looping) {
+            Ok((port, cb)) => {
+                let p = self.preview.as_mut().expect("checked Some above");
+                let len = cb.len_pulses.max(1);
+                p.port = port;
+                p.cb = cb;
+                // Kürzer geworden (z.B. weniger Takte) und der alte Stand
+                // zeigt jetzt hinter das Ende: von vorn statt auf eine
+                // Position, die es nicht mehr gibt.
+                if p.pos >= len {
+                    p.pos = 0;
+                }
+            }
+            Err(_) => self.stop_preview(),
+        }
     }
 
     /// Beendet eine laufende Baustein-Vorschau sofort — noch fällige
@@ -1768,6 +1739,81 @@ fn compile_block(
         channel,
         kind,
     })
+}
+
+/// Löst Ziel (Port/Kanal, bei CC auch das Ziel-Knob-CC) für die Baustein-
+/// Vorschau auf und kompiliert den Baustein frisch aus der Bibliothek — vom
+/// gemeinsam genutzten Code von `Engine::start_block_preview` (frischer Start)
+/// UND `Engine::refresh_preview` (Neukompilat bei Live-Edits, Position bleibt
+/// stehen). Dieselbe Regel wie `block.previewNote`/`block_preview_target` in
+/// ws.rs: bevorzugt eine Lane, die den Baustein wirklich enthält, sonst die
+/// erste Lane derselben Rolle, sonst irgendeine.
+fn resolve_and_compile_preview(
+    project: &Project,
+    block_id: &str,
+    looping: bool,
+) -> Result<(String, CBlock), String> {
+    let blocks = project.blocks.as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+    let block_json = blocks
+        .iter()
+        .find(|b| b.get("id").and_then(|v| v.as_str()) == Some(block_id))
+        .ok_or_else(|| "This block no longer exists.".to_string())?;
+    let block_type = block_json.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    if !matches!(block_type, "melody" | "beat" | "cc" | "chord" | "arp") {
+        return Err(format!("Preview isn't supported for {block_type} blocks yet."));
+    }
+
+    let mut found: Option<(&Device, &Lane)> = None;
+    let mut same_role: Option<(&Device, &Lane)> = None;
+    let mut any: Option<(&Device, &Lane)> = None;
+    'outer: for dev in &project.devices {
+        for lane in &dev.lanes {
+            if any.is_none() {
+                any = Some((dev, lane));
+            }
+            if same_role.is_none() && lane.role == block_type {
+                same_role = Some((dev, lane));
+            }
+            if lane
+                .slots
+                .as_array()
+                .is_some_and(|s| s.iter().any(|slot| slot.get("blockId").and_then(|v| v.as_str()) == Some(block_id)))
+            {
+                found = Some((dev, lane));
+                break 'outer;
+            }
+        }
+    }
+    let (dev, lane) = found
+        .or(same_role)
+        .or(any)
+        .ok_or_else(|| "No device/lane set up yet to preview through.".to_string())?;
+    if dev.midi_out_port.is_empty() {
+        return Err(format!("\"{}\" has no MIDI output port set.", dev.name));
+    }
+    let channel = lane.channel.clamp(1, 16);
+    let cc_target = if block_type == "cc" {
+        let target = resolve_cc_target(&lane.cc_control_id, dev, channel, &project.controls);
+        if target.is_none() {
+            return Err(format!("Lane \"{}\" has no CC target knob set yet.", lane.name));
+        }
+        target
+    } else {
+        None
+    };
+
+    let block: BlockJson =
+        serde_json::from_value(block_json.clone()).map_err(|_| "Could not read this block.".to_string())?;
+    let slot = SlotJson {
+        id: String::new(),
+        block_id: block_id.to_string(),
+        transpose: 0,
+        speed: 1.0,
+        loop_mode: if looping { "loop".to_string() } else { String::new() },
+        loop_count: 0,
+    };
+    let cb = compile_block(&block, &slot, channel, &cc_target).ok_or_else(|| "Could not compile this block.".to_string())?;
+    Ok((dev.midi_out_port.clone(), cb))
 }
 
 /// Rollt den Notenvorrat eines Arp-Bausteins in eine feste Einzelnoten-Folge

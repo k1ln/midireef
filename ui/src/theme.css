@@ -270,6 +270,20 @@ body {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
 }
+/* Vollbild-Variante (WheelPicker): kein Rahmen, keine Ecken, füllt den ganzen
+   Backdrop statt zentriert darin zu schweben. */
+.modal-box.modal-box-full {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 
 /* ── Popup row list — mirrors the many openXPicker()'s row buttons. ── */
 .popup-title {
@@ -1466,27 +1480,57 @@ textarea {
   cursor: pointer;
   touch-action: pan-y;
 }
-/* Touch-Scroll-Wertrad (WheelPicker): nativer Ein-Finger-Schwung + Snap, die
-   Scrollleiste versteckt — der Griff ist die ganze Liste, nicht ein Balken. */
-.wheel-scroller {
+/* Touch-Scroll-Wertrad (WheelPicker): eigene Schwungrad-Physik statt nativem
+   Scroll (siehe WheelPicker.tsx) — der Griff ist die ganze Liste, nicht ein
+   Balken. `touch-action: none` überlässt Pan/Fling komplett dem JS, sonst
+   kämpft der Browser mit unserer eigenen Trägheit um die Geste. */
+.wheel-viewport {
+  position: relative;
   height: 100%;
-  overflow-y: auto;
-  scroll-snap-type: y mandatory;
-  -webkit-overflow-scrolling: touch;
-  overscroll-behavior: contain;
-  touch-action: pan-y;
-  scrollbar-width: none;
+  overflow: hidden;
+  touch-action: none;
+  cursor: grab;
+  -webkit-user-select: none;
+  user-select: none;
 }
-.wheel-scroller::-webkit-scrollbar {
-  display: none;
+.wheel-list {
+  position: relative;
+  will-change: transform;
 }
 .wheel-row {
   display: flex;
   align-items: center;
   justify-content: center;
-  scroll-snap-align: center;
-  cursor: pointer;
   user-select: none;
+}
+
+.wheel-fs-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.wheel-fs-close {
+  width: 40px;
+  height: 40px;
+  font-size: 18px;
+  flex: 0 0 auto;
+}
+.wheel-fs-value {
+  text-align: center;
+  color: var(--pal-run);
+  font-weight: 800;
+}
+.wheel-keypad {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.wheel-keypad-display {
+  font-size: 30px;
+  font-weight: 800;
+  text-align: center;
+  min-height: 40px;
+  margin-bottom: 10px;
 }
 
 .settings-dock-confirm {

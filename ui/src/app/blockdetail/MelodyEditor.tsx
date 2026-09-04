@@ -23,7 +23,7 @@
 //! hat — und dann löscht der nächste Tipper etwas, das man setzen wollte. Das
 //! lange Drücken hängt dagegen an der Note selbst und kann nicht „anbleiben".
 
-import { useState, type CSSProperties } from "react";
+import { useRef, useState, type CSSProperties } from "react";
 import type { Block } from "../../state";
 import { useSend } from "../store";
 import { useNotePicker, noteName } from "../NotePicker";
@@ -161,6 +161,113 @@ const STACK_CELL = 44;
 /** Spaltenbreite = Zelle + 1px Rand auf jeder Seite. */
 const STACK_COL = STACK_CELL + 2;
 
+/** Höhe der Velocity-Bar-Zeile unter den Notenspalten — s. `VelocityBars`. */
+const VEL_BAR_H = 90;
+
+/** 1..127, von der senkrechten Zeigerposition in der Bar gelesen (oben = 127,
+ *  unten = 1) — 0 fehlt hier aus demselben Grund wie in NoteEditor: das wäre
+ *  auf dem Draht ein Note-Off. */
+function velocityFromPointer(e: React.PointerEvent<HTMLDivElement>): number {
+  const rect = e.currentTarget.getBoundingClientRect();
+  const frac = 1 - (e.clientY - rect.top) / rect.height;
+  return Math.min(127, Math.max(1, Math.round(frac * 127)));
+}
+
+/** Eine Velocity-Bar pro Step, direkt unter den Notenspalten — dieselbe
+ *  Ziehen-oder-Wischen-Weiche wie CcEditor's "stepped"-Layer-Kästen (senkrecht
+ *  ziehen setzt den Wert, waagerecht wischen scrollt das Raster weiter), damit
+ *  sich Velocity so schnell setzen lässt wie ein CC-Wert — kein Umweg über den
+ *  Noten-Editor für jede einzelne Note. Ein Step mit mehreren gestapelten Noten
+ *  (Akkord) bekommt EINE Bar, die alle davon zusammen setzt: eine eigene Bar je
+ *  Note wäre auf dem Touchdisplay zu schmal, um noch treffsicher zu sein. */
+function VelocityBars({ block, steps, notes }: { block: Block; steps: number[]; notes: NonNullable<Block["notes"]> }) {
+  const send = useSend();
+  const gesture = useRef<{ x: number; y: number; mode: "idle" | "draw" | "pan" }>({ x: 0, y: 0, mode: "idle" });
+  const DIR_SLOP = 6;
+
+  const dragMode = (e: React.PointerEvent<HTMLDivElement>): boolean => {
+    const g = gesture.current;
+    if (g.mode !== "idle") return g.mode === "draw";
+    const dx = Math.abs(e.clientX - g.x);
+    const dy = Math.abs(e.clientY - g.y);
+    if (Math.max(dx, dy) < DIR_SLOP) return false;
+    g.mode = dy >= dx ? "draw" : "pan";
+    return g.mode === "draw";
+  };
+
+  const stepNotesOf = (step: number) => notes.filter((n) => n.step === step).sort((a, b) => b.note - a.note);
+
+  const setVelocity = (step: number, e: React.PointerEvent<HTMLDivElement>) => {
+    const stepNotes = stepNotesOf(step);
+    if (stepNotes.length === 0) return;
+    const velocity = velocityFromPointer(e);
+    for (const n of stepNotes) {
+      send({ t: "melody.setNoteVelocity", blockId: block.id, step, note: n.note, velocity });
+    }
+  };
+
+  return (
+    <>
+      <div style={{ display: "flex", marginTop: 6 }}>
+        {steps.map((step) => {
+          const stepNotes = stepNotesOf(step);
+          const has = stepNotes.length > 0;
+          const vel = has ? (stepNotes[0].velocity ?? 100) : 0;
+          const barH = has ? Math.max(3, (vel / 127) * (VEL_BAR_H - 4)) : 0;
+          return (
+            <div
+              key={step}
+              style={{
+                width: STACK_CELL,
+                flexShrink: 0,
+                height: VEL_BAR_H,
+                margin: 1,
+                border: "1px solid var(--pal-step-border)",
+                background: "var(--pal-step-off)",
+                display: "flex",
+                alignItems: "flex-end",
+                opacity: has ? 1 : 0.35,
+                cursor: has ? "pointer" : "default",
+                touchAction: "pan-x",
+              }}
+              onPointerDown={(e) => {
+                if (!has) return;
+                e.currentTarget.setPointerCapture(e.pointerId);
+                gesture.current = { x: e.clientX, y: e.clientY, mode: "idle" };
+              }}
+              onPointerMove={(e) => {
+                if (has && e.buttons === 1 && dragMode(e)) setVelocity(step, e);
+              }}
+              onPointerUp={(e) => {
+                if (has && gesture.current.mode === "idle") setVelocity(step, e);
+                gesture.current.mode = "pan";
+              }}
+              onPointerCancel={() => {
+                gesture.current.mode = "pan";
+              }}
+            >
+              {has && <div style={{ width: "100%", height: barH, background: "var(--pal-btn-active)" }} />}
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex" }}>
+        {steps.map((step) => {
+          const stepNotes = stepNotesOf(step);
+          return (
+            <div
+              key={step}
+              style={{ width: STACK_CELL, margin: 1, textAlign: "center", fontSize: 9, color: "var(--pal-text-dim)" }}
+            >
+              {stepNotes.length > 0 ? (stepNotes[0].velocity ?? 100) : "–"}
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
 function MelodyStack({ block, flow }: { block: Block; flow: StepFlow }) {
   const send = useSend();
   const openNotePicker = useNotePicker();
@@ -174,6 +281,7 @@ function MelodyStack({ block, flow }: { block: Block; flow: StepFlow }) {
     <div>
       <StepBars totalSteps={totalSteps} stepsPerBar={stepsPerBar} cellW={STACK_COL} flow={flow}>
         {(steps) => (
+          <>
           <div style={{ display: "flex" }}>
             {steps.map((step) => {
               // Höchste Note oben, "+" wächst die Spalte nach unten weiter.
@@ -235,12 +343,14 @@ function MelodyStack({ block, flow }: { block: Block; flow: StepFlow }) {
               );
             })}
           </div>
+          <VelocityBars block={block} steps={steps} notes={notes} />
+          </>
         )}
       </StepBars>
 
       <div style={{ marginTop: 10, fontSize: 12, color: "var(--pal-text-dim)" }}>
         Tap a note to remove it, long-press it for pitch, length and velocity. Tap "+" at the foot of a column to add a note
-        (again for a chord on the same step).
+        (again for a chord on the same step). Drag the bars below a step to set velocity for every note there at once.
       </div>
 
       {editing && (

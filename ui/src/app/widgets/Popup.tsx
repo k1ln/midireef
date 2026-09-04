@@ -10,9 +10,12 @@ export interface PopupProps {
   children: ReactNode;
   /** Overrides centering — used by context menus anchored at a tap point. */
   boxStyle?: CSSProperties;
+  /** No border/radius, fills the whole backdrop — for menus meant to take
+   *  over the screen (WheelPicker) instead of floating as a small box. */
+  fullscreen?: boolean;
 }
 
-export function Popup({ onClose, children, boxStyle }: PopupProps) {
+export function Popup({ onClose, children, boxStyle, fullscreen }: PopupProps) {
   return (
     <div
       className="modal-backdrop"
@@ -20,7 +23,11 @@ export function Popup({ onClose, children, boxStyle }: PopupProps) {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="modal-box" style={boxStyle} onPointerDown={(e) => e.stopPropagation()}>
+      <div
+        className={fullscreen ? "modal-box modal-box-full" : "modal-box"}
+        style={boxStyle}
+        onPointerDown={(e) => e.stopPropagation()}
+      >
         {children}
       </div>
     </div>

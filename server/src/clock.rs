@@ -129,6 +129,12 @@ fn clock_loop(
             let proj = { project.lock().unwrap_or_else(|e| e.into_inner()).clone() };
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 engine.rebuild_if_needed(&proj, g);
+                // Eine laufende Baustein-Vorschau (BlockDetail „▶ Play") hängt
+                // NICHT an `self.lanes`, also fasst `rebuild_if_needed` sie
+                // nicht an — ohne das hier bliebe eine Schleife auf dem Stand
+                // von ihrem Start, während man am offenen Baustein weiter
+                // editiert.
+                engine.refresh_preview(&proj);
             }));
             if res.is_err() {
                 tracing::error!(

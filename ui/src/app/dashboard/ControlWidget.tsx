@@ -163,6 +163,11 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, selected, onSe
     if (mode.current === "drag") {
       send({ t: "control.move", controlId: ctrl.id, x: Math.round(x), y: Math.round(y - 30) });
       setDragPos(null);
+    } else if (mode.current === "turn") {
+      // Otherwise this stale local value shadows `ctrl.value` forever (see
+      // its `??` above) — a knob touched once would never again show a
+      // physically turned update or any other server-driven change.
+      setDragValue(null);
     } else if (isButton && !isKeyboard && !isLaneButton) {
       setPressed(false);
       send({ t: "control.release", controlId: ctrl.id });

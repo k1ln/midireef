@@ -675,9 +675,12 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 if let Some(c) = find_control_mut(&mut proj, &id) {
                     c["value"] = serde_json::json!(value);
                 }
-                match control_cc(&proj, &id) {
+                let cc = control_cc(&proj, &id);
+                let has_dev = has_device(&proj, &id);
+                drop(proj);
+                match cc {
                     Some((port, ch, num)) => {
-                        if !has_device(&proj, &id) {
+                        if !has_dev {
                             warn_no_device(state, &id);
                         }
                         state
@@ -686,6 +689,15 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                     }
                     None => warn_no_mapping(state, &id),
                 }
+                // Echo back like `lane_control_set_value`/`handle_midi_feedback` do —
+                // without this, a second connected client (or this same one, once it
+                // stops shadowing `ctrl.value` with its own drag state) never sees the
+                // knob actually move.
+                let _ = state.events.send(serde_json::json!({
+                    "t": "control.valueChanged",
+                    "controlId": id,
+                    "value": value,
+                }));
             }
         }
         // ── Lane-Controls (Schnellbedienung: Drum-Buttons, Macro-Knobs, …) ──
@@ -1117,7 +1129,7 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                     }
                 }
                 drop(proj);
-                broadcast_snapshot(state);
+                broadcast_snapshot_throttled(state);
             }
         }
         // Baustein-Detail: eine Tonhöhe live anspielen (Klaviatur am Rand der
@@ -1379,7 +1391,7 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                     }
                 }
                 drop(proj);
-                broadcast_snapshot(state);
+                broadcast_snapshot_throttled(state);
             }
         }
         // Envelope-Layer: Punkt bei `step` anlegen/ändern/löschen (value=null → löschen).
@@ -1410,7 +1422,7 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                     }
                 }
                 drop(proj);
-                broadcast_snapshot(state);
+                broadcast_snapshot_throttled(state);
             }
         }
         // ProgramChange-Detail: Event bei `step` anlegen/ändern/löschen (program=null → löschen).
@@ -1839,6 +1851,51 @@ fn broadcast_snapshot(state: &AppState) {
     if let Err(e) = state.save_project() {
         tracing::warn!("Auto-Save fehlgeschlagen: {e}");
     }
+}
+
+/// Deckel für `broadcast_snapshot`, wenn Aufrufe im Sekunden-Vielfachen kommen
+/// können (CC-Step-/Envelope-Balken, Note-Velocity-Balken — ein Ziehen feuert
+/// einen Command pro Pointer-Move). `broadcast_snapshot` ist teuer: voller
+/// Engine-Rebuild ALLER Lanes (`Engine::rebuild`) + JSON-Snapshot an jeden
+/// Client + Autosave auf Platte. Ungedrosselt lief das bei jedem
+/// Zwischenwert — bei laufendem Transport nahm das dem Clock-Thread (derselbe
+/// `generation`-Check läuft dort ~alle 1ms) reihenweise Zeit weg und man hörte
+/// es als Timing-Ruckler, nicht nur als zähe UI.
+///
+/// Der Wert selbst steht beim Aufruf schon im Projekt (der Handler setzt ihn
+/// VOR diesem Aufruf) — hier wird nur der teure Teil gedeckelt. Innerhalb des
+/// Fensters wird EIN Nachzügler eingeplant, damit der letzte Wert eines
+/// Ziehens nicht unveröffentlicht hängen bleibt, auch wenn danach nichts mehr
+/// kommt.
+const STREAMED_SNAPSHOT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(40);
+
+fn broadcast_snapshot_throttled(state: &AppState) {
+    let now = std::time::Instant::now();
+    let ready = {
+        let mut last = state.last_streamed_snapshot.lock().unwrap();
+        let ready = last.map(|t| now.duration_since(t) >= STREAMED_SNAPSHOT_INTERVAL).unwrap_or(true);
+        if ready {
+            *last = Some(now);
+        }
+        ready
+    };
+    if ready {
+        broadcast_snapshot(state);
+        return;
+    }
+    if state
+        .snapshot_pending
+        .swap(true, std::sync::atomic::Ordering::AcqRel)
+    {
+        return; // Nachzügler für dieses Fenster schon eingeplant.
+    }
+    let state = state.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(STREAMED_SNAPSHOT_INTERVAL).await;
+        state.snapshot_pending.store(false, std::sync::atomic::Ordering::Release);
+        *state.last_streamed_snapshot.lock().unwrap() = Some(std::time::Instant::now());
+        broadcast_snapshot(&state);
+    });
 }
 
 fn with_device<F: FnMut(&mut Device)>(state: &AppState, device_id: &str, mut f: F) {
