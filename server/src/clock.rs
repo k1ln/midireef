@@ -109,8 +109,21 @@ fn clock_loop(
         let g = generation.load(Ordering::Relaxed);
         if g != cur_gen {
             cur_gen = g;
-            let proj = project.lock().unwrap();
-            engine.rebuild_if_needed(&proj, g);
+            // Projekt KOPIEREN, statt den Lock über den Rebuild zu halten: ein
+            // Panic beim Kompilieren darf nicht den `project`-Mutex vergiften
+            // und damit jeden weiteren `lock().unwrap()` im Server (die
+            // WS-Handler!) mitreißen. `catch_unwind` hält zusätzlich den
+            // Clock-Thread am Leben — sonst stünde die Wiedergabe bis zum
+            // Server-Neustart still.
+            let proj = { project.lock().unwrap_or_else(|e| e.into_inner()).clone() };
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                engine.rebuild_if_needed(&proj, g);
+            }));
+            if res.is_err() {
+                tracing::error!(
+                    "Engine-Rebuild für Generation {g} ist gepanickt — letzter guter Stand bleibt aktiv (Grund siehe PANIC-Zeile oben)"
+                );
+            }
         }
 
         while let Ok(cmd) = rx.try_recv() {
@@ -229,8 +242,13 @@ fn clock_loop(
         if playing {
             let now = Instant::now();
             while now >= next_pulse {
-                engine.clock_pulse();
-                engine.on_pulse(pulses, interval.as_secs_f64());
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    engine.clock_pulse();
+                    engine.on_pulse(pulses, interval.as_secs_f64());
+                }));
+                if res.is_err() {
+                    tracing::error!("Engine-Puls {pulses} ist gepanickt — Puls übersprungen (Grund siehe PANIC-Zeile oben)");
+                }
                 pulses += 1;
                 next_pulse += interval;
 

@@ -15,13 +15,26 @@ fn buf() -> &'static Mutex<VecDeque<String>> {
     BUF.get_or_init(|| Mutex::new(VecDeque::with_capacity(CAP)))
 }
 
+/// Auch nach einem Panic (der den Mutex vergiftet) weiter beschreibbar — der
+/// Log-Puffer ist gerade DANN am wichtigsten.
+fn lock() -> std::sync::MutexGuard<'static, VecDeque<String>> {
+    buf().lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Die gepufferten Zeilen (älteste zuerst).
 pub fn recent() -> Vec<String> {
-    buf().lock().unwrap().iter().cloned().collect()
+    lock().iter().cloned().collect()
+}
+
+/// Eine Zeile direkt in den Ringpuffer schreiben — nicht über `tracing`. Für
+/// den Panic-Hook, dessen Ausgabe sonst nur nach stderr/journald ginge und in
+/// der Log-Ansicht der Einstellungen nie auftauchte.
+pub fn record(text: &str) {
+    push_lines(text);
 }
 
 fn push_lines(text: &str) {
-    let mut b = buf().lock().unwrap();
+    let mut b = lock();
     for line in text.split('\n') {
         if line.is_empty() {
             continue;

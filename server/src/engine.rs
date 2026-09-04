@@ -1056,6 +1056,11 @@ impl Engine {
             (block.slot_id.clone(), auto.out_min, auto.out_max, target, value01)
         };
 
+        // NaN/Inf (etwa aus einer extremen Key-Track-Rate) würde sonst als
+        // CC 0 rausgehen — diesen Puls lieber auslassen.
+        if !value01.is_finite() {
+            return;
+        }
         let span = out_max as i32 - out_min as i32;
         let val = (out_min as f64 + value01.clamp(0.0, 1.0) * span as f64)
             .round()

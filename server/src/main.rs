@@ -54,6 +54,32 @@ async fn main() {
         .with_ansi(false)
         .init();
 
+    // Panics landen sonst nur auf stderr (→ journald) und tauchen in der
+    // Log-Ansicht der Einstellungen nie auf. Hook: Grund + Ort + ein Stück
+    // Backtrace zusätzlich in den Ringpuffer schreiben, dann den Standard-Hook
+    // laufen lassen. Nützt vor allem, wenn ein Hintergrund-Thread (Clock)
+    // stirbt und der Server „hängt", ohne dass man ohne SSH sieht, warum.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_else(|| "?".into());
+        let msg = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string panic payload>".into());
+        let thread = std::thread::current().name().unwrap_or("<unnamed>").to_string();
+        logbuf::record(&format!("PANIC [{thread}] at {loc}: {msg}"));
+        let bt = std::backtrace::Backtrace::force_capture().to_string();
+        for line in bt.lines().take(24) {
+            logbuf::record(&format!("  {line}"));
+        }
+        default_hook(info);
+    }));
+
     // Debug-Modus: loggt jede einzelne IN/OUT-MIDI-Nachricht (sonst nur
     // Fehler/Warnungen) — via `--debug`-Flag oder MIDIREEF_DEBUG=1.
     let debug = std::env::args().any(|a| a == "--debug")
