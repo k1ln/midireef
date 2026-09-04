@@ -53,6 +53,9 @@ export function ProjectSettings({ onClose }: { onClose: () => void }) {
   const [laneFont, setLaneFont] = useState(() => getSize("fontLane"));
   const [motion, setMotionState] = useState<Motion>(getMotion);
   const [bg, setBg] = useState(getBgConfig);
+  const [logLines, setLogLines] = useState<string[]>([]);
+  const [confirmRestart, setConfirmRestart] = useState(false);
+  const [restarting, setRestarting] = useState(false);
 
   const changeScale = (next: number) => setScale(setUiScale(next));
   const SIZE_SETTER: Record<SizeKey, (v: number) => void> = {
@@ -89,9 +92,14 @@ export function ProjectSettings({ onClose }: { onClose: () => void }) {
       if (evt.t === "project.list") {
         setProjects(evt.projects ?? []);
         setPendingDelete(null);
+      } else if (evt.t === "server.logLines") {
+        setLogLines(Array.isArray(evt.lines) ? evt.lines : []);
+      } else if (evt.t === "server.restarting") {
+        setRestarting(true);
       }
     });
     send({ t: "project.list" });
+    send({ t: "server.log" });
     return off;
   }, [net, send]);
 
@@ -268,6 +276,70 @@ export function ProjectSettings({ onClose }: { onClose: () => void }) {
               </Button>
             ))}
           </div>
+        </section>
+
+        {/* ── Server: Neustart + Log-Ansicht (Debugging auf dem Pi) ── */}
+        <section className="settings-card">
+          <div className="popup-subtitle">Server — restart the process or read its recent log</div>
+
+          {restarting ? (
+            <div style={{ fontSize: 14, fontWeight: 600, color: "var(--pal-text-dim)" }}>
+              Restarting… this page reconnects on its own.
+            </div>
+          ) : confirmRestart ? (
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <span style={{ fontSize: 13, fontWeight: 700 }}>Restart the server now?</span>
+              <Button
+                variant="danger"
+                style={{ height: 44, padding: "0 14px", fontSize: 14 }}
+                onClick={() => {
+                  setConfirmRestart(false);
+                  send({ t: "server.restart" });
+                }}
+              >
+                Restart
+              </Button>
+              <Button style={{ height: 44, padding: "0 14px", fontSize: 14 }} onClick={() => setConfirmRestart(false)}>
+                Cancel
+              </Button>
+            </div>
+          ) : (
+            <div style={{ display: "flex", gap: 6 }}>
+              <Button
+                variant="danger"
+                style={{ height: 44, padding: "0 14px", fontSize: 14 }}
+                onClick={() => setConfirmRestart(true)}
+              >
+                ⟲ Restart server
+              </Button>
+              <Button
+                variant="alt"
+                style={{ height: 44, padding: "0 14px", fontSize: 14 }}
+                onClick={() => send({ t: "server.log" })}
+              >
+                ↻ Refresh log
+              </Button>
+            </div>
+          )}
+
+          <pre
+            className="mono"
+            style={{
+              marginTop: 12,
+              padding: 8,
+              height: 240,
+              overflow: "auto",
+              fontSize: 11,
+              lineHeight: 1.45,
+              whiteSpace: "pre",
+              background: "rgba(0, 0, 0, 0.5)",
+              border: "1px solid rgba(255, 255, 255, 0.15)",
+              borderRadius: 8,
+              color: "var(--pal-text-dim)",
+            }}
+          >
+            {logLines.length ? logLines.join("\n") : "— no log lines —"}
+          </pre>
         </section>
 
         {/* ── Unterwasser-Hintergrund: Preset + Feinregler + Reaktivität ── */}

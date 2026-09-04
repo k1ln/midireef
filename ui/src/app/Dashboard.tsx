@@ -16,14 +16,14 @@ import { useViewportSize } from "./useViewportSize";
 import { Button } from "./widgets/Button";
 import { ControlWidget, type LiveControl } from "./dashboard/ControlWidget";
 import { DevicePickerPopup, KindPickerPopup, LanePickerPopup } from "./dashboard/menus";
-import { ControlDock } from "./dashboard/ControlDock";
+import { ControlDock, CONTROL_DOCK_W } from "./dashboard/ControlDock";
 import type { Device } from "../state";
 
 const TOP = 100;
 const LONG_PRESS_MS = 700;
-// Rechts angedocktes Menü für das ausgewählte Control — wie in der Sequencer-
-// Übersicht (BlockDock/SettingsDock).
-const DOCK_W = 252;
+// Breite des rechts angedockten Control-Menüs — nur noch für die Anker der
+// Geräte-/Lane-Picker (das Dock überlagert, es rückt nichts ein).
+const DOCK_W = CONTROL_DOCK_W;
 
 // Stable references so the useSyncExternalStore selector below returns the
 // same identity across calls when there's no project yet — a fresh `[]`
@@ -175,6 +175,8 @@ export function Dashboard({ centerSignal }: { centerSignal?: number }) {
       return;
     }
     if (!editMode) {
+      // Tipp auf freie Fläche schließt das Control-Dock wieder.
+      setSelectedId(null);
       panStart.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y };
       if (!armed) {
         pressTimer.current = window.setTimeout(() => send({ t: "learn.start" }), LONG_PRESS_MS);
@@ -255,7 +257,10 @@ export function Dashboard({ centerSignal }: { centerSignal?: number }) {
           position: "fixed",
           top: TOP,
           left: 0,
-          right: selectedCtrl ? DOCK_W : 0,
+          // Das Dock überlagert nur (kein Einrücken) — bei Tipp-zum-Auswählen
+          // würde ein Layout-Sprung bei jedem Pad-Antippen stören. Verdeckte
+          // Controls erreicht man durch Verschieben (Pan).
+          right: 0,
           bottom: 0,
           overflow: "hidden",
           touchAction: "none",
@@ -291,6 +296,7 @@ export function Dashboard({ centerSignal }: { centerSignal?: number }) {
               selected={ctrl.id === selectedId}
               externalActive={physicallyActive.has(ctrl.id)}
               recording={recordArmed?.controlId === ctrl.id}
+              onSelect={() => setSelectedId(ctrl.id)}
               onContextMenu={() => selectControl(ctrl)}
               onPress={() => (pressedControl.current = ctrl)}
               onRelease={() => {

@@ -31,7 +31,12 @@ export interface ControlWidgetProps {
   zoom: number;
   /** Highlight-Ring, solange dieses Control im rechten Dock bearbeitet wird. */
   selected?: boolean;
-  /** Zwei-Finger / Rechtsklick → dieses Control auswählen (Dock rechts). */
+  /** Normaler Tipp/Klick → dieses Control ins rechte Dock holen (wie eine
+   *  Kachel/Lane in der Sequencer-Übersicht). Der Tipp löst zusätzlich wie
+   *  gehabt aus / dreht — Auswahl ist zerstörungsfrei. */
+  onSelect: () => void;
+  /** Zwei-Finger / Rechtsklick → dasselbe, aber „übernimmt" die Geste: eine
+   *  ggf. gehaltene Note wird vorher freigegeben. */
   onContextMenu: () => void;
   /** Fired at the start/end of any gesture (drag, button hold, knob turn) —
    *  Dashboard tracks "which control is currently pressed" so a 2nd finger
@@ -47,7 +52,7 @@ export interface ControlWidgetProps {
   recording?: boolean;
 }
 
-export function ControlWidget({ ctrl, deviceName, editMode, zoom, selected, onContextMenu, onPress, onRelease, externalActive, recording }: ControlWidgetProps) {
+export function ControlWidget({ ctrl, deviceName, editMode, zoom, selected, onSelect, onContextMenu, onPress, onRelease, externalActive, recording }: ControlWidgetProps) {
   const send = useSend();
   const isKeyboard = ctrl.kind === "keyboard";
   const isButton = ctrl.kind === "button" || isKeyboard || ctrl.mapping?.kind === "note";
@@ -95,6 +100,9 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, selected, onCo
     activePointers.current.add(e.pointerId);
     primaryPointer.current = e.pointerId;
     onPress();
+    // Normaler Tipp holt das Control ins rechte Dock (wie eine Kachel in der
+    // Sequencer-Übersicht) — im „Move"-Modus nicht, da ist der Tipp zum Ziehen.
+    if (!editMode) onSelect();
     e.currentTarget.setPointerCapture(e.pointerId);
     start.current = { gx: e.clientX, gy: e.clientY, x, y, value };
     if (editMode) {

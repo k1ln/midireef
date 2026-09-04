@@ -146,6 +146,24 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
             };
             state.clock.send(ClockCommand::SetClockSource(src));
         }
+        // ── Server-Wartung (Einstellungen → Server) ──
+        "server.log" => {
+            let _ = state.events.send(serde_json::json!({
+                "t": "server.logLines",
+                "lines": crate::logbuf::recent(),
+            }));
+        }
+        "server.restart" => {
+            tracing::warn!("Server-Neustart auf Anforderung der UI");
+            let _ = state.events.send(serde_json::json!({ "t": "server.restarting" }));
+            // Kurz warten, damit das Event noch rausgeht; dann Prozess beenden —
+            // systemd (`Restart=always`) startet ihn in ~1 s neu, die UI
+            // reconnected von selbst (net.ts).
+            std::thread::spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                std::process::exit(0);
+            });
+        }
         "project.save" => {
             if let Err(e) = state.save_project() {
                 tracing::warn!("Projekt speichern fehlgeschlagen: {e}");

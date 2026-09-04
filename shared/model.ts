@@ -1045,6 +1045,9 @@ export type Command =
   | { t: "project.delete"; projectId: Id }
   | { t: "project.list" } // Antwort: ServerEvent "project.list"
   | { t: "project.save" }
+  // ── Server-Wartung (Einstellungen → Server) ──
+  | { t: "server.log" } // Antwort: ServerEvent "server.logLines" (letzte ≤1000 Zeilen)
+  | { t: "server.restart" } // Prozess beenden; systemd startet ihn neu, die UI reconnected
   // ── WLAN-Access-Point (nur auf dem Pi) ──
   // Der Pi kann sein eigenes WLAN aufspannen, damit man ohne vorhandenes Netz
   // per Handy/Laptop an die UI kommt. Antwort ist immer ServerEvent
@@ -1079,6 +1082,8 @@ export type ServerEvent =
   | { t: "routing.activity"; routeId: Id } // Route hat gerade Daten durchgeleitet (UI-Feedback)
   | { t: "midi.ports"; outputs: string[]; inputs: string[] }
   | { t: "project.list"; projects: ProjectSummary[]; currentId: Id } // beim Verbinden + nach jeder Projekt-Operation
+  | { t: "server.logLines"; lines: string[] } // Antwort auf "server.log": letzte ≤1000 Log-Zeilen
+  | { t: "server.restarting" } // Prozess beendet sich gleich; die UI reconnectet automatisch
   | { t: "control.sendError"; controlId?: Id; message: string } // MIDI konnte nicht gesendet werden (UI-Feedback)
   // Physisch am Gerät ausgelöste MIDI-Nachricht, die zu einem gelernten
   // Control passt — Dashboard hält Knopf/Regler live synchron (unabhängig

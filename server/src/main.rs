@@ -6,6 +6,7 @@ mod clock;
 #[cfg(target_os = "macos")]
 mod coremidi_hotplug;
 mod engine;
+mod logbuf;
 mod midi;
 mod model;
 mod net_ap;
@@ -47,6 +48,10 @@ async fn main() {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "midireef_server=info".into()),
         )
+        // Jede Zeile zusätzlich in den 1000-Zeilen-Ringpuffer (Einstellungen →
+        // Server-Log). `with_ansi(false)`, damit dort keine Farbcodes stehen.
+        .with_writer(logbuf::TeeMakeWriter)
+        .with_ansi(false)
         .init();
 
     // Debug-Modus: loggt jede einzelne IN/OUT-MIDI-Nachricht (sonst nur
