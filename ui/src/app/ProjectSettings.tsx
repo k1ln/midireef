@@ -55,7 +55,11 @@ export function ProjectSettings({ onClose }: { onClose: () => void }) {
   const [bg, setBg] = useState(getBgConfig);
   const [logLines, setLogLines] = useState<string[]>([]);
   const [confirmRestart, setConfirmRestart] = useState(false);
-  const [restarting, setRestarting] = useState(false);
+  /** null = kein Neustart läuft; "waiting" = angefordert, Verbindung weg;
+   *  "back" = wieder verbunden (kurzer Hinweis, dann normal). */
+  const [restartPhase, setRestartPhase] = useState<null | "waiting" | "back">(null);
+  const restartPhaseRef = useRef(restartPhase);
+  restartPhaseRef.current = restartPhase;
 
   const changeScale = (next: number) => setScale(setUiScale(next));
   const SIZE_SETTER: Record<SizeKey, (v: number) => void> = {
@@ -92,10 +96,19 @@ export function ProjectSettings({ onClose }: { onClose: () => void }) {
       if (evt.t === "project.list") {
         setProjects(evt.projects ?? []);
         setPendingDelete(null);
+        // `project.list` schickt der Server auch bei jedem (Neu-)Verbinden —
+        // während ein Neustart lief, heißt das: der Server ist wieder da.
+        if (restartPhaseRef.current === "waiting") {
+          setRestartPhase("back");
+          send({ t: "server.log" });
+          window.setTimeout(() => {
+            setRestartPhase((p) => (p === "back" ? null : p));
+          }, 2500);
+        }
       } else if (evt.t === "server.logLines") {
         setLogLines(Array.isArray(evt.lines) ? evt.lines : []);
       } else if (evt.t === "server.restarting") {
-        setRestarting(true);
+        setRestartPhase("waiting");
       }
     });
     send({ t: "project.list" });
@@ -282,9 +295,13 @@ export function ProjectSettings({ onClose }: { onClose: () => void }) {
         <section className="settings-card">
           <div className="popup-subtitle">Server — restart the process or read its recent log</div>
 
-          {restarting ? (
+          {restartPhase === "waiting" ? (
             <div style={{ fontSize: 14, fontWeight: 600, color: "var(--pal-text-dim)" }}>
-              Restarting… this page reconnects on its own.
+              Restarting… waiting for the server to come back.
+            </div>
+          ) : restartPhase === "back" ? (
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--pal-run)" }}>
+              ✓ Server reconnected.
             </div>
           ) : confirmRestart ? (
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
