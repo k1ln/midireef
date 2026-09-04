@@ -97,7 +97,7 @@ export interface Block {
   timeSignature?: string;
   // Kein channel/CC-Ziel: ein Baustein ist reiner Inhalt und in mehreren Lanes
   // (auf anderen Kanälen/CCs) wiederverwendbar — das Ziel legt die Lane fest.
-  baseNote?: number; // melody, chord, arp
+  baseNote?: number; // chord, arp
   notes?: MelodyNote[]; // melody
   lines?: BeatLine[]; // beat
   chords?: ChordEvent[]; // chord
@@ -182,6 +182,11 @@ export interface Lane {
    *  (rateKeyTrack) dieser Lane treiben — Alternative zum externen MIDI-
    *  Trigger. Nur Melodie-Lanes sind ein gültiges Ziel. */
   keytrackSourceLaneId?: string | null;
+  /** Zusätzlich zum Keytrack: soll die Quell-Lane diese (Hold/OneShot-)Lane
+   *  auch starten/halten, statt nur ihre Rate zu treiben — wie ein externer
+   *  MIDI-Trigger, nur ohne MIDI-In. Unabhängig von `keytrackSourceLaneId`
+   *  schaltbar. */
+  keytrackSourceStarts?: boolean;
   slots: Slot[];
   controls: LaneControl[];
 }

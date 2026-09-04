@@ -477,11 +477,19 @@ export function Dashboard({ centerSignal, addLaneSwitchSignal }: { centerSignal?
           y={TOP + 16}
           devices={devices}
           blocks={blocks}
-          active={triggerPicker.ctrl.trigger}
+          active={(controls.find((c) => c.id === triggerPicker.ctrl.id) ?? triggerPicker.ctrl).trigger}
           onClose={() => setTriggerPicker(null)}
-          onPick={(laneId, slotId) => {
-            send({ t: "control.setTrigger", controlId: triggerPicker.ctrl.id, laneId, slotId });
-            setTriggerPicker(null);
+          onPick={(laneId, slotId, setsKeytrack, starts) => {
+            send({
+              t: "control.setTrigger",
+              controlId: triggerPicker.ctrl.id,
+              laneId,
+              slotId,
+              setsKeytrack,
+              starts,
+            });
+            // Popup bleibt offen: die beiden Wirkungs-Toggles unten brauchen
+            // die eben gesetzte Bindung, um sie danach unabhängig umzuschalten.
           }}
           onClear={() => {
             send({ t: "control.setTrigger", controlId: triggerPicker.ctrl.id, laneId: null, slotId: null });

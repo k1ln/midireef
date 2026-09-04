@@ -415,6 +415,10 @@ struct CLane {
     /// das LFO-Key-Tracking dieser (CC-)Lane treiben (`Lane::keytrack_source_lane_id`,
     /// aufgelöst beim Rebuild). `None` = kein internes Keytrack.
     keytrack_source: Option<usize>,
+    /// Zusätzlich zum Keytrack: soll die Quell-Lane diese Lane auch
+    /// starten/halten (wie ein externer MIDI-Trigger), statt nur die Rate zu
+    /// treiben? S. `Lane::keytrack_source_starts`.
+    keytrack_source_starts: bool,
     blocks: Vec<CBlock>,
 }
 
@@ -531,6 +535,14 @@ pub struct Engine {
     /// Eigenständige Baustein-Vorschau des Baustein-Details (s. `PreviewPlayback`).
     /// `None` = kein Editor mit aktiver „▶ Play" gerade offen.
     preview: Option<PreviewPlayback>,
+    /// Fällige Freigaben für `keytrack_source_starts`: (Puls, Ziel-Lane-Index)
+    /// — spiegelt `pending` (Note-Offs), nur für das Gate einer keytrack-
+    /// gestarteten Lane statt für einen MIDI-Byte-Ausgang.
+    pending_gate_releases: Vec<(u64, usize)>,
+    /// Wie viele Noten der Keytrack-Quelle eine Ziel-Lane gerade offen halten
+    /// (Akkorde zählen mehrfach) — Key = Index in `lanes`. Geht ein Eintrag
+    /// auf 0, wird die Lane freigegeben (s. `on_pulse`).
+    keytrack_gate_count: HashMap<usize, u32>,
 }
 
 impl Engine {
@@ -549,6 +561,8 @@ impl Engine {
             playing: false,
             bar_pulses: pulses_per_bar("4/4"),
             preview: None,
+            pending_gate_releases: Vec::new(),
+            keytrack_gate_count: HashMap::new(),
         }
     }
 
@@ -743,7 +757,12 @@ impl Engine {
         let Some(block_idx) = self.lanes[idx].blocks.iter().position(|b| b.slot_id == slot_id) else {
             return;
         };
-        self.playback[idx].trigger_note = note;
+        // Anders als `trigger_slot_depth` KEIN `self.playback[idx].trigger_note
+        // = note` hier: Start (dieses Gate) und Keytrack (die auslösende Note)
+        // sind zwei unabhängig schaltbare Wirkungen derselben Quelle (externe
+        // MIDI-Note ODER Keytrack-Quelle) — s. `Lane::keytrack_source_starts`
+        // und `control.setTrigger`s `setsKeytrack`. Wer die Note auch fürs
+        // Key-Tracking will, ruft zusätzlich `set_trigger_note` auf.
         // "hold" wird SOFORT scharf: die Lane soll klingen, solange der Finger
         // liegt — würde der Start auf den nächsten Takt warten, wäre die Geste
         // bei einem kurzen Antippen schon vorbei, bevor überhaupt etwas kommt.
@@ -762,6 +781,17 @@ impl Engine {
         }
         // Auch ein Press (MIDI-Note-On auf eine getaktete Lane) zündet die Kette.
         self.fire_chain(idx, note, 1);
+    }
+
+    /// Setzt NUR die auslösende Note fürs LFO-Key-Tracking (`rateKeyTrack`)
+    /// einer Lane, ohne sie zu starten/stoppen — Gegenstück zu `press_slot`,
+    /// wenn eine Quelle (externe MIDI-Note über `control.setTrigger`s
+    /// `setsKeytrack`) NUR die Rate treiben soll, ohne die Lane mit zu
+    /// gaten. No-op für eine unbekannte Lane.
+    pub fn set_trigger_note(&mut self, lane_id: &str, note: Option<u8>) {
+        if let Some(idx) = self.lanes.iter().position(|l| l.id == lane_id) {
+            self.playback[idx].trigger_note = note;
+        }
     }
 
     /// Touch-Up auf eine "hold"-Lane: Baustein stoppen, Lane wieder stumm
@@ -824,6 +854,8 @@ impl Engine {
             p.held = false;
         }
         self.pending.clear();
+        self.pending_gate_releases.clear();
+        self.keytrack_gate_count.clear();
         self.elapsed_secs = 0.0;
         // Frischer Transport-Start: laufende Rückstell-Buchführung verwerfen
         // (nichts zu senden — die Bausteine fangen ohnehin von vorn an).
@@ -894,6 +926,7 @@ impl Engine {
                     trigger_quantize: lane.trigger_quantize.clone(),
                     chain,
                     keytrack_source: None, // unten aufgelöst
+                    keytrack_source_starts: lane.keytrack_source_starts,
                     blocks,
                 });
             }
@@ -977,6 +1010,27 @@ impl Engine {
         }
         for (port, bytes) in off_batches {
             self.midi.send(&port, &bytes);
+        }
+
+        // Fällige Keytrack-Gate-Freigaben (`keytrack_source_starts`): sobald
+        // die letzte noch offene Note der Quelle ihr Ende erreicht, die
+        // Ziel-Lane freigeben — wie ein Note-Off bei einem externen
+        // MIDI-Trigger. Spiegelt die Note-Off-Batch oben, nur fürs Gate statt
+        // für MIDI-Bytes.
+        let mut i = 0;
+        while i < self.pending_gate_releases.len() {
+            if self.pending_gate_releases[i].0 <= global_pulse {
+                let (_, target_idx) = self.pending_gate_releases.swap_remove(i);
+                let count = self.keytrack_gate_count.entry(target_idx).or_insert(0);
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    if let Some(target_lane_id) = self.lanes.get(target_idx).map(|l| l.id.clone()) {
+                        self.release_slot(&target_lane_id);
+                    }
+                }
+            } else {
+                i += 1;
+            }
         }
 
         // Vorgemerkte Trigger, deren Grenze genau jetzt liegt, scharfschalten.
@@ -1133,6 +1187,34 @@ impl Engine {
                 for i in 0..self.lanes.len() {
                     if self.lanes[i].keytrack_source == Some(lane_idx) {
                         self.playback[i].trigger_note = Some(top_note);
+                    }
+                }
+            }
+            // `keytrack_source_starts`: dieselbe Quelle darf die Ziel-Lane
+            // zusätzlich starten/halten, wie ein externer MIDI-Trigger es
+            // täte — unabhängig von der Keytrack-Zuweisung oben. Ref-gezählt
+            // über alle Noten dieses Steps (Akkord = mehrere), damit eine
+            // "hold"-Ziellane erst beim LETZTEN Note-Ende wieder losgelassen
+            // wird, nicht schon beim ersten. Ausgelöst wird per `press_slot`
+            // auf den aktuell aktiven Slot der Ziel-Lane — dieselbe Lane
+            // entscheidet selbst, was "aktiv" heißt (Quantisierung etc.).
+            if !hits.is_empty() {
+                for i in 0..self.lanes.len() {
+                    if self.lanes[i].keytrack_source != Some(lane_idx)
+                        || !self.lanes[i].keytrack_source_starts
+                    {
+                        continue;
+                    }
+                    let was_silent = self.keytrack_gate_count.get(&i).copied().unwrap_or(0) == 0;
+                    *self.keytrack_gate_count.entry(i).or_insert(0) += hits.len() as u32;
+                    for (_, _, off) in &hits {
+                        self.pending_gate_releases.push((*off, i));
+                    }
+                    if was_silent && !self.lanes[i].blocks.is_empty() {
+                        let block_idx = self.playback[i].slot % self.lanes[i].blocks.len();
+                        let target_lane_id = self.lanes[i].id.clone();
+                        let target_slot_id = self.lanes[i].blocks[block_idx].slot_id.clone();
+                        self.press_slot(&target_lane_id, &target_slot_id, None);
                     }
                 }
             }
@@ -1985,5 +2067,168 @@ fn compile_cc_layer(v: &serde_json::Value) -> Option<CcLayerCompiled> {
             Some(CcLayerCompiled::Stepped { enabled, combine, depth, offset, values })
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod keytrack_starts_tests {
+    use super::*;
+
+    /// Baut ein Mini-Projekt: eine Melodie-Lane mit einer Note bei Step 0
+    /// (Länge 1 Step), und eine "hold"-CC-Lane, die diese Melodie-Lane als
+    /// Keytrack-Quelle MIT `keytrack_source_starts` gewählt hat.
+    fn project_with_melody_driven_cc_hold() -> (Project, String, String) {
+        let mut project = Project::new("t");
+        let mut device = Device::new("dev".to_string(), "port".to_string());
+
+        let mut melody = Lane::new("melody", "Melody".to_string());
+        melody.slots = serde_json::json!([{ "id": "ms1", "blockId": "mb" }]);
+
+        let mut cc = Lane::new("cc", "CC".to_string());
+        cc.play_mode = "hold".to_string();
+        cc.keytrack_source_lane_id = Some(melody.id.clone());
+        cc.keytrack_source_starts = true;
+        cc.slots = serde_json::json!([{ "id": "cs1", "blockId": "cb" }]);
+
+        let melody_id = melody.id.clone();
+        let cc_id = cc.id.clone();
+        device.lanes.push(melody);
+        device.lanes.push(cc);
+        project.devices.push(device);
+        project.blocks = serde_json::json!([
+            {
+                "id": "mb",
+                "type": "melody",
+                "lengthBars": 1,
+                "stepsPerBar": 16,
+                "notes": [{ "step": 0, "lengthSteps": 1, "note": 64, "velocity": 100 }],
+            },
+            { "id": "cb", "type": "cc", "layers": [] },
+        ]);
+        (project, melody_id, cc_id)
+    }
+
+    fn is_running(engine: &Engine, lane_id: &str) -> bool {
+        let idx = engine.lanes.iter().position(|l| l.id == lane_id).unwrap();
+        engine.playback[idx].running
+    }
+
+    /// Eine Note der Keytrack-Quelle muss die "hold"-CC-Lane starten (nicht
+    /// nur ihre `trigger_note` setzen) — genau das Verhalten, das bisher nur
+    /// ein externer MIDI-Trigger (`press_slot`) auslösen konnte.
+    #[test]
+    fn keytrack_source_starts_opens_the_hold_gate() {
+        let (project, _melody_id, cc_id) = project_with_melody_driven_cc_hold();
+        let mut engine = Engine::new();
+        engine.rebuild_if_needed(&project, 1);
+
+        assert!(!is_running(&engine, &cc_id), "vor der ersten Note noch stumm");
+        engine.on_pulse(0, 0.02); // Step 0: Note-On der Melodie
+        assert!(is_running(&engine, &cc_id), "Note-On muss die Hold-Lane öffnen");
+    }
+
+    /// Endet die auslösende Note (hier nach 1 Step = 6 Pulse bei 16 Steps/Takt),
+    /// muss die Hold-Lane wieder losgelassen werden — wie ein Note-Off bei
+    /// einem externen MIDI-Trigger.
+    #[test]
+    fn keytrack_source_starts_closes_the_gate_on_note_end() {
+        let (project, _melody_id, cc_id) = project_with_melody_driven_cc_hold();
+        let mut engine = Engine::new();
+        engine.rebuild_if_needed(&project, 1);
+
+        for pulse in 0..6 {
+            engine.on_pulse(pulse, 0.02);
+        }
+        assert!(is_running(&engine, &cc_id), "noch innerhalb der Notenlänge");
+        engine.on_pulse(6, 0.02); // Note-Ende erreicht
+        assert!(!is_running(&engine, &cc_id), "nach Notenende muss die Lane wieder stumm sein");
+    }
+
+    /// Bloßes Keytrack (ohne `keytrack_source_starts`) darf die Hold-Lane
+    /// weiterhin NICHT starten — die Regression, die den Bug-Report auslöste:
+    /// nur die Rate folgt der Melodie, geklungen hat es nie, weil nichts das
+    /// Gate je öffnete.
+    #[test]
+    fn keytrack_without_starts_leaves_the_hold_gate_closed() {
+        let (mut project, _melody_id, cc_id) = project_with_melody_driven_cc_hold();
+        {
+            let cc = project.devices[0].lanes.iter_mut().find(|l| l.id == cc_id).unwrap();
+            cc.keytrack_source_starts = false;
+        }
+        let mut engine = Engine::new();
+        engine.rebuild_if_needed(&project, 1);
+
+        engine.on_pulse(0, 0.02);
+        assert!(!is_running(&engine, &cc_id), "ohne `starts` bleibt es beim reinen Keytrack");
+    }
+}
+
+#[cfg(test)]
+mod keytrack_tests {
+    use super::*;
+
+    fn ctx(trigger_note: Option<u8>, elapsed_secs: f64) -> CcEvalCtx {
+        CcEvalCtx {
+            step_pos: 0.0,
+            step_index: 0,
+            global_step_pos: 0.0,
+            pos: 0,
+            len_pulses: 96,
+            global_pulse: 0,
+            ppb: 96,
+            elapsed_secs,
+            trigger_note,
+        }
+    }
+
+    /// Direkter Test der reinen Rate-Formel aus `CcLayerCompiled::eval` (Hz-Modus,
+    /// unabhängig vom MIDI-Ein-/Ausgang): eine Oktave über Note 60 muss bei
+    /// `rate_key_track = 1.0` die Rate verdoppeln und damit einen anderen
+    /// Momentanwert liefern als ohne Key-Tracking (dieselbe Note 60) oder eine
+    /// Oktave darunter.
+    #[test]
+    fn keytrack_changes_lfo_phase_with_trigger_note() {
+        let layer = CcLayerCompiled::Lfo {
+            enabled: true,
+            combine: "add".into(),
+            depth: 1.0,
+            offset: 0.0,
+            waveform: "sawUp".into(), // linear in der Phase, am einfachsten zu vergleichen
+            rate_mode: "hz".into(),
+            rate_bars: 1.0,
+            rate_hz: 1.0,
+            phase: 0.0,
+            rate_key_track: 1.0,
+        };
+        let at = |note: Option<u8>| layer.eval(&ctx(note, 0.37));
+
+        let base = at(Some(60)); // kt = 2^0 = 1
+        let octave_up = at(Some(72)); // kt = 2^1 = 2 → doppelte Rate
+        let no_note = at(None); // kein Trigger → kt = 1, wie Note 60
+
+        assert_ne!(base, octave_up, "eine Oktave höher muss die LFO-Phase anders treffen");
+        assert_eq!(base, no_note, "ohne Trigger-Note verhält sich Key-Track wie Note 60 (kt=1)");
+    }
+
+    /// `rate_key_track = 0` (aus) muss die Note komplett ignorieren — sonst
+    /// könnte ein Vorzeichen-/Rundungsfehler nur bei genau diesem Wert zufällig
+    /// nicht auffallen.
+    #[test]
+    fn keytrack_off_ignores_trigger_note() {
+        let layer = CcLayerCompiled::Lfo {
+            enabled: true,
+            combine: "add".into(),
+            depth: 1.0,
+            offset: 0.0,
+            waveform: "sawUp".into(),
+            rate_mode: "hz".into(),
+            rate_bars: 1.0,
+            rate_hz: 1.0,
+            phase: 0.0,
+            rate_key_track: 0.0,
+        };
+        let low = layer.eval(&ctx(Some(24), 0.37));
+        let high = layer.eval(&ctx(Some(96), 0.37));
+        assert_eq!(low, high, "rate_key_track = 0 muss die Rate unabhängig von der Note halten");
     }
 }

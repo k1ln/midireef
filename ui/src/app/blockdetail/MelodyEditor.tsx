@@ -30,12 +30,16 @@ import { useNotePicker, noteName } from "../NotePicker";
 import { Button } from "../widgets/Button";
 import { Popup } from "../widgets/Popup";
 import { StepBars, StepCell, RollKey, ROLL_LOW_NOTE, ROLL_HIGH_NOTE, type StepFlow } from "./StepGrid";
-import { useSetField } from "../useNumberEditor";
 import { useLongPress } from "../useLongPress";
 import { NoteEditorPopup, type NoteRef } from "./NoteEditor";
 import { usePlayIn, PlayInBar } from "./PlayIn";
 
 export type MelodyLayout = "stack" | "grid";
+
+/** Default pitch used where the editor needs a starting point but there's no
+ *  note to derive one from yet (first note in an empty column, initial
+ *  piano-roll scroll position, play-in keyboard octave) — middle C. */
+const DEFAULT_BASE_NOTE = 60;
 
 /** Grundnote und Ansichts-Umschalter. Sitzt NICHT über dem Raster, sondern in
  *  der Kopfzeile des Baustein-Details (s. BlockDetail) — zwei Leisten
@@ -59,20 +63,11 @@ export function MelodyToolbar({
   setPlayIn: (v: boolean) => void;
 }) {
   const send = useSend();
-  const openNotePicker = useNotePicker();
-  const setField = useSetField();
-  const base = block.baseNote ?? 60;
   const [confirmClear, setConfirmClear] = useState(false);
   const noteCount = block.notes?.length ?? 0;
 
   return (
     <>
-      <Button
-        style={{ width: 150, height: 40, fontSize: 14 }}
-        onClick={() => openNotePicker(base, (n) => setField(block.id, "baseNote", n))}
-      >
-        Base {noteName(base)} ({base})
-      </Button>
       <Button
         variant="alt"
         style={{ width: 130, height: 40, fontSize: 14 }}
@@ -274,7 +269,6 @@ function MelodyStack({ block, flow }: { block: Block; flow: StepFlow }) {
   const [editing, setEditing] = useState<NoteRef | null>(null);
   const stepsPerBar = block.stepsPerBar ?? 16;
   const totalSteps = stepsPerBar * (block.lengthBars ?? 1);
-  const base = block.baseNote ?? 60;
   const notes = block.notes ?? [];
 
   return (
@@ -320,7 +314,7 @@ function MelodyStack({ block, flow }: { block: Block; flow: StepFlow }) {
                   })}
                   <div
                     onClick={() =>
-                      openNotePicker(stepNotes[stepNotes.length - 1]?.note ?? base, (n) =>
+                      openNotePicker(stepNotes[stepNotes.length - 1]?.note ?? DEFAULT_BASE_NOTE, (n) =>
                         send({ t: "melody.addNote", blockId: block.id, step, note: n }),
                       )
                     }
@@ -373,7 +367,6 @@ function MelodyGrid({ block, flow, playIn }: { block: Block; flow: StepFlow; pla
   const [editing, setEditing] = useState<NoteRef | null>(null);
   const stepsPerBar = block.stepsPerBar ?? 16;
   const totalSteps = stepsPerBar * (block.lengthBars ?? 1);
-  const base = block.baseNote ?? 60;
   const notes = block.notes ?? [];
   // Einspielen: Schreib-Cursor + Tastatur-Eingang. Der Hook läuft immer mit
   // (Hooks dürfen nicht bedingt sein), armiert den Server aber nur, solange
@@ -421,7 +414,7 @@ function MelodyGrid({ block, flow, playIn }: { block: Block; flow: StepFlow; pla
                 key={note}
                 className="step-row roll-row"
                 // Anker für den Start-Scroll des Ausschnitts (s. StepScroller).
-                data-roll-center={note === base ? "" : undefined}
+                data-roll-center={note === DEFAULT_BASE_NOTE ? "" : undefined}
                 style={
                   {
                     background: isC ? "var(--pal-panel-deep)" : "var(--pal-panel)",
@@ -503,7 +496,7 @@ function MelodyGrid({ block, flow, playIn }: { block: Block; flow: StepFlow; pla
         )}
       </div>
 
-      {playIn && <PlayInBar playIn={play} totalSteps={totalSteps} stepsPerBar={stepsPerBar} baseNote={base} />}
+      {playIn && <PlayInBar playIn={play} totalSteps={totalSteps} stepsPerBar={stepsPerBar} baseNote={DEFAULT_BASE_NOTE} />}
 
       {editing && (
         <NoteEditorPopup block={block} target={editing} onRetarget={setEditing} onClose={() => setEditing(null)} />

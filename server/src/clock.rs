@@ -35,6 +35,11 @@ pub enum ClockCommand {
     PressSlot(String, String, Option<u8>),
     /// Touch-Up auf eine "hold"-Lane: (laneId).
     ReleaseSlot(String),
+    /// Setzt NUR die auslösende Note fürs LFO-Key-Tracking einer Lane, ohne
+    /// sie zu starten/stoppen — Gegenstück zu `PressSlot`/`ReleaseSlot`, wenn
+    /// eine externe MIDI-Note nur die Rate treiben soll (`setsKeytrack` bei
+    /// `control.setTrigger`, unabhängig von dessen `starts`).
+    SetTriggerNote(String, Option<u8>),
     /// Live vom Keyboard kommende Note für eine per `record.arm` gelinkte
     /// Melodie-Lane — siehe `record_note_in` unten. Nur der Clock-Thread kennt
     /// den laufenden Puls-Zähler, daher landet das hier statt in ws.rs.
@@ -215,6 +220,9 @@ fn clock_loop(
                 }
                 ClockCommand::ReleaseSlot(lane_id) => {
                     engine.release_slot(&lane_id);
+                }
+                ClockCommand::SetTriggerNote(lane_id, note) => {
+                    engine.set_trigger_note(&lane_id, note);
                 }
                 ClockCommand::SetClockSource(src) => {
                     let mut t = transport.lock().unwrap();

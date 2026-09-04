@@ -18,8 +18,11 @@ export interface LiveControl {
   h: number;
   value?: number;
   /** Bindung „eingehende Note → Lane-Slot auslösen" (control.setTrigger).
-   *  `enabled === false` = Bindung pausiert. */
-  trigger?: { laneId: string; slotId: string; enabled?: boolean };
+   *  `enabled === false` = Bindung pausiert.
+   *  Zwei unabhängig schaltbare Wirkungen derselben Note (Standard beide
+   *  `true`, Gegenstück zu `Lane.keytrackSourceStarts`): `starts` presst/löst
+   *  den Slot, `setsKeytrack` treibt nur dessen LFO-Key-Tracking-Note. */
+  trigger?: { laneId: string; slotId: string; enabled?: boolean; setsKeytrack?: boolean; starts?: boolean };
   /** `kind === "laneButton"`: Taster ohne MIDI, der eine Lane scharf/stumm
    *  schaltet (`lane.enabled`). Kein Mapping, kein Ton. */
   laneToggle?: { laneId: string };

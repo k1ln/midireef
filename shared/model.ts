@@ -560,6 +560,16 @@ export interface Lane {
    */
   keytrackSourceLaneId?: Id | null;
 
+  /**
+   * Zusätzlich zum Keytrack: soll dieselbe Quell-Lane diese (Hold/OneShot-)
+   * Lane auch starten/halten, statt nur ihre Rate zu treiben — wie ein
+   * externer MIDI-Trigger, nur ohne MIDI-In. Unabhängig von
+   * `keytrackSourceLaneId` schaltbar, weil beides oft getrennt gebraucht
+   * wird (nur Rate folgen vs. auch klingen). `false`/undefined = nur
+   * Keytrack, wie bisher.
+   */
+  keytrackSourceStarts?: boolean;
+
   /** Swing 0..1 nur für diese Lane (überschreibt Projekt-Swing). */
   swing?: number;
   /** Humanize: leichte Zufallsstreuung von Timing/Velocity (0..1). */
@@ -657,11 +667,17 @@ export interface LiveControl {
   h: number;
 
   /** Optional: eine passende eingehende Note löst diesen Lane-Slot aus
-   *  (control.setTrigger). Note-On = press, Note-Off = release; die Note treibt
-   *  zugleich das LFO-Key-Tracking eines CC-Bausteins in der Lane.
-   *  `enabled === false` = Bindung bleibt bestehen, feuert aber nicht (schnelles
-   *  An/Aus im Control-Dock). */
-  trigger?: { laneId: Id; slotId: Id; enabled?: boolean };
+   *  (control.setTrigger). `enabled === false` = Bindung bleibt bestehen,
+   *  feuert aber nicht (schnelles An/Aus im Control-Dock).
+   *
+   *  Zwei unabhängig schaltbare Wirkungen derselben Note (Gegenstück zu
+   *  `Lane.keytrackSourceStarts` fürs melodiebasierte Pendant):
+   *  - `starts` (Standard `true`): Note-On presst den Slot, Note-Off gibt eine
+   *    "hold"-Lane wieder frei.
+   *  - `setsKeytrack` (Standard `true`): die Note treibt zugleich das
+   *    LFO-Key-Tracking eines CC-Bausteins in der Lane.
+   *  Fehlen beide (ältere Projekte), gilt das alte, feste Verhalten: beides an. */
+  trigger?: { laneId: Id; slotId: Id; enabled?: boolean; setsKeytrack?: boolean; starts?: boolean };
 }
 
 /** Ein frei zusammenstellbarer Screen mit Live-Controls. */
@@ -950,6 +966,7 @@ export type Command =
   | { t: "lane.setTriggerQuantize"; laneId: Id; quantize: TriggerQuantize }
   | { t: "lane.setSwing"; laneId: Id; swing?: number }
   | { t: "lane.setHumanize"; laneId: Id; timing?: number; velocity?: number }
+  | { t: "lane.setKeytrackStarts"; laneId: Id; starts: boolean } // s. Lane.keytrackSourceStarts
   // ── Lane-Controls (Schnellbedienung) ──
   // `add` schickt ein Control ohne `id`/`order` — der Server vergibt beides
   // (uuid, nächster Index). `update` patcht nur die übergebenen Felder.
@@ -1069,7 +1086,14 @@ export type Command =
   | { t: "control.assignName"; controlId: Id; name: string }
   | { t: "control.setDevice"; controlId: Id; deviceId: Id | null } // Ziel-Device (Name erscheint am Button)
   | { t: "control.setKind"; controlId: Id; kind: ControlKind } // z.B. CC als Taster statt Regler reproduzieren
-  | { t: "control.setTrigger"; controlId: Id; laneId: Id | null; slotId: Id | null } // Note dieses Controls löst einen Lane-Slot aus (null = Bindung lösen)
+  | {
+      t: "control.setTrigger";
+      controlId: Id;
+      laneId: Id | null;
+      slotId: Id | null;
+      setsKeytrack?: boolean; // Standard true — s. LiveControl.trigger
+      starts?: boolean; // Standard true — s. LiveControl.trigger
+    } // Note dieses Controls löst einen Lane-Slot aus (null = Bindung lösen)
   | { t: "control.setTriggerEnabled"; controlId: Id; enabled: boolean } // Trigger-Bindung scharf/aus, ohne sie zu lösen
   | { t: "control.move"; controlId: Id; x: number; y: number }
   | { t: "control.setSize"; controlId: Id; w: number; h: number } // Dashboard: einzelnen Taster/Regler frei skalieren

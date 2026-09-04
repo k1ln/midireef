@@ -17,6 +17,7 @@ import { PillToggle } from "../widgets/PillToggle";
 import { StepBars, type StepFlow } from "./StepGrid";
 import { useSetField } from "../useNumberEditor";
 import { useWheelPicker } from "../widgets/WheelPicker";
+import { Knob } from "../widgets/Knob";
 
 const CC_LAYER_KINDS = ["lfo", "envelope", "ramp", "random", "stepped"];
 const COMBINE_MODES = ["add", "multiply", "max", "min", "replace"];
@@ -58,7 +59,6 @@ type CcLayer = NonNullable<Block["layers"]>[number];
 
 export function CcEditor({ block, flow }: { block: Block; flow: StepFlow }) {
   const send = useSend();
-  const wheel = useWheelPicker();
   const setField = useSetField();
   const [expandedLayerId, setExpandedLayerId] = useState<string | undefined>(undefined);
   const [addingLayer, setAddingLayer] = useState(false);
@@ -85,19 +85,9 @@ export function CcEditor({ block, flow }: { block: Block; flow: StepFlow }) {
 
   return (
     <div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 8 }}>
-        <Button
-          style={{ width: 100, height: 30, fontSize: 14 }}
-          onClick={() => wheel({ title: "Output min", min: 0, max: 127, value: outMin, onPick: (n) => setField(block.id, "outMin", n) })}
-        >
-          Min {outMin}
-        </Button>
-        <Button
-          style={{ width: 100, height: 30, fontSize: 14 }}
-          onClick={() => wheel({ title: "Output max", min: 0, max: 127, value: outMax, onPick: (n) => setField(block.id, "outMax", n) })}
-        >
-          Max {outMax}
-        </Button>
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-start", gap: 12, marginBottom: 8 }}>
+        <Knob label="Min" value={outMin} min={0} max={127} onChange={(n) => setField(block.id, "outMin", n)} />
+        <Knob label="Max" value={outMax} min={0} max={127} onChange={(n) => setField(block.id, "outMax", n)} />
         <Button variant="alt" style={{ width: 100, height: 30, fontSize: 14 }} onClick={() => setAddingLayer(true)}>
           ＋ Layer
         </Button>
@@ -481,9 +471,11 @@ function CcLayerDetail({ block, layer, totalSteps, flow }: { block: Block; layer
       const waveform = layer.waveform ?? "sine";
       const rateMode = layer.rateMode ?? "bars";
       const rateBars = layer.rateBars ?? 1;
-      // Hz range covers "normal" (sub-1Hz, musical) through "high" (near audio-rate) —
-      // capped at 25Hz since the engine's send-rate limiter (~50 msg/s) can't usefully
-      // resolve much faster than that anyway (see engine.rs MIN_CC_SEND_INTERVAL).
+      // Hz range covers "normal" (sub-1Hz, musical) through the full 0-127 MIDI
+      // range for audio-rate-style modulation. Above ~25Hz the engine's
+      // send-rate limiter (~50 msg/s, see engine.rs MIN_CC_SEND_INTERVAL) means
+      // consecutive cycles start aliasing — still useful for a fast chop/buzz
+      // effect, just not a clean sine at that point.
       const rateHz = layer.rateHz ?? 1;
       const phasePct = Math.round((layer.phase ?? 0) * 100);
       const keyTrack = layer.rateKeyTrack ?? 0;
@@ -522,28 +514,21 @@ function CcLayerDetail({ block, layer, totalSteps, flow }: { block: Block; layer
             label="Rate"
             sub={
               rateMode === "hz"
-                ? "Cycles per second (0.05–25). ~2–8 Hz reads as a wobble."
+                ? "Cycles per second (0.05–127). ~2–8 Hz reads as a wobble, past ~25 it starts aliasing into a chop/buzz."
                 : "Bars per full cycle — smaller = faster. ¼ or ½ = eighth/quarter-note wobble; 2–8 = slow filter sweep."
             }
           >
             {rateMode === "hz" ? (
-              <Button
-                style={{ width: 150, height: 36, fontSize: 13 }}
-                onClick={() =>
-                  wheel({
-                    title: "Rate",
-                    min: 5,
-                    max: 2500,
-                    step: 5,
-                    unit: " Hz",
-                    value: Math.round(rateHz * 100),
-                    format: (v) => (v / 100).toFixed(2),
-                    onPick: (n) => patch({ rateHz: n / 100 }),
-                  })
-                }
-              >
-                {rateHz.toFixed(2)} Hz
-              </Button>
+              <Knob
+                label="Rate"
+                value={Math.round(rateHz * 100)}
+                min={5}
+                max={12700}
+                step={5}
+                unit=" Hz"
+                format={(v) => (v / 100).toFixed(2)}
+                onChange={(n) => patch({ rateHz: n / 100 })}
+              />
             ) : (
               <Button
                 style={{ width: 150, height: 36, fontSize: 13 }}
@@ -560,12 +545,7 @@ function CcLayerDetail({ block, layer, totalSteps, flow }: { block: Block; layer
             label="Phase"
             sub="Where in the cycle it starts. 25% begins at the peak, 50% flips the shape — use it to line the dive up with the downbeat."
           >
-            <Button
-              style={{ width: 110, height: 36, fontSize: 14 }}
-              onClick={() => wheel({ title: "Phase", min: 0, max: 100, unit: "%", value: phasePct, onPick: (n) => patch({ phase: n / 100 }) })}
-            >
-              {phasePct}%
-            </Button>
+            <Knob label="Phase" value={phasePct} min={0} max={100} unit="%" onChange={(n) => patch({ phase: n / 100 })} />
           </Param>
           <Param
             label="Key-track"

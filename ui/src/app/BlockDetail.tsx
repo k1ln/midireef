@@ -172,8 +172,14 @@ function BlockDetailBody({
   // Status-Chip und Step-Playheads weiter unten per CSS erben (runtime.ts).
   const runtimeRef = useRuntimeBlock(block.id);
   // Ansichts-Vorliebe, kein Projekt-Feld: taktweise untereinander oder eine
-  // lange Reihe. Bleibt über Screen-Wechsel hinweg stehen (localStorage).
-  const [flow, setFlow] = useLocalPref<StepFlow>("blockdetail.stepFlow", "wrap");
+  // lange Reihe. Bleibt über Screen-Wechsel hinweg stehen (localStorage), und
+  // getrennt je Baustein-Typ — eine Melodie ist meist kurz genug, dass eine
+  // Reihe ohne Wischen passt, ein 4-Takt-Beat/CC-Baustein eher nicht, also
+  // unterschiedliche Default-Werte statt eines gemeinsamen Schalters.
+  const [flow, setFlow] = useLocalPref<StepFlow>(
+    `blockdetail.stepFlow.${block.type}`,
+    block.type === "melody" ? "scroll" : "wrap",
+  );
   // Wie `flow` eine reine Ansichtssache — sie liegt hier, weil ihr Schalter in
   // der Kopfzeile sitzt (s. MelodyToolbar) und das Raster darunter.
   const [melodyLayout, setMelodyLayout] = useLocalPref<MelodyLayout>("blockdetail.melodyLayout", "stack");

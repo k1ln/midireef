@@ -92,6 +92,14 @@ pub struct Lane {
     /// gespielten Note setzt. `None` = kein internes Keytrack.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keytrack_source_lane_id: Option<Id>,
+    /// Zusätzlich zum Keytrack (`keytrack_source_lane_id`): startet/hält die
+    /// Quell-Lane diese (Hold/OneShot-)Lane auch aktiv mit, statt nur ihre
+    /// Rate zu treiben — wie ein externer MIDI-Trigger, nur ohne MIDI-In.
+    /// Unabhängig voneinander schaltbar, weil beides oft getrennt gebraucht
+    /// wird (nur Rate folgen vs. auch klingen). `false` = nur Keytrack, wie
+    /// bisher.
+    #[serde(default)]
+    pub keytrack_source_starts: bool,
     #[serde(default)]
     pub slots: serde_json::Value,
     #[serde(default)]
@@ -117,6 +125,7 @@ impl Lane {
             cc_control_id: None,
             chain_slot: None,
             keytrack_source_lane_id: None,
+            keytrack_source_starts: false,
             slots: serde_json::json!([]),
             controls: serde_json::json!([]),
         }

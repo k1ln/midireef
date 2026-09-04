@@ -297,9 +297,18 @@ impl AppState {
                                 if t.get("enabled").and_then(|v| v.as_bool()) == Some(false) {
                                     return None;
                                 }
+                                // Zwei unabhängig schaltbare Wirkungen derselben
+                                // Note — s. Kommentar bei `control.setTrigger`
+                                // in ws.rs. Fehlen die Felder (älteres Projekt),
+                                // bleiben beide an: das alte, feste Verhalten.
+                                let sets_keytrack =
+                                    t.get("setsKeytrack").and_then(|v| v.as_bool()).unwrap_or(true);
+                                let starts = t.get("starts").and_then(|v| v.as_bool()).unwrap_or(true);
                                 Some((
                                     t.get("laneId")?.as_str()?.to_string(),
                                     t.get("slotId")?.as_str()?.to_string(),
+                                    sets_keytrack,
+                                    starts,
                                 ))
                             }),
                         ),
@@ -307,13 +316,21 @@ impl AppState {
                     }
                 };
                 // An einen Lane-Slot gebunden (control.setTrigger): Note-On löst
-                // ihn aus (mit der Note fürs LFO-Key-Tracking), Note-Off gibt
-                // eine „hold"-Lane wieder frei.
-                if let Some((lane_id, slot_id)) = trigger {
+                // ihn aus — je nachdem, welche der beiden Wirkungen gewünscht
+                // sind, presst es den Slot (`starts`), setzt nur die
+                // Key-Track-Note (`setsKeytrack`), oder beides. Note-Off gibt
+                // eine per `starts` gehaltene „hold"-Lane wieder frei.
+                if let Some((lane_id, slot_id, sets_keytrack, starts)) = trigger {
                     if note_on {
-                        self.clock
-                            .send(ClockCommand::PressSlot(lane_id, slot_id, Some(note)));
-                    } else {
+                        if starts {
+                            self.clock
+                                .send(ClockCommand::PressSlot(lane_id.clone(), slot_id, Some(note)));
+                        }
+                        if sets_keytrack {
+                            self.clock
+                                .send(ClockCommand::SetTriggerNote(lane_id, Some(note)));
+                        }
+                    } else if starts {
                         self.clock.send(ClockCommand::ReleaseSlot(lane_id));
                     }
                 }

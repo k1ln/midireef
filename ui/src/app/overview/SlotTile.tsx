@@ -15,6 +15,7 @@
 //! RuntimeFeed pro Frame direkt ins DOM — siehe app/runtime.ts.
 
 import { useEffect, useRef } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import type { Lane, Block, Slot } from "../../state";
 import { useRuntimeTile, useSend } from "../store";
 import { useLongPress } from "../useLongPress";
@@ -67,7 +68,12 @@ export function SlotTile({ lane, slot, blk, locked, selected, onSelect, onOpenBl
   };
   const triggerProps = gated
     ? {
-        onPointerDown: () => {
+        // Pointer-Capture wie bei `useLongPress`: ohne das beendet ein
+        // winziges Zittern des Fingers beim Halten ein `pointerleave` (der
+        // Hit-Test rutscht auf die Nachbar-Kachel) und die Wiedergabe stoppt
+        // vorzeitig, obwohl der Finger noch aufliegt.
+        onPointerDown: (e: ReactPointerEvent) => {
+          e.currentTarget.setPointerCapture?.(e.pointerId);
           heldRef.current = isHold;
           press();
         },

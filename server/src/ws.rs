@@ -418,6 +418,23 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 broadcast_snapshot(state);
             }
         }
+        // Ob die Keytrack-Quelle (`keytrack_source_lane_id`) diese Lane
+        // zusätzlich auch startet/hält, statt nur ihre Rate zu treiben — s.
+        // `Lane::keytrack_source_starts`. Unabhängig von `lane.setKeytrackSource`
+        // schaltbar (zwei getrennte Wirkungen derselben Quelle).
+        "lane.setKeytrackStarts" => {
+            if let (Some(lane_id), Some(starts)) =
+                (str_field(&cmd, "laneId"), cmd.get("starts").and_then(|v| v.as_bool()))
+            {
+                {
+                    let mut proj = state.project.lock().unwrap();
+                    if let Some(l) = find_lane_mut(&mut proj, &lane_id) {
+                        l.keytrack_source_starts = starts;
+                    }
+                }
+                broadcast_snapshot(state);
+            }
+        }
         // ── MIDI-Learn (Startbildschirm) ──
         "learn.start" => {
             state
@@ -511,13 +528,26 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
             if let Some(id) = str_field(&cmd, "controlId") {
                 let lane = str_field(&cmd, "laneId");
                 let slot = str_field(&cmd, "slotId");
+                // Zwei unabhängig schaltbare Wirkungen derselben eingehenden
+                // Note (s. `Lane::keytrack_source_starts` fürs melodiebasierte
+                // Gegenstück): `starts` presst/löst den Ziel-Slot,
+                // `setsKeytrack` treibt nur dessen `rateKeyTrack`-Note. Fehlen
+                // sie im Kommando (ältere UI/Reload), bleiben beide an — das
+                // ist das bisherige, feste Verhalten von `press_slot`.
+                let sets_keytrack = cmd.get("setsKeytrack").and_then(|v| v.as_bool()).unwrap_or(true);
+                let starts = cmd.get("starts").and_then(|v| v.as_bool()).unwrap_or(true);
                 {
                     let mut proj = state.project.lock().unwrap();
                     if let Some(c) = find_control_mut(&mut proj, &id) {
                         match (lane, slot) {
                             (Some(l), Some(s)) => {
-                                c["trigger"] =
-                                    serde_json::json!({ "laneId": l, "slotId": s, "enabled": true });
+                                c["trigger"] = serde_json::json!({
+                                    "laneId": l,
+                                    "slotId": s,
+                                    "enabled": true,
+                                    "setsKeytrack": sets_keytrack,
+                                    "starts": starts,
+                                });
                             }
                             _ => {
                                 if let Some(o) = c.as_object_mut() {
@@ -921,7 +951,7 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                     }
                 }
                 drop(proj);
-                broadcast_snapshot(state);
+                broadcast_snapshot_throttled(state);
             }
         }
         // Baustein-Raster: Länge in Takten und/oder Auflösung (Substeps pro
@@ -1370,7 +1400,7 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                     }
                 }
                 drop(proj);
-                broadcast_snapshot(state);
+                broadcast_snapshot_throttled(state);
             }
         }
         "cc.setStepValue" => {
@@ -2596,7 +2626,6 @@ fn blank_melody_block() -> serde_json::Value {
         "lengthBars": 1,
         "timeSignature": "4/4",
         "stepsPerBar": 16,
-        "baseNote": 60,
         "notes": [],
     })
 }

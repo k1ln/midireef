@@ -140,9 +140,9 @@ export function TriggerPickerPopup({
   y: number;
   devices: Device[];
   blocks: Block[];
-  active?: { laneId: string; slotId: string };
+  active?: { laneId: string; slotId: string; setsKeytrack?: boolean; starts?: boolean };
   onClose: () => void;
-  onPick: (laneId: string, slotId: string) => void;
+  onPick: (laneId: string, slotId: string, setsKeytrack: boolean, starts: boolean) => void;
   onClear: () => void;
 }) {
   const blockName = (id?: string) => {
@@ -154,6 +154,11 @@ export function TriggerPickerPopup({
   const rows = devices.flatMap((d) =>
     (d.lanes ?? []).flatMap((l) => (l.slots ?? []).map((s) => ({ dev: d, lane: l, slot: s }))),
   );
+  // Zwei unabhängig schaltbare Wirkungen derselben Note (Gegenstück zu
+  // Lane.keytrackSourceStarts fürs melodiebasierte Pendant) — Default beide
+  // an, wie bisher fest verdrahtet.
+  const setsKeytrack = active?.setsKeytrack ?? true;
+  const starts = active?.starts ?? true;
   return (
     <AnchoredPopup x={x} y={y} width={280} onClose={onClose}>
       <div style={{ fontSize: 13, color: "var(--pal-text-dim)", marginBottom: 8 }}>
@@ -168,7 +173,7 @@ export function TriggerPickerPopup({
             variant={active?.slotId === slot.id ? "active" : "default"}
             className="popup-row"
             style={{ height: 44, marginBottom: 6, flexDirection: "column", alignItems: "flex-start", paddingLeft: 12 }}
-            onClick={() => onPick(lane.id, slot.id)}
+            onClick={() => onPick(lane.id, slot.id, setsKeytrack, starts)}
           >
             <span style={{ fontWeight: 700 }}>
               {lane.name} · {blockName(slot.blockId)}
@@ -178,9 +183,33 @@ export function TriggerPickerPopup({
         ))
       )}
       {active && (
-        <Button variant="danger" className="popup-row" onClick={onClear}>
-          Clear binding
-        </Button>
+        <>
+          <Button
+            variant={starts ? "active" : "default"}
+            className="popup-row"
+            style={{ height: 40, marginBottom: 6, flexDirection: "column", alignItems: "flex-start", paddingLeft: 12 }}
+            onClick={() => onPick(active.laneId, active.slotId, setsKeytrack, !starts)}
+          >
+            <span style={{ fontWeight: 700 }}>{starts ? "✓ Starts / holds the slot" : "Starts / holds the slot"}</span>
+            <span style={{ fontSize: 11, color: "var(--pal-text-dim)" }}>
+              {starts ? "Note-On presses it, Note-Off releases a hold" : "Off — this note won't press/release it"}
+            </span>
+          </Button>
+          <Button
+            variant={setsKeytrack ? "active" : "default"}
+            className="popup-row"
+            style={{ height: 40, marginBottom: 6, flexDirection: "column", alignItems: "flex-start", paddingLeft: 12 }}
+            onClick={() => onPick(active.laneId, active.slotId, !setsKeytrack, starts)}
+          >
+            <span style={{ fontWeight: 700 }}>{setsKeytrack ? "✓ Sets key-track" : "Sets key-track"}</span>
+            <span style={{ fontSize: 11, color: "var(--pal-text-dim)" }}>
+              {setsKeytrack ? "Drives a CC block's LFO rate-key-track" : "Off — this note won't drive key-track"}
+            </span>
+          </Button>
+          <Button variant="danger" className="popup-row" onClick={onClear}>
+            Clear binding
+          </Button>
+        </>
       )}
     </AnchoredPopup>
   );

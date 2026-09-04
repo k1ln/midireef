@@ -15,6 +15,8 @@
 import { createContext, useContext, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { Popup } from "./Popup";
 import { Button } from "./Button";
+import { NumericKeypadGrid, useKeypadText } from "./NumericKeypad";
+import { pushHistory, startHistory, velocityFromHistory, type Sample } from "./flywheel";
 
 const ROW_H = 44;
 const VISIBLE = 7; // ungerade → genau eine Zeile mittig
@@ -22,11 +24,12 @@ const PAD = ((VISIBLE - 1) / 2) * ROW_H;
 
 // Schwungrad-Physik. Deutlich mehr Nachlauf als touchScroll.ts's Zwei-
 // Finger-Geste (FRICTION 0.94 dort): das Rad ist hier der EINZIGE
-// Interaktionsweg für den Wert, es soll sich wie ein echtes freilaufendes
-// Rad anfühlen statt wie eine kurze, steife Mini-Liste.
-const FRICTION = 0.955;
-const FLING_BOOST = 1.25;
-const MAX_VELOCITY = 70; // px/Frame Deckel, gegen absurd lange Ausläufe
+// Interaktionsweg für den Wert, es soll sich wie ein echtes freilaufendes,
+// schweres Rad anfühlen — ein harter Flick trägt spürbar weit, nicht nur ein
+// paar Zeilen.
+const FRICTION = 0.986;
+const FLING_BOOST = 1.9;
+const MAX_VELOCITY = 160; // px/Frame Deckel, gegen absurd lange Ausläufe
 const MIN_VELOCITY = 0.05; // px/Frame, darunter gilt der Schwung als ausgelaufen
 const EDGE_SPRING = 0.2; // Rückfeder-Anteil/Frame jenseits der Enden
 const DRAG_RESIST = 0.45; // Rubber-Band-Dämpfung beim Ziehen über die Enden hinaus
@@ -89,7 +92,7 @@ function WheelPopup({ req, onClose }: { req: WheelRequest; onClose: () => void }
   selRef.current = sel;
 
   const [editing, setEditing] = useState(false);
-  const [editText, setEditText] = useState("");
+  const keypad = useKeypadText(req.value);
 
   // Letzter an onPick gemeldeter Wert — sonst feuert jedes Settle erneut und
   // löst am Server einen Snapshot/Autosave ohne Änderung aus.
@@ -102,7 +105,7 @@ function WheelPopup({ req, onClose }: { req: WheelRequest; onClose: () => void }
   const rawDeltaRef = useRef(0);
   const downYRef = useRef(0);
   const lastYRef = useRef(0);
-  const lastTRef = useRef(0);
+  const historyRef = useRef<Sample[]>([]);
   const rafRef = useRef<number | undefined>(undefined);
   const longPressTimerRef = useRef<number | undefined>(undefined);
   const wheelIdleRef = useRef<number | undefined>(undefined);
@@ -216,7 +219,7 @@ function WheelPopup({ req, onClose }: { req: WheelRequest; onClose: () => void }
   const startEditing = () => {
     stopAnim();
     draggingRef.current = false;
-    setEditText(String(values.current[selRef.current] ?? req.value));
+    keypad.reset(String(values.current[selRef.current] ?? req.value));
     setEditing(true);
   };
 
@@ -230,7 +233,7 @@ function WheelPopup({ req, onClose }: { req: WheelRequest; onClose: () => void }
     rawDeltaRef.current = 0;
     downYRef.current = e.clientY;
     lastYRef.current = e.clientY;
-    lastTRef.current = e.timeStamp;
+    historyRef.current = startHistory(e.clientY, e.timeStamp);
     velocityRef.current = 0;
 
     // Langes Halten löst nur aus, wenn es auf dem Mittelband beginnt — „auf
@@ -252,12 +255,9 @@ function WheelPopup({ req, onClose }: { req: WheelRequest; onClose: () => void }
       clearLongPress();
     }
     const dy = e.clientY - lastYRef.current;
-    const dt = Math.max(1, e.timeStamp - lastTRef.current);
     rawDeltaRef.current -= dy; // Finger runter → Inhalt zeigt weiter oben → Offset sinkt
     lastYRef.current = e.clientY;
-    lastTRef.current = e.timeStamp;
-    const instV = (-dy / dt) * 16.6667; // auf px/Frame @60fps normiert
-    velocityRef.current = velocityRef.current * 0.75 + instV * 0.25;
+    historyRef.current = pushHistory(historyRef.current, e.clientY, e.timeStamp);
     applyOffset(rubberBand(dragStartOffsetRef.current + rawDeltaRef.current));
   };
 
@@ -272,6 +272,11 @@ function WheelPopup({ req, onClose }: { req: WheelRequest; onClose: () => void }
       animateTo(idx);
       return;
     }
+    // Geschwindigkeit erst JETZT aus den letzten ~100ms bestimmen (statt sie
+    // Bild für Bild zu glätten) — sonst unterschätzt ein kurzer, harter Flick
+    // (nur 1-2 Pointer-Events vor dem Loslassen) systematisch seine eigene
+    // Geschwindigkeit, weil die Glättung noch kaum eingeschwungen ist.
+    velocityRef.current = -velocityFromHistory(historyRef.current, e.clientY, e.timeStamp);
     release();
   };
 
@@ -315,7 +320,7 @@ function WheelPopup({ req, onClose }: { req: WheelRequest; onClose: () => void }
 
   const finishEdit = (commitValue: boolean) => {
     if (commitValue) {
-      const n = parseFloat(editText);
+      const n = parseFloat(keypad.text);
       if (!Number.isNaN(n)) {
         const idx = nearestIdx(n);
         applyOffset(idx * ROW_H);
@@ -324,10 +329,6 @@ function WheelPopup({ req, onClose }: { req: WheelRequest; onClose: () => void }
     }
     setEditing(false);
   };
-
-  const appendDigit = (d: string) => setEditText((t) => (t === "0" ? d : t + d));
-  const backspaceEdit = () => setEditText((t) => t.slice(0, -1));
-  const toggleSign = () => setEditText((t) => (t.startsWith("-") ? t.slice(1) : t.length ? `-${t}` : t));
 
   return (
     <Popup
@@ -361,48 +362,16 @@ function WheelPopup({ req, onClose }: { req: WheelRequest; onClose: () => void }
 
       <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", minHeight: 0 }}>
         {editing ? (
-          <div className="wheel-keypad">
-            <div className="wheel-keypad-display">
-              {editText || "0"}
-              {req.unit ?? ""}
-            </div>
-            {[
-              ["1", "2", "3"],
-              ["4", "5", "6"],
-              ["7", "8", "9"],
-            ].map((row) => (
-              <div key={row.join("")} className="kb-row">
-                {row.map((k) => (
-                  <Button key={k} className="kb-key" onClick={() => appendDigit(k)}>
-                    {k}
-                  </Button>
-                ))}
-              </div>
-            ))}
-            <div className="kb-row">
-              {req.min < 0 ? (
-                <Button className="kb-key" onClick={toggleSign}>
-                  ±
-                </Button>
-              ) : (
-                <span className="kb-key" />
-              )}
-              <Button className="kb-key" onClick={() => appendDigit("0")}>
-                0
-              </Button>
-              <Button className="kb-key" onClick={backspaceEdit}>
-                ⌫
-              </Button>
-            </div>
-            <div className="kb-row">
-              <Button variant="danger" style={{ flex: "1 1 0", height: 52 }} onClick={() => finishEdit(false)}>
-                Cancel
-              </Button>
-              <Button variant="active" style={{ flex: "1 1 0", height: 52 }} onClick={() => finishEdit(true)}>
-                OK
-              </Button>
-            </div>
-          </div>
+          <NumericKeypadGrid
+            text={keypad.text}
+            unit={req.unit}
+            allowNegative={req.min < 0}
+            onDigit={keypad.appendDigit}
+            onBackspace={keypad.backspace}
+            onToggleSign={keypad.toggleSign}
+            onCancel={() => finishEdit(false)}
+            onCommit={() => finishEdit(true)}
+          />
         ) : (
           <div style={{ position: "relative", height: VISIBLE * ROW_H, margin: "0 auto", width: "100%", maxWidth: 320 }}>
             {/* Mittelband — auch der Hit-Bereich fürs lange Halten. */}

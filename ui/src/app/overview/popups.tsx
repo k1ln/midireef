@@ -208,6 +208,7 @@ export function KeytrackSourcePickerPopup({ lane, onClose }: { lane: Lane; onClo
   const rows = devices.flatMap((d) =>
     (d.lanes ?? []).filter((l) => l.role === "melody").map((l) => ({ dev: d, lane: l })),
   );
+  const starts = !!lane.keytrackSourceStarts;
 
   return (
     <Popup onClose={onClose}>
@@ -225,10 +226,7 @@ export function KeytrackSourcePickerPopup({ lane, onClose }: { lane: Lane; onClo
             variant={lane.keytrackSourceLaneId === l.id ? "active" : "default"}
             className="popup-row"
             style={{ height: 44, marginBottom: 8, flexDirection: "column", alignItems: "flex-start", paddingLeft: 12 }}
-            onClick={() => {
-              onClose();
-              send({ t: "lane.setKeytrackSource", laneId: lane.id, sourceLaneId: l.id });
-            }}
+            onClick={() => send({ t: "lane.setKeytrackSource", laneId: lane.id, sourceLaneId: l.id })}
           >
             <span style={{ fontWeight: 700 }}>{l.name}</span>
             <span style={{ fontSize: 11, color: "var(--pal-text-dim)" }}>{dev.name}</span>
@@ -236,16 +234,35 @@ export function KeytrackSourcePickerPopup({ lane, onClose }: { lane: Lane; onClo
         ))
       )}
       {lane.keytrackSourceLaneId && (
-        <Button
-          variant="danger"
-          className="popup-row"
-          onClick={() => {
-            onClose();
-            send({ t: "lane.setKeytrackSource", laneId: lane.id, sourceLaneId: null });
-          }}
-        >
-          Clear keytrack source
-        </Button>
+        <>
+          {/* Zwei unabhängig schaltbare Wirkungen derselben Quelle: Keytrack
+              (oben, immer an, solange eine Quelle gewählt ist) und "auch
+              starten" — z.B. nur Rate folgen lassen, ohne die Hold-Lane bei
+              jeder Note neu zu triggern, oder umgekehrt. */}
+          <Button
+            variant={starts ? "active" : "default"}
+            className="popup-row"
+            style={{ height: 44, marginBottom: 8, flexDirection: "column", alignItems: "flex-start", paddingLeft: 12 }}
+            onClick={() => send({ t: "lane.setKeytrackStarts", laneId: lane.id, starts: !starts })}
+          >
+            <span style={{ fontWeight: 700 }}>{starts ? "✓ Also starts this lane" : "Also starts this lane"}</span>
+            <span style={{ fontSize: 11, color: "var(--pal-text-dim)" }}>
+              {starts
+                ? "A note opens the hold gate too, not just the rate"
+                : "Off — only the LFO rate follows, the lane stays silent unless started another way"}
+            </span>
+          </Button>
+          <Button
+            variant="danger"
+            className="popup-row"
+            onClick={() => {
+              onClose();
+              send({ t: "lane.setKeytrackSource", laneId: lane.id, sourceLaneId: null });
+            }}
+          >
+            Clear keytrack source
+          </Button>
+        </>
       )}
     </Popup>
   );
