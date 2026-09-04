@@ -240,7 +240,12 @@ export function Overview({ onOpenBlock }: OverviewProps) {
             setPinned(false);
             setSel(null);
           }}
-          onEdit={() => selSlot!.blockId && onOpenBlock(selSlot!.blockId)}
+          onEdit={() => {
+            if (!selSlot!.blockId) return;
+            setPinned(false);
+            setSel(null);
+            onOpenBlock(selSlot!.blockId);
+          }}
           onSwap={() => {
             const dev = devices.find((d) => d.lanes.some((l) => l.id === selLane!.id));
             if (dev && selSlot!.blockId) {

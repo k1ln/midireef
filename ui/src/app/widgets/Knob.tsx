@@ -38,9 +38,12 @@ export interface KnobProps {
   format?: (v: number) => string;
   onChange: (v: number) => void;
   size?: number;
+  /** Ziehweg (px) für die volle min..max-Spanne (Default `BASE_DRAG_PX`) —
+   *  größer = weniger empfindlich, mehr Fingerbewegung für denselben Ausschlag. */
+  dragPx?: number;
 }
 
-export function Knob({ label, value, min, max, step = 1, unit, format, onChange, size = 72 }: KnobProps) {
+export function Knob({ label, value, min, max, step = 1, unit, format, onChange, size = 72, dragPx = BASE_DRAG_PX }: KnobProps) {
   const [dragValue, setDragValue] = useState<number | null>(null);
   const [editing, setEditing] = useState(false);
   const keypad = useKeypadText(value);
@@ -56,7 +59,7 @@ export function Knob({ label, value, min, max, step = 1, unit, format, onChange,
   const longPressTimerRef = useRef<number | undefined>(undefined);
 
   const clamp = (v: number) => Math.min(max, Math.max(min, Math.round(v / step) * step));
-  const unitsPerPx = (max - min) / BASE_DRAG_PX;
+  const unitsPerPx = (max - min) / dragPx;
 
   const displayValue = dragValue ?? value;
   const fmt = (v: number) => `${format ? format(v) : String(v)}${unit ?? ""}`;

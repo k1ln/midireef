@@ -27,9 +27,9 @@ const PAD = ((VISIBLE - 1) / 2) * ROW_H;
 // Interaktionsweg für den Wert, es soll sich wie ein echtes freilaufendes,
 // schweres Rad anfühlen — ein harter Flick trägt spürbar weit, nicht nur ein
 // paar Zeilen.
-const FRICTION = 0.986;
-const FLING_BOOST = 1.9;
-const MAX_VELOCITY = 160; // px/Frame Deckel, gegen absurd lange Ausläufe
+const FRICTION = 0.99;
+const FLING_BOOST = 2.8;
+const MAX_VELOCITY = 320; // px/Frame Deckel, gegen absurd lange Ausläufe
 const MIN_VELOCITY = 0.05; // px/Frame, darunter gilt der Schwung als ausgelaufen
 const EDGE_SPRING = 0.2; // Rückfeder-Anteil/Frame jenseits der Enden
 const DRAG_RESIST = 0.45; // Rubber-Band-Dämpfung beim Ziehen über die Enden hinaus
@@ -300,7 +300,10 @@ function WheelPopup({ req, onClose }: { req: WheelRequest; onClose: () => void }
       draggingRef.current = false;
       const dy = e.deltaMode === 1 ? e.deltaY * ROW_H * 0.3 : e.deltaY;
       applyOffset(rubberBand(offsetRef.current + dy));
-      velocityRef.current = velocityRef.current * 0.5 + dy * 0.5;
+      // Stärker auf den neuen Impuls gewichtet als vorher (0.5/0.5) — mehrere
+      // schnelle Notches hintereinander bauen so spürbar Tempo auf, statt sich
+      // gegen den alten Wert zu glätten.
+      velocityRef.current = velocityRef.current * 0.4 + dy * 0.85;
       if (wheelIdleRef.current) window.clearTimeout(wheelIdleRef.current);
       wheelIdleRef.current = window.setTimeout(release, 80);
     };

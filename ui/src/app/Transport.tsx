@@ -21,6 +21,7 @@ import { Button } from "./widgets/Button";
 import { FpsMeter } from "./FpsMeter";
 import { TRANSPORT_H } from "./layout";
 import { getBgConfig, BG_CONFIG_EVENT } from "./bgConfig";
+import { useWheelPicker } from "./widgets/WheelPicker";
 
 const BTN = 50;
 /** BPM-Wippe: kleiner als die Transport-Tasten, aber noch fingerbreit. */
@@ -49,6 +50,7 @@ export interface TransportProps {
 export function Transport({ view, onNav, onAddDevice, onCenter, onAddLaneSwitch }: TransportProps) {
   const net = useNet();
   const send = useSend();
+  const wheel = useWheelPicker();
   const [t, setT] = useState<TransportState | null>(null);
   const [ports, setPorts] = useState<string[]>([]);
   const bpmRef = useRef(120);
@@ -206,6 +208,9 @@ export function Transport({ view, onNav, onAddDevice, onCenter, onAddLaneSwitch 
         onSet={setBpm}
         onDragStart={() => (bpmDragging.current = true)}
         onDragEnd={() => (bpmDragging.current = false)}
+        onTap={() =>
+          wheel({ title: "Tempo", min: 20, max: 300, value: bpmRef.current, unit: " BPM", onPick: setBpm })
+        }
       />
       <RepeatButton width={NUDGE} height={NUDGE} onFire={() => nudgeBpm(1)}>
         +
@@ -254,32 +259,39 @@ export function Transport({ view, onNav, onAddDevice, onCenter, onAddLaneSwitch 
 
 /** BPM-Zahl als Zieh-Regler: mit dem Finger hoch/runter ziehen ändert das Tempo
  *  schnell (≈1 BPM pro 3 px, hoch = schneller). Die −/+ Wippen daneben bleiben
- *  für die Feinkorrektur. */
+ *  für die Feinkorrektur. Ein Tap (Bewegung unter TAP_SLOP) öffnet stattdessen
+ *  das WheelPicker-Rad zur genauen Eingabe. */
 function BpmReadout({
   bpm,
   onSet,
   onDragStart,
   onDragEnd,
+  onTap,
 }: {
   bpm: number;
   onSet: (v: number) => void;
   onDragStart: () => void;
   onDragEnd: () => void;
+  onTap: () => void;
 }) {
   const drag = useRef<{ startY: number; startBpm: number } | null>(null);
+  const movedRef = useRef(false);
   const [dragging, setDragging] = useState(false);
   const PX_PER_BPM = 3;
+  const TAP_SLOP = 4;
 
-  const end = (e: React.PointerEvent<HTMLDivElement>) => {
+  const end = (e: React.PointerEvent<HTMLDivElement>, isTap: boolean) => {
     if (!drag.current) return;
+    const moved = movedRef.current;
     drag.current = null;
     setDragging(false);
-    onDragEnd();
+    if (moved) onDragEnd();
     try {
       e.currentTarget.releasePointerCapture(e.pointerId);
     } catch {
       /* pointer already gone */
     }
+    if (isTap && !moved) onTap();
   };
 
   return (
@@ -302,19 +314,24 @@ function BpmReadout({
         background: dragging ? "rgba(var(--pal-run-rgb), 0.28)" : "rgba(255, 255, 255, 0.06)",
         boxShadow: dragging ? "inset 0 0 0 1.5px rgba(var(--pal-run-rgb), 0.8)" : "none",
       }}
-      title="Drag up / down to change tempo"
+      title="Tap for the tempo wheel, drag up / down to change it directly"
       onPointerDown={(e) => {
         e.currentTarget.setPointerCapture(e.pointerId);
         drag.current = { startY: e.clientY, startBpm: bpm };
-        setDragging(true);
-        onDragStart();
+        movedRef.current = false;
       }}
       onPointerMove={(e) => {
         if (!drag.current) return;
+        if (!movedRef.current) {
+          if (Math.abs(e.clientY - drag.current.startY) < TAP_SLOP) return;
+          movedRef.current = true;
+          setDragging(true);
+          onDragStart();
+        }
         onSet(drag.current.startBpm + Math.round((drag.current.startY - e.clientY) / PX_PER_BPM));
       }}
-      onPointerUp={end}
-      onPointerCancel={end}
+      onPointerUp={(e) => end(e, true)}
+      onPointerCancel={(e) => end(e, false)}
     >
       {bpm}
       <span style={{ fontSize: 11, color: "var(--pal-text-dim)", marginLeft: 3 }}>BPM</span>

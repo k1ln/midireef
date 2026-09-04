@@ -86,8 +86,8 @@ export function CcEditor({ block, flow }: { block: Block; flow: StepFlow }) {
   return (
     <div>
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-start", gap: 12, marginBottom: 8 }}>
-        <Knob label="Min" value={outMin} min={0} max={127} onChange={(n) => setField(block.id, "outMin", n)} />
-        <Knob label="Max" value={outMax} min={0} max={127} onChange={(n) => setField(block.id, "outMax", n)} />
+        <Knob label="Min" value={outMin} min={0} max={127} size={96} dragPx={360} onChange={(n) => setField(block.id, "outMin", n)} />
+        <Knob label="Max" value={outMax} min={0} max={127} size={96} dragPx={360} onChange={(n) => setField(block.id, "outMax", n)} />
         <Button variant="alt" style={{ width: 100, height: 30, fontSize: 14 }} onClick={() => setAddingLayer(true)}>
           ＋ Layer
         </Button>
@@ -131,6 +131,7 @@ export function CcEditor({ block, flow }: { block: Block; flow: StepFlow }) {
           </div>
           {expanded && (
             <>
+              <div style={{ borderTop: "1px solid rgba(255,255,255,0.15)", margin: "0 0 12px" }} />
               <div style={{ fontSize: 11, lineHeight: 1.45, color: "var(--pal-text-dim)", margin: "0 0 12px" }}>
                 <b>Row controls</b> (above): <b>●</b> turns the layer on/off · the <b>combine</b> button sets how it
                 blends with the layers beneath it — the bottom one is the <b>base</b>, the rest add / multiply / max /
@@ -214,26 +215,33 @@ function CcLayerRow({
           {layer.combine}
         </Button>
       )}
-      <Button
-        style={{ width: 88, height: 34, fontSize: 13 }}
-        title="Depth — scales the movement (contribution = movement × depth + offset)"
-        onClick={() => wheel({ title: "Depth", min: 0, max: 100, unit: "%", value: depthPct, onPick: (n) => patch({ depth: n / 100 }) })}
-      >
-        Depth {depthPct}%
-      </Button>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+        <Button
+          style={{ width: 88, height: 34, fontSize: 13 }}
+          onClick={() =>
+            wheel({ title: "Depth — how far it swings", min: 0, max: 100, unit: "%", value: depthPct, onPick: (n) => patch({ depth: n / 100 }) })
+          }
+        >
+          Depth {depthPct}%
+        </Button>
+        <span style={{ fontSize: 9, color: "var(--pal-text-dim)" }}>intensity: 100%=full swing, 0%=none</span>
+      </div>
       {/* Offset braucht negative Werte — Stepper statt Texteingabe (Touch-
           Keyboard hat keine Minus-Taste), gleiches Muster wie der Slot-Transpose. */}
-      <div style={{ display: "flex", alignItems: "center", gap: 4 }} title="Offset — shifts the scaled movement up/down">
-        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--pal-text-dim)" }}>Off</span>
-        <Button style={{ width: 24, height: 34, fontSize: 16 }} onClick={() => patch({ offset: Math.max(-1, (layer.offset ?? 0) - 0.05) })}>
-          –
-        </Button>
-        <span style={{ fontSize: 11, color: "var(--pal-text-dim)", fontWeight: 600, minWidth: 36, textAlign: "center" }}>
-          {offsetPct}%
-        </span>
-        <Button style={{ width: 24, height: 34, fontSize: 16 }} onClick={() => patch({ offset: Math.min(1, (layer.offset ?? 0) + 0.05) })}>
-          +
-        </Button>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: "var(--pal-text-dim)" }}>Off</span>
+          <Button style={{ width: 24, height: 34, fontSize: 16 }} onClick={() => patch({ offset: Math.max(-1, (layer.offset ?? 0) - 0.05) })}>
+            –
+          </Button>
+          <span style={{ fontSize: 11, color: "var(--pal-text-dim)", fontWeight: 600, minWidth: 36, textAlign: "center" }}>
+            {offsetPct}%
+          </span>
+          <Button style={{ width: 24, height: 34, fontSize: 16 }} onClick={() => patch({ offset: Math.min(1, (layer.offset ?? 0) + 0.05) })}>
+            +
+          </Button>
+        </div>
+        <span style={{ fontSize: 9, color: "var(--pal-text-dim)" }}>position: moves the center up/down</span>
       </div>
       {index > 0 && (
         <Button
