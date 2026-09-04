@@ -120,7 +120,17 @@ export function CcEditor({ block, flow }: { block: Block; flow: StepFlow }) {
               />
             ))}
           </div>
-          {expanded && <CcLayerDetail block={block} layer={expanded} totalSteps={totalSteps} flow={flow} />}
+          {expanded && (
+            <>
+              <div style={{ fontSize: 11, lineHeight: 1.45, color: "var(--pal-text-dim)", margin: "0 0 12px" }}>
+                <b>Row controls</b> (above): <b>●</b> turns the layer on/off · the <b>combine</b> button sets how it
+                blends with the layers beneath it — the bottom one is the <b>base</b>, the rest add / multiply / max /
+                min / replace · <b>Depth</b> scales how far it swings (100% = full, 0% = flat) · <b>Off</b> shifts the
+                whole swing up or down. Output = movement × Depth + Off, then mapped onto Min…Max.
+              </div>
+              <CcLayerDetail block={block} layer={expanded} totalSteps={totalSteps} flow={flow} />
+            </>
+          )}
         </>
       )}
 
@@ -249,13 +259,14 @@ function CcLayerRow({
 /** Beschriftetes Parameterfeld — die Layer-Detail-Panels waren vorher Reihen
  *  anonymer Buttons ("sine", "1 bar(s)/cycle"), bei denen man raten musste,
  *  welcher davon die Rate ist. */
-function Param({ label, children }: { label: string; children: React.ReactNode }) {
+function Param({ label, sub, children }: { label: string; sub?: string; children: React.ReactNode }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 4, maxWidth: 200 }}>
       <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.4, color: "var(--pal-text-dim)" }}>
         {label.toUpperCase()}
       </span>
       {children}
+      {sub && <span style={{ fontSize: 10, lineHeight: 1.35, color: "var(--pal-text-dim)" }}>{sub}</span>}
     </div>
   );
 }
@@ -263,7 +274,7 @@ function Param({ label, children }: { label: string; children: React.ReactNode }
 function ParamRow({ hint, children }: { hint?: string; children: React.ReactNode }) {
   return (
     <div>
-      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>{children}</div>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-start" }}>{children}</div>
       {hint && <div style={{ marginTop: 10, fontSize: 12, color: "var(--pal-text-dim)" }}>{hint}</div>}
     </div>
   );
@@ -459,7 +470,10 @@ function CcLayerDetail({ block, layer, totalSteps, flow }: { block: Block; layer
               : "Tempo-synced: one full cycle per this many bars, so it follows the BPM."
           }
         >
-          <Param label="Wave">
+          <Param
+            label="Wave"
+            sub="Sweep shape. triangle = smooth up-then-down wobble · sine = rounded · sawUp = ramp up, snap back · sawDown = ramp down, snap back (repeated drop) · square = hard low/high chop · randomSmooth = glide to a new random level each cycle."
+          >
             <Button
               style={{ width: 150, height: 36, fontSize: 14 }}
               onClick={() => patch({ waveform: WAVEFORMS[(WAVEFORMS.indexOf(waveform) + 1) % WAVEFORMS.length] })}
@@ -467,7 +481,10 @@ function CcLayerDetail({ block, layer, totalSteps, flow }: { block: Block; layer
               {waveform}
             </Button>
           </Param>
-          <Param label="Rate mode">
+          <Param
+            label="Rate mode"
+            sub="Bars = locked to the transport, follows the BPM. Hz = fixed speed in cycles per second, ignores tempo."
+          >
             <Button
               variant={rateMode === "hz" ? "active" : "default"}
               style={{ width: 110, height: 36, fontSize: 13 }}
@@ -476,7 +493,14 @@ function CcLayerDetail({ block, layer, totalSteps, flow }: { block: Block; layer
               {rateMode === "hz" ? "Hz (free)" : "Bars (sync)"}
             </Button>
           </Param>
-          <Param label="Rate">
+          <Param
+            label="Rate"
+            sub={
+              rateMode === "hz"
+                ? "Cycles per second (0.05–25). ~2–8 Hz reads as a wobble."
+                : "Bars per full cycle — smaller = faster. ¼ or ½ = eighth/quarter-note wobble; 2–8 = slow filter sweep."
+            }
+          >
             {rateMode === "hz" ? (
               <Button
                 style={{ width: 150, height: 36, fontSize: 13 }}
@@ -496,16 +520,21 @@ function CcLayerDetail({ block, layer, totalSteps, flow }: { block: Block; layer
               </Button>
             )}
           </Param>
-          <Param label="Phase">
+          <Param
+            label="Phase"
+            sub="Where in the cycle it starts. 25% begins at the peak, 50% flips the shape — use it to line the dive up with the downbeat."
+          >
             <Button style={{ width: 110, height: 36, fontSize: 14 }} onClick={() => numberEdit(phasePct, 0, 100, (n) => patch({ phase: n / 100 }))}>
               {phasePct}%
             </Button>
           </Param>
-          <Param label="Key-track">
+          <Param
+            label="Key-track"
+            sub="Wobble speed follows the triggering note: higher note = faster. 1.00 = one octave up doubles the rate. Tap to type the amount (×100: 150 = 1.50). off = fixed rate."
+          >
             <Button
               variant={keyTrack !== 0 ? "active" : "default"}
               style={{ width: 150, height: 36, fontSize: 13 }}
-              title="LFO rate tracks the triggering note. 1.00 = one pitch octave up doubles the rate (down halves it). Enter it ×100 — type 150 for 1.50, 50 for 0.50. 0 = off. Higher note ⇒ faster wobble."
               onClick={() =>
                 numberEdit(Math.round(keyTrack * 100), 0, 400, (n) => patch({ rateKeyTrack: n / 100 }), 3)
               }
