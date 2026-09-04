@@ -59,6 +59,7 @@ export type CcLayer = {
   rateBars?: number; // lfo
   rateHz?: number; // lfo, rateMode="hz"
   phase?: number; // lfo, 0..1
+  rateKeyTrack?: number; // lfo: Rate folgt der auslösenden Note (0 = aus, 1 = ×2/Oktave)
   from?: number; // ramp, 0..1
   to?: number; // ramp, 0..1
   everySteps?: number; // random

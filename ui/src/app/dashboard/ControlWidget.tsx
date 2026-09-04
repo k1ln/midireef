@@ -17,6 +17,8 @@ export interface LiveControl {
   w: number;
   h: number;
   value?: number;
+  /** Bindung „eingehende Note → Lane-Slot auslösen" (control.setTrigger). */
+  trigger?: { laneId: string; slotId: string };
 }
 
 /** MIDI-Notennummer → Frequenz in Hz (A4 = 69 = 440 Hz, 12-TET). */

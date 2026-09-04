@@ -4,7 +4,7 @@
 //! AnchoredPopup statt des generischen zentrierten <Popup>.
 
 import type { ReactNode } from "react";
-import type { Device, Lane } from "../../state";
+import type { Block, Device, Lane } from "../../state";
 import { Button } from "../widgets/Button";
 import { Popup } from "../widgets/Popup";
 
@@ -112,6 +112,69 @@ export function LanePickerPopup({
             <span style={{ fontSize: 11, color: "var(--pal-text-dim)" }}>{dev.name}</span>
           </Button>
         ))
+      )}
+    </AnchoredPopup>
+  );
+}
+
+/** Bindet die Note eines Dashboard-Controls an einen Lane-Slot — dann löst
+ *  eine passende eingehende Note diesen Slot aus (z.B. einen gespeicherten
+ *  Filter-Effekt in einer CC-Lane). Flache Liste (Gerät › Lane › Slot). */
+export function TriggerPickerPopup({
+  x,
+  y,
+  devices,
+  blocks,
+  active,
+  onClose,
+  onPick,
+  onClear,
+}: {
+  x: number;
+  y: number;
+  devices: Device[];
+  blocks: Block[];
+  active?: { laneId: string; slotId: string };
+  onClose: () => void;
+  onPick: (laneId: string, slotId: string) => void;
+  onClear: () => void;
+}) {
+  const blockName = (id?: string) => {
+    const b = blocks.find((x) => x.id === id);
+    if (!b) return "?";
+    const slot = b.slot ? `${b.slot.row}-${b.slot.col}` : "?";
+    return `${slot} ${b.name || ""}`.trim();
+  };
+  const rows = devices.flatMap((d) =>
+    (d.lanes ?? []).flatMap((l) => (l.slots ?? []).map((s) => ({ dev: d, lane: l, slot: s }))),
+  );
+  return (
+    <AnchoredPopup x={x} y={y} width={280} onClose={onClose}>
+      <div style={{ fontSize: 13, color: "var(--pal-text-dim)", marginBottom: 8 }}>
+        Fire which lane slot on this note?
+      </div>
+      {rows.length === 0 ? (
+        <div style={{ color: "var(--pal-text-dim)", fontSize: 15 }}>No lane slots yet.</div>
+      ) : (
+        rows.map(({ dev, lane, slot }) => (
+          <Button
+            key={slot.id}
+            variant={active?.slotId === slot.id ? "active" : "default"}
+            className="popup-row"
+            style={{ height: 44, marginBottom: 6, flexDirection: "column", alignItems: "flex-start", paddingLeft: 12 }}
+            onClick={() => onPick(lane.id, slot.id)}
+          >
+            <span style={{ fontWeight: 700 }}>
+              {lane.name} · {blockName(slot.blockId)}
+            </span>
+            <span style={{ fontSize: 11, color: "var(--pal-text-dim)" }}>{dev.name}</span>
+          </Button>
+        ))
+      )}
+      {active && (
+        <Button variant="danger" className="popup-row" onClick={onClear}>
+          Clear binding
+        </Button>
       )}
     </AnchoredPopup>
   );

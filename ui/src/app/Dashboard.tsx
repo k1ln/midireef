@@ -15,7 +15,8 @@ import { useTouchKeyboard } from "./TouchKeyboard";
 import { useViewportSize } from "./useViewportSize";
 import { Button } from "./widgets/Button";
 import { ControlWidget, type LiveControl } from "./dashboard/ControlWidget";
-import { DevicePickerPopup, KindPickerPopup, LanePickerPopup } from "./dashboard/menus";
+import { DevicePickerPopup, KindPickerPopup, LanePickerPopup, TriggerPickerPopup } from "./dashboard/menus";
+import type { Block } from "../state";
 import { ControlDock, CONTROL_DOCK_W } from "./dashboard/ControlDock";
 import type { Device } from "../state";
 
@@ -31,6 +32,7 @@ const DOCK_W = CONTROL_DOCK_W;
 // update loop.
 const EMPTY_DEVICES: Device[] = [];
 const EMPTY_CONTROLS: LiveControl[] = [];
+const EMPTY_BLOCKS: Block[] = [];
 
 interface Pt {
   x: number;
@@ -51,6 +53,7 @@ export function Dashboard({ centerSignal }: { centerSignal?: number }) {
   const { w, h } = useViewportSize();
   const devices = useStoreValue((s) => s.project?.devices ?? EMPTY_DEVICES);
   const controls = useStoreValue((s) => (s.project?.controls as LiveControl[] | undefined) ?? EMPTY_CONTROLS);
+  const blocks = useStoreValue((s) => (s.project?.blocks as Block[] | undefined) ?? EMPTY_BLOCKS);
   const recordArmed = useStoreValue((s) => s.recordArmed);
 
   const [armed, setArmed] = useState(false);
@@ -61,6 +64,7 @@ export function Dashboard({ centerSignal }: { centerSignal?: number }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [devicePicker, setDevicePicker] = useState<{ ctrl: LiveControl } | null>(null);
   const [lanePicker, setLanePicker] = useState<{ ctrl: LiveControl } | null>(null);
+  const [triggerPicker, setTriggerPicker] = useState<{ ctrl: LiveControl } | null>(null);
   const [kindPicker, setKindPicker] = useState<{ controlId: string; mappingKind: "cc" | "note" } | null>(null);
   // Controls currently "on" because the physical device sent a matching
   // Note-On (not persisted project state — purely a live UI light-up, mirrors
@@ -239,6 +243,14 @@ export function Dashboard({ centerSignal }: { centerSignal?: number }) {
   const cy = (TOP + h) / 2;
 
   const selectedCtrl = selectedId ? controls.find((c) => c.id === selectedId) : undefined;
+  const triggerLabelFor = (ctrl: LiveControl): string | undefined => {
+    if (!ctrl.trigger) return undefined;
+    for (const d of devices) {
+      const l = d.lanes.find((x) => x.id === ctrl.trigger!.laneId);
+      if (l && l.slots.some((s) => s.id === ctrl.trigger!.slotId)) return `Trigger: ${l.name}`;
+    }
+    return "Trigger: (gone)";
+  };
   // Auswahl zeigt ins Leere (Control gelöscht) → aufräumen.
   useEffect(() => {
     if (selectedId && !controls.some((c) => c.id === selectedId)) setSelectedId(null);
@@ -376,6 +388,8 @@ export function Dashboard({ centerSignal }: { centerSignal?: number }) {
             setEditMode(true);
           }}
           onDevice={() => setDevicePicker({ ctrl: selectedCtrl })}
+          onTrigger={() => setTriggerPicker({ ctrl: selectedCtrl })}
+          triggerLabel={triggerLabelFor(selectedCtrl)}
           onRecord={() => {
             if (recordArmed?.controlId === selectedCtrl.id) {
               // Bereits armiert → nochmal senden hebt es auf (Toggle, siehe Server).
@@ -400,6 +414,25 @@ export function Dashboard({ centerSignal }: { centerSignal?: number }) {
           onPick={(lane) => {
             send({ t: "record.arm", controlId: lanePicker.ctrl.id, laneId: lane.id });
             setLanePicker(null);
+          }}
+        />
+      )}
+
+      {triggerPicker && (
+        <TriggerPickerPopup
+          x={window.innerWidth - DOCK_W - 300}
+          y={TOP + 16}
+          devices={devices}
+          blocks={blocks}
+          active={triggerPicker.ctrl.trigger}
+          onClose={() => setTriggerPicker(null)}
+          onPick={(laneId, slotId) => {
+            send({ t: "control.setTrigger", controlId: triggerPicker.ctrl.id, laneId, slotId });
+            setTriggerPicker(null);
+          }}
+          onClear={() => {
+            send({ t: "control.setTrigger", controlId: triggerPicker.ctrl.id, laneId: null, slotId: null });
+            setTriggerPicker(null);
           }}
         />
       )}

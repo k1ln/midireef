@@ -462,6 +462,31 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 broadcast_snapshot(state);
             }
         }
+        // Dashboard-Control an einen Lane-Slot binden: eine passende eingehende
+        // Note löst dann diesen Slot aus (s. `handle_midi_feedback`). `laneId`
+        // oder `slotId` fehlt/null → Bindung entfernen.
+        "control.setTrigger" => {
+            if let Some(id) = str_field(&cmd, "controlId") {
+                let lane = str_field(&cmd, "laneId");
+                let slot = str_field(&cmd, "slotId");
+                {
+                    let mut proj = state.project.lock().unwrap();
+                    if let Some(c) = find_control_mut(&mut proj, &id) {
+                        match (lane, slot) {
+                            (Some(l), Some(s)) => {
+                                c["trigger"] = serde_json::json!({ "laneId": l, "slotId": s });
+                            }
+                            _ => {
+                                if let Some(o) = c.as_object_mut() {
+                                    o.remove("trigger");
+                                }
+                            }
+                        }
+                    }
+                }
+                broadcast_snapshot(state);
+            }
+        }
         "control.setSize" => {
             if let (Some(id), Some(w), Some(h)) = (
                 str_field(&cmd, "controlId"),
@@ -657,14 +682,14 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
             if let (Some(lane_id), Some(slot_id)) =
                 (str_field(&cmd, "laneId"), str_field(&cmd, "slotId"))
             {
-                state.clock.send(ClockCommand::TriggerSlot(lane_id, slot_id));
+                state.clock.send(ClockCommand::TriggerSlot(lane_id, slot_id, None));
             }
         }
         "block.press" => {
             if let (Some(lane_id), Some(slot_id)) =
                 (str_field(&cmd, "laneId"), str_field(&cmd, "slotId"))
             {
-                state.clock.send(ClockCommand::PressSlot(lane_id, slot_id));
+                state.clock.send(ClockCommand::PressSlot(lane_id, slot_id, None));
             }
         }
         "block.release" => {

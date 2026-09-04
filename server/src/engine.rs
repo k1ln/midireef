@@ -55,6 +55,10 @@ enum CcLayerCompiled {
         rate_bars: f64,
         rate_hz: f64,
         phase: f64,
+        /// Key-Tracking der Rate: 0 = aus. 1 = die Rate verdoppelt sich pro
+        /// Oktave über Note 60 (halbiert pro Oktave darunter). Negativ = kehrt
+        /// die Richtung um. Braucht eine auslösende Note (`Playback::trigger_note`).
+        rate_key_track: f64,
     },
     Envelope {
         enabled: bool,
@@ -129,12 +133,19 @@ impl CcLayerCompiled {
     /// Roh-Wert 0..1 an der aktuellen Position, VOR depth/offset/combine.
     fn eval(&self, ctx: &CcEvalCtx) -> f64 {
         match self {
-            Self::Lfo { waveform, rate_mode, rate_bars, rate_hz, phase, .. } => {
+            Self::Lfo { waveform, rate_mode, rate_bars, rate_hz, phase, rate_key_track, .. } => {
+                // Key-Tracking: eine höhere auslösende Note macht den LFO
+                // schneller (eine Oktave = ×2 bei rate_key_track = 1).
+                let kt = match (*rate_key_track != 0.0).then_some(()).and(ctx.trigger_note) {
+                    Some(n) => 2f64.powf((n as f64 - 60.0) / 12.0 * *rate_key_track),
+                    None => 1.0,
+                };
                 let raw_phase = if rate_mode == "hz" {
-                    ctx.elapsed_secs * rate_hz + phase
+                    ctx.elapsed_secs * (rate_hz * kt) + phase
                 } else {
                     let bars = ctx.global_pulse as f64 / ctx.ppb.max(1) as f64;
-                    bars / rate_bars.max(0.0001) + phase
+                    // Schnellere Rate = kürzere Periode (in Takten).
+                    bars / (rate_bars / kt).max(0.0001) + phase
                 };
                 eval_waveform(waveform, raw_phase)
             }
@@ -165,6 +176,7 @@ struct CcEvalCtx {
     global_pulse: u64,
     ppb: u32, // Pulse pro Takt (für taktsynchronen LFO)
     elapsed_secs: f64, // seit Transport-Start (für Hz-LFO)
+    trigger_note: Option<u8>, // auslösende Note — für LFO-Key-Tracking (rateKeyTrack)
 }
 
 /// Kombiniert alle enabled Layer von unten nach oben (siehe `CcCombineMode` im
@@ -369,6 +381,10 @@ struct Playback {
     /// vorgemerkt. Ein erneuter Touch überschreibt (letzter Wunsch gewinnt), ein
     /// Touch auf den bereits wartenden Slot nimmt die Vormerkung zurück.
     queued: Option<usize>,
+    /// Note, die diese Lane zuletzt ausgelöst hat (MIDI-Trigger). Treibt das
+    /// LFO-Key-Tracking von CC-Bausteinen (`rateKeyTrack`). `None` bei Touch-
+    /// oder Sequencer-Auslösung ohne Note.
+    trigger_note: Option<u8>,
 }
 
 struct PendingOff {
@@ -501,13 +517,14 @@ impl Engine {
     /// `apply_queued` schaltet ihn auf dem passenden Puls scharf. Ein zweiter
     /// Touch auf dieselbe wartende Kachel nimmt die Vormerkung zurück — sonst
     /// ließe sich ein Fehlgriff bis zum nächsten Takt nicht mehr korrigieren.
-    pub fn trigger_slot(&mut self, lane_id: &str, slot_id: &str) {
+    pub fn trigger_slot(&mut self, lane_id: &str, slot_id: &str, note: Option<u8>) {
         let Some(idx) = self.lanes.iter().position(|l| l.id == lane_id) else {
             return;
         };
         let Some(block_idx) = self.lanes[idx].blocks.iter().position(|b| b.slot_id == slot_id) else {
             return;
         };
+        self.playback[idx].trigger_note = note;
         if self.triggers_now(idx) {
             self.playback[idx].queued = None;
             self.start_slot(idx, block_idx);
@@ -582,13 +599,14 @@ impl Engine {
     /// vorn starten und die (sonst stumme) Lane laufen lassen. Bei "hold" bleibt
     /// sie laufen, solange `held` gesetzt ist; bei "oneShot" stoppt sie am
     /// Baustein-Ende von selbst (siehe `on_pulse`).
-    pub fn press_slot(&mut self, lane_id: &str, slot_id: &str) {
+    pub fn press_slot(&mut self, lane_id: &str, slot_id: &str, note: Option<u8>) {
         let Some(idx) = self.lanes.iter().position(|l| l.id == lane_id) else {
             return;
         };
         let Some(block_idx) = self.lanes[idx].blocks.iter().position(|b| b.slot_id == slot_id) else {
             return;
         };
+        self.playback[idx].trigger_note = note;
         // "hold" wird SOFORT scharf: die Lane soll klingen, solange der Finger
         // liegt — würde der Start auf den nächsten Takt warten, wäre die Geste
         // bei einem kurzen Antippen schon vorbei, bevor überhaupt etwas kommt.
@@ -733,6 +751,7 @@ impl Engine {
                         running: false,
                         held: false,
                         queued: None,
+                        trigger_note: None,
                     });
                 if l.blocks.is_empty() {
                     pb.slot = 0;
@@ -1031,6 +1050,7 @@ impl Engine {
                 global_pulse,
                 ppb: block.ppb,
                 elapsed_secs: self.elapsed_secs,
+                trigger_note: self.playback[lane_idx].trigger_note,
             };
             let value01 = eval_cc_layers(&auto.layers, &ctx);
             (block.slot_id.clone(), auto.out_min, auto.out_max, target, value01)
@@ -1434,6 +1454,7 @@ fn compile_cc_layer(v: &serde_json::Value) -> Option<CcLayerCompiled> {
             rate_bars: v.get("rateBars").and_then(|x| x.as_f64()).unwrap_or(1.0).max(0.0001),
             rate_hz: v.get("rateHz").and_then(|x| x.as_f64()).unwrap_or(1.0).max(0.0001),
             phase: v.get("phase").and_then(|x| x.as_f64()).unwrap_or(0.0),
+            rate_key_track: v.get("rateKeyTrack").and_then(|x| x.as_f64()).unwrap_or(0.0),
         }),
         "envelope" => {
             let mut points: Vec<(u32, f64)> = v

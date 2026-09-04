@@ -28,6 +28,10 @@ export interface ControlDockProps {
   onDevice: () => void;
   onRecord: () => void;
   onRemove: () => void;
+  /** „Trigger" — Bindung Note → Lane-Slot wählen/lösen. */
+  onTrigger: () => void;
+  /** Kurzer Name der aktuellen Bindung, sonst undefined. */
+  triggerLabel?: string;
 }
 
 export function ControlDock({
@@ -41,6 +45,8 @@ export function ControlDock({
   onDevice,
   onRecord,
   onRemove,
+  onTrigger,
+  triggerLabel,
 }: ControlDockProps) {
   const openKeyboard = useTouchKeyboard();
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -93,6 +99,14 @@ export function ControlDock({
       </Button>
       <Button variant="alt" className="settings-dock-row" onClick={onDevice}>
         → Device …
+      </Button>
+      <Button
+        variant={triggerLabel ? "active" : "alt"}
+        className="settings-dock-row"
+        title="Bind this control's note to fire a lane slot (e.g. a stored filter effect)"
+        onClick={onTrigger}
+      >
+        {triggerLabel ? `▶ ${triggerLabel}` : "▶ Trigger …"}
       </Button>
       {isKeyboard && (
         <Button variant={isRecording ? "danger" : "alt"} className="settings-dock-row" onClick={onRecord}>

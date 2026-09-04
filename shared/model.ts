@@ -279,6 +279,10 @@ export interface CcLfoLayer extends CcLayerBase {
   /** Freie Rate in Hz (nur bei rateMode="hz") — für schnelle, nicht taktsynchrone LFOs. */
   rateHz?: number;
   phase: number; // 0..1 Startphase
+  /** Key-Tracking der Rate: 0 = aus. 1 = die Rate verdoppelt sich pro Oktave
+   *  über MIDI-Note 60 (halbiert pro Oktave darunter), negativ kehrt das um.
+   *  Wirkt nur, wenn die Lane per Note ausgelöst wurde (control.setTrigger). */
+  rateKeyTrack?: number;
 }
 
 export interface CcEnvelopePoint {
@@ -626,6 +630,11 @@ export interface LiveControl {
   y: number;
   w: number;
   h: number;
+
+  /** Optional: eine passende eingehende Note löst diesen Lane-Slot aus
+   *  (control.setTrigger). Note-On = press, Note-Off = release; die Note treibt
+   *  zugleich das LFO-Key-Tracking eines CC-Bausteins in der Lane. */
+  trigger?: { laneId: Id; slotId: Id };
 }
 
 /** Ein frei zusammenstellbarer Screen mit Live-Controls. */
@@ -1033,6 +1042,7 @@ export type Command =
   | { t: "control.assignName"; controlId: Id; name: string }
   | { t: "control.setDevice"; controlId: Id; deviceId: Id | null } // Ziel-Device (Name erscheint am Button)
   | { t: "control.setKind"; controlId: Id; kind: ControlKind } // z.B. CC als Taster statt Regler reproduzieren
+  | { t: "control.setTrigger"; controlId: Id; laneId: Id | null; slotId: Id | null } // Note dieses Controls löst einen Lane-Slot aus (null = Bindung lösen)
   | { t: "control.move"; controlId: Id; x: number; y: number }
   | { t: "control.setSize"; controlId: Id; w: number; h: number } // Dashboard: einzelnen Taster/Regler frei skalieren
   | { t: "control.delete"; controlId: Id }

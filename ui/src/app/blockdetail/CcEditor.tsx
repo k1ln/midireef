@@ -21,6 +21,8 @@ const CC_LAYER_KINDS = ["lfo", "envelope", "ramp", "random", "stepped"];
 const COMBINE_MODES = ["add", "multiply", "max", "min", "replace"];
 const WAVEFORMS = ["sine", "triangle", "sawUp", "sawDown", "square", "randomSmooth"];
 const RATE_PRESETS = [0.25, 0.5, 1, 2, 4, 8];
+// LFO-Rate folgt der auslösenden Note: 0 = aus, 1 = ×2 pro Oktave (s. engine.rs).
+const KEY_TRACK_PRESETS = [0, 0.5, 1, 2];
 
 // Value-bar boxes (stepped/envelope layers) — big enough for a finger, and
 // the value is set directly from where you tap/drag inside the box (no
@@ -450,6 +452,7 @@ function CcLayerDetail({ block, layer, totalSteps, flow }: { block: Block; layer
       // resolve much faster than that anyway (see engine.rs MIN_CC_SEND_INTERVAL).
       const rateHz = layer.rateHz ?? 1;
       const phasePct = Math.round((layer.phase ?? 0) * 100);
+      const keyTrack = layer.rateKeyTrack ?? 0;
       return (
         <ParamRow
           hint={
@@ -498,6 +501,19 @@ function CcLayerDetail({ block, layer, totalSteps, flow }: { block: Block; layer
           <Param label="Phase">
             <Button style={{ width: 110, height: 36, fontSize: 14 }} onClick={() => numberEdit(phasePct, 0, 100, (n) => patch({ phase: n / 100 }))}>
               {phasePct}%
+            </Button>
+          </Param>
+          <Param label="Key-track">
+            <Button
+              variant={keyTrack !== 0 ? "active" : "default"}
+              style={{ width: 130, height: 36, fontSize: 13 }}
+              title="LFO rate follows the note that triggered the lane — higher note, faster wobble"
+              onClick={() => {
+                const i = KEY_TRACK_PRESETS.indexOf(keyTrack);
+                patch({ rateKeyTrack: KEY_TRACK_PRESETS[(i < 0 ? 0 : i + 1) % KEY_TRACK_PRESETS.length] });
+              }}
+            >
+              {keyTrack === 0 ? "off" : `×${keyTrack}/oct`}
             </Button>
           </Param>
         </ParamRow>

@@ -270,14 +270,32 @@ impl AppState {
             0x90 | 0x80 if msg.len() >= 3 => {
                 let (note, velocity) = (msg[1], msg[2]);
                 let note_on = status == 0x90 && velocity > 0;
-                let id = {
+                let (id, trigger) = {
                     let proj = self.project.lock().unwrap();
-                    find_control_by_mapping(&proj, channel, "note", note)
-                        .as_ref()
-                        .and_then(|c| c.get("id"))
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string)
+                    match find_control_by_mapping(&proj, channel, "note", note) {
+                        Some(c) => (
+                            c.get("id").and_then(|v| v.as_str()).map(str::to_string),
+                            c.get("trigger").and_then(|t| {
+                                Some((
+                                    t.get("laneId")?.as_str()?.to_string(),
+                                    t.get("slotId")?.as_str()?.to_string(),
+                                ))
+                            }),
+                        ),
+                        None => (None, None),
+                    }
                 };
+                // An einen Lane-Slot gebunden (control.setTrigger): Note-On löst
+                // ihn aus (mit der Note fürs LFO-Key-Tracking), Note-Off gibt
+                // eine „hold"-Lane wieder frei.
+                if let Some((lane_id, slot_id)) = trigger {
+                    if note_on {
+                        self.clock
+                            .send(ClockCommand::PressSlot(lane_id, slot_id, Some(note)));
+                    } else {
+                        self.clock.send(ClockCommand::ReleaseSlot(lane_id));
+                    }
+                }
                 if let Some(id) = id {
                     let active = {
                         let mut held = self.held_notes.lock().unwrap();

@@ -27,10 +27,12 @@ pub enum ClockCommand {
     SetClockSource(ClockSource),
     /// Rohe MIDI-Bytes an einen Port senden (Live-Controls).
     Midi(String, Vec<u8>),
-    /// Baustein per Touch auslösen: (laneId, slotId).
-    TriggerSlot(String, String),
-    /// Touch-Down auf eine "hold"/"oneShot"-Lane: (laneId, slotId).
-    PressSlot(String, String),
+    /// Baustein auslösen: (laneId, slotId, ggf. auslösende Note). Die Note
+    /// treibt u.a. das LFO-Key-Tracking von CC-Bausteinen (rateKeyTrack).
+    TriggerSlot(String, String, Option<u8>),
+    /// Touch-Down / Note-On auf eine "hold"/"oneShot"-Lane: (laneId, slotId,
+    /// ggf. auslösende Note).
+    PressSlot(String, String, Option<u8>),
     /// Touch-Up auf eine "hold"-Lane: (laneId).
     ReleaseSlot(String),
     /// Live vom Keyboard kommende Note für eine per `record.arm` gelinkte
@@ -175,11 +177,11 @@ fn clock_loop(
                         );
                     }
                 }
-                ClockCommand::TriggerSlot(lane_id, slot_id) => {
-                    engine.trigger_slot(&lane_id, &slot_id);
+                ClockCommand::TriggerSlot(lane_id, slot_id, note) => {
+                    engine.trigger_slot(&lane_id, &slot_id, note);
                 }
-                ClockCommand::PressSlot(lane_id, slot_id) => {
-                    engine.press_slot(&lane_id, &slot_id);
+                ClockCommand::PressSlot(lane_id, slot_id, note) => {
+                    engine.press_slot(&lane_id, &slot_id, note);
                 }
                 ClockCommand::ReleaseSlot(lane_id) => {
                     engine.release_slot(&lane_id);
