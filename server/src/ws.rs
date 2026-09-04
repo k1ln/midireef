@@ -376,6 +376,25 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 broadcast_snapshot(state);
             }
         }
+        // Trigger-Kette einer Lane setzen/lösen: wird ein Slot DIESER Lane
+        // ausgelöst, feuert zusätzlich (targetLaneId, targetSlotId) mit — z.B.
+        // eine Melodie-Lane, die einen CC-Effekt mitzündet. Fehlt eines der
+        // Ziel-Felder (oder null) → Kette entfernen.
+        "lane.setChainSlot" => {
+            if let Some(lane_id) = str_field(&cmd, "laneId") {
+                let target_lane = str_field(&cmd, "targetLaneId");
+                let target_slot = str_field(&cmd, "targetSlotId");
+                with_lane(state, &lane_id, |l| {
+                    l.chain_slot = match (target_lane.clone(), target_slot.clone()) {
+                        (Some(tl), Some(ts)) => Some(crate::model::ChainSlot {
+                            lane_id: tl,
+                            slot_id: ts,
+                        }),
+                        _ => None,
+                    };
+                });
+            }
+        }
         // ── MIDI-Learn (Startbildschirm) ──
         "learn.start" => {
             state
@@ -545,6 +564,42 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                     }
                 }
                 broadcast_snapshot(state);
+            }
+        }
+        // Dashboard-Taster OHNE MIDI: schaltet eine Lane scharf/stumm
+        // (`lane.enabled`) — wie der ▶/■-Knopf der Sequencer-Übersicht, nur
+        // frei auf dem Dashboard plazierbar. Kein Mapping, kein MIDI-Ausgang;
+        // das Umschalten selbst läuft weiter über `lane.setEnabled`.
+        "control.addLaneToggle" => {
+            if let Some(lane_id) = str_field(&cmd, "laneId") {
+                let mut proj = state.project.lock().unwrap();
+                let name = proj
+                    .devices
+                    .iter()
+                    .flat_map(|d| d.lanes.iter())
+                    .find(|l| l.id == lane_id)
+                    .map(|l| l.name.clone());
+                if let Some(name) = name {
+                    const SIZE: f64 = 78.0;
+                    let (x, y) = crate::state::next_free_position(&proj, SIZE);
+                    let ctrl = serde_json::json!({
+                        "id": uuid::Uuid::new_v4().to_string(),
+                        "name": name,
+                        "kind": "laneButton",
+                        "laneToggle": { "laneId": lane_id },
+                        "screenId": "main",
+                        "x": x,
+                        "y": y,
+                        "w": SIZE,
+                        "h": SIZE,
+                    });
+                    if !proj.controls.is_array() {
+                        proj.controls = serde_json::json!([]);
+                    }
+                    proj.controls.as_array_mut().unwrap().push(ctrl);
+                    drop(proj);
+                    broadcast_snapshot(state);
+                }
             }
         }
         "control.press" => {

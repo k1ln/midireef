@@ -66,6 +66,7 @@ export function Dashboard({ centerSignal }: { centerSignal?: number }) {
   const [lanePicker, setLanePicker] = useState<{ ctrl: LiveControl } | null>(null);
   const [triggerPicker, setTriggerPicker] = useState<{ ctrl: LiveControl } | null>(null);
   const [kindPicker, setKindPicker] = useState<{ controlId: string; mappingKind: "cc" | "note" } | null>(null);
+  const [laneTogglePicker, setLaneTogglePicker] = useState(false);
   // Controls currently "on" because the physical device sent a matching
   // Note-On (not persisted project state — purely a live UI light-up, mirrors
   // what a hardware pad's own LED would do).
@@ -258,6 +259,18 @@ export function Dashboard({ centerSignal }: { centerSignal?: number }) {
 
   const deviceName = (deviceId?: string | null) => devices.find((d) => d.id === deviceId)?.name;
 
+  // Ziel-Lane eines „laneButton"-Controls (Taster ohne MIDI, schaltet
+  // `lane.enabled`) — undefined, wenn die Lane gelöscht wurde.
+  const laneOf = (ctrl: LiveControl): Device["lanes"][number] | undefined => {
+    const id = ctrl.laneToggle?.laneId;
+    if (!id) return undefined;
+    for (const d of devices) {
+      const l = d.lanes.find((x) => x.id === id);
+      if (l) return l;
+    }
+    return undefined;
+  };
+
   return (
     // Fragment, not a `position: fixed; inset: 0` div — every child below
     // already positions itself via `fixed`, and a full-viewport wrapper
@@ -308,6 +321,12 @@ export function Dashboard({ centerSignal }: { centerSignal?: number }) {
               selected={ctrl.id === selectedId}
               externalActive={physicallyActive.has(ctrl.id)}
               recording={recordArmed?.controlId === ctrl.id}
+              laneEnabled={ctrl.kind === "laneButton" ? laneOf(ctrl)?.enabled : undefined}
+              laneGone={ctrl.kind === "laneButton" && !laneOf(ctrl)}
+              onToggleLane={() => {
+                const l = laneOf(ctrl);
+                if (l) send({ t: "lane.setEnabled", laneId: l.id, enabled: !l.enabled });
+              }}
               onSelect={() => setSelectedId(ctrl.id)}
               onContextMenu={() => selectControl(ctrl)}
               onPress={() => (pressedControl.current = ctrl)}
@@ -326,6 +345,35 @@ export function Dashboard({ centerSignal }: { centerSignal?: number }) {
             Done
           </Button>
         </div>
+      )}
+
+      {!editMode && !armed && (
+        <div style={{ position: "fixed", top: TOP + 12, left: 16, zIndex: 6 }}>
+          <Button
+            variant="alt"
+            style={{ height: 34, fontSize: 13, padding: "0 12px" }}
+            title="Add a button that starts / stops a lane — no MIDI needed"
+            onClick={() => setLaneTogglePicker(true)}
+          >
+            ＋ Lane switch
+          </Button>
+        </div>
+      )}
+
+      {laneTogglePicker && (
+        <LanePickerPopup
+          x={16}
+          y={TOP + 52}
+          devices={devices}
+          filter={() => true}
+          prompt="Which lane should this button start / stop?"
+          emptyText="No lanes yet."
+          onClose={() => setLaneTogglePicker(false)}
+          onPick={(lane) => {
+            send({ t: "control.addLaneToggle", laneId: lane.id });
+            setLaneTogglePicker(false);
+          }}
+        />
       )}
 
       {armed && (

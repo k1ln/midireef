@@ -14,6 +14,8 @@ export interface DevicePanelProps {
   onOpenLaneSettings: (laneId: string) => void;
   onOpenAddBlock: (laneId: string) => void;
   onSelectSlot: (laneId: string, slotId: string) => void;
+  /** Langer Druck auf die Kachel-ID → Baustein-Editor direkt öffnen. */
+  onOpenBlock: (blockId: string) => void;
   selectedSlotId: string | null;
 }
 
@@ -23,6 +25,7 @@ export function DevicePanel({
   onOpenLaneSettings,
   onOpenAddBlock,
   onSelectSlot,
+  onOpenBlock,
   selectedSlotId,
 }: DevicePanelProps) {
   const send = useSend();
@@ -85,6 +88,7 @@ export function DevicePanel({
             onOpenSettings={() => onOpenLaneSettings(lane.id)}
             onOpenAddBlock={() => onOpenAddBlock(lane.id)}
             onSelectSlot={(slotId) => onSelectSlot(lane.id, slotId)}
+            onOpenBlock={onOpenBlock}
             selectedSlotId={selectedSlotId}
           />
         ))}

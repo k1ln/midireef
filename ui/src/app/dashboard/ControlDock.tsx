@@ -65,13 +65,16 @@ export function ControlDock({
   }, [ctrl.w]);
 
   const isKeyboard = ctrl.kind === "keyboard";
-  const mappingText = ctrl.mapping
-    ? isKeyboard
-      ? `KEYBOARD · Ch${ctrl.mapping.channel}`
-      : `${ctrl.mapping.kind.toUpperCase()}${
-          ctrl.mapping.number != null ? ` ${ctrl.mapping.number}` : ""
-        } · Ch${ctrl.mapping.channel}`
-    : "unmapped";
+  const isLaneButton = ctrl.kind === "laneButton";
+  const mappingText = isLaneButton
+    ? "Lane switch · no MIDI"
+    : ctrl.mapping
+      ? isKeyboard
+        ? `KEYBOARD · Ch${ctrl.mapping.channel}`
+        : `${ctrl.mapping.kind.toUpperCase()}${
+            ctrl.mapping.number != null ? ` ${ctrl.mapping.number}` : ""
+          } · Ch${ctrl.mapping.channel}`
+      : "unmapped";
 
   return (
     <div className="settings-dock" style={{ top: TRANSPORT_H, width: CONTROL_DOCK_W }}>
@@ -103,10 +106,12 @@ export function ControlDock({
       <Button variant="alt" className="settings-dock-row" onClick={onMove}>
         ✥ Move
       </Button>
-      <Button variant="alt" className="settings-dock-row" onClick={onDevice}>
-        → Device …
-      </Button>
-      {triggerLabel ? (
+      {!isLaneButton && (
+        <Button variant="alt" className="settings-dock-row" onClick={onDevice}>
+          → Device …
+        </Button>
+      )}
+      {!isLaneButton && (triggerLabel ? (
         <>
           <Button
             variant={triggerEnabled ? "active" : "alt"}
@@ -134,7 +139,7 @@ export function ControlDock({
         >
           ▶ Trigger …
         </Button>
-      )}
+      ))}
       {isKeyboard && (
         <Button variant={isRecording ? "danger" : "alt"} className="settings-dock-row" onClick={onRecord}>
           {isRecording ? "■ Stop rec" : "● Record …"}

@@ -37,6 +37,16 @@ impl Default for MetronomeConfig {
     }
 }
 
+/// Ziel einer Trigger-Kette: „wird ein Slot dieser Lane ausgelöst, feuere
+/// zusätzlich (laneId, slotId)". Sitzt an der Lane, weil dort auch Kanal und
+/// CC-Ziel liegen — Bausteine bleiben reiner, wiederverwendbarer Inhalt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChainSlot {
+    pub lane_id: Id,
+    pub slot_id: Id,
+}
+
 /// Lane innerhalb eines Devices. Slots/Controls bleiben vorerst als freies JSON.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,6 +80,10 @@ pub struct Lane {
     /// laufen können (siehe `resolve_cc_target` in engine.rs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cc_control_id: Option<Id>,
+    /// Trigger-Kette: wird ein Slot dieser Lane ausgelöst, wird zusätzlich das
+    /// hier hinterlegte `(laneId, slotId)` mit ausgelöst. `None` = keine Kette.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_slot: Option<ChainSlot>,
     #[serde(default)]
     pub slots: serde_json::Value,
     #[serde(default)]
@@ -93,6 +107,7 @@ impl Lane {
             trigger_quantize: "nextBar".to_string(),
             channel: 1,
             cc_control_id: None,
+            chain_slot: None,
             slots: serde_json::json!([]),
             controls: serde_json::json!([]),
         }

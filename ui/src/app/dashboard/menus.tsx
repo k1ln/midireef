@@ -83,30 +83,36 @@ export function DevicePickerPopup({
   );
 }
 
-/** Melody-lane picker for "Record into lane …" — flat list of (device, lane)
- *  pairs, since a keyboard control's recording link isn't scoped to one
- *  device the way "Device …" is. */
+/** Flat (device, lane) picker — used both for "Record into lane …" (melody
+ *  only, the default) and for "＋ Lane switch" on the Dashboard (any lane).
+ *  Flat list because the link isn't scoped to one device the way "Device …" is. */
 export function LanePickerPopup({
   x,
   y,
   devices,
   onClose,
   onPick,
+  filter = (l) => l.role === "melody",
+  prompt = "Record into which melody lane?",
+  emptyText = "No melody lane set up yet",
 }: {
   x: number;
   y: number;
   devices: Device[];
   onClose: () => void;
   onPick: (lane: Lane) => void;
+  filter?: (lane: Lane) => boolean;
+  prompt?: string;
+  emptyText?: string;
 }) {
-  const melodyLanes = devices.flatMap((d) => (d.lanes ?? []).filter((l) => l.role === "melody").map((l) => ({ dev: d, lane: l })));
+  const lanes = devices.flatMap((d) => (d.lanes ?? []).filter(filter).map((l) => ({ dev: d, lane: l })));
   return (
     <AnchoredPopup x={x} y={y} width={260} onClose={onClose}>
-      <div style={{ fontSize: 13, color: "var(--pal-text-dim)", marginBottom: 8 }}>Record into which melody lane?</div>
-      {melodyLanes.length === 0 ? (
-        <div style={{ color: "var(--pal-text-dim)", fontSize: 15 }}>No melody lane set up yet</div>
+      <div style={{ fontSize: 13, color: "var(--pal-text-dim)", marginBottom: 8 }}>{prompt}</div>
+      {lanes.length === 0 ? (
+        <div style={{ color: "var(--pal-text-dim)", fontSize: 15 }}>{emptyText}</div>
       ) : (
-        melodyLanes.map(({ dev, lane }) => (
+        lanes.map(({ dev, lane }) => (
           <Button key={lane.id} className="popup-row" style={{ height: 40, marginBottom: 8, flexDirection: "column", alignItems: "flex-start", paddingLeft: 12 }} onClick={() => onPick(lane)}>
             <span style={{ fontWeight: 700 }}>{lane.name}</span>
             <span style={{ fontSize: 11, color: "var(--pal-text-dim)" }}>{dev.name}</span>

@@ -11,6 +11,7 @@ import { RuntimeFeed } from "./runtime";
 import { Transport } from "./Transport";
 import { TouchKeyboardProvider } from "./TouchKeyboard";
 import { NotePickerProvider } from "./NotePicker";
+import { WheelPickerProvider } from "./widgets/WheelPicker";
 import { Overview } from "./overview/Overview";
 import { PortPickerPopup } from "./overview/popups";
 import { BlockDetail } from "./BlockDetail";
@@ -87,6 +88,13 @@ export function App() {
         case "record.armState":
           store.setRecordArmed(evt.controlId && evt.laneId ? { controlId: evt.controlId, laneId: evt.laneId } : null);
           break;
+        // Knob-Wert vom Server (physisch gedreht ODER von einem nicht-
+        // destruktiven CC-Baustein auf die Ruhelage zurückgestellt) — hier
+        // global nachziehen, damit der Dashboard-Knob auch stimmt, wenn das
+        // Dashboard gerade nicht gemountet ist.
+        case "control.valueChanged":
+          if (evt.controlId != null) store.patchControl(evt.controlId, { value: evt.value });
+          break;
       }
     });
     const offRuntime = runtime.attach(net);
@@ -101,6 +109,7 @@ export function App() {
     <AppProvider value={{ store, send: (cmd) => net.send(cmd), net, runtime }}>
       <TouchKeyboardProvider>
         <NotePickerProvider>
+          <WheelPickerProvider>
           <Transport
             view={view}
             onNav={navigate}
@@ -142,6 +151,7 @@ export function App() {
           )}
 
           {sub?.kind === "laneControls" && <LaneControls laneId={sub.laneId} onClose={() => setSub(null)} />}
+          </WheelPickerProvider>
         </NotePickerProvider>
       </TouchKeyboardProvider>
     </AppProvider>

@@ -17,6 +17,7 @@
 import { useEffect, useRef } from "react";
 import type { Lane, Block, Slot } from "../../state";
 import { useRuntimeTile, useSend } from "../store";
+import { useLongPress } from "../useLongPress";
 
 function loopBadge(slot: Slot): string | null {
   if (slot.loopMode === "loop") return "∞";
@@ -31,11 +32,14 @@ export interface SlotTileProps {
   locked: boolean;
   selected: boolean;
   onSelect: () => void;
+  /** Langer Druck auf die ID → Baustein-Editor direkt öffnen (Tipp = auswählen). */
+  onOpenBlock: (blockId: string) => void;
 }
 
-export function SlotTile({ lane, slot, blk, locked, selected, onSelect }: SlotTileProps) {
+export function SlotTile({ lane, slot, blk, locked, selected, onSelect, onOpenBlock }: SlotTileProps) {
   const send = useSend();
   const runtimeRef = useRuntimeTile(lane.id, slot.id);
+  const idPress = useLongPress(() => blk && onOpenBlock(blk.id), onSelect);
   const transpose = slot.transpose ?? 0;
   const speed = slot.speed ?? 1;
 
@@ -99,7 +103,15 @@ export function SlotTile({ lane, slot, blk, locked, selected, onSelect }: SlotTi
               bei ±0). Der Baustein-Name stand hier früher groß darüber — er
               sagt nichts, was ID und Lane-Typ nicht schon sagen. */}
           <span className="slot-meta">
-            <span className="slot-id-lead">{idLabel}</span>
+            <span
+              className="slot-id-lead"
+              {...idPress}
+              onClick={(e) => e.stopPropagation()}
+              title="Tap to select · long-press to edit this block"
+              style={{ cursor: "pointer" }}
+            >
+              {idLabel}
+            </span>
             <span className="slot-badge transpose-value">
               {transpose > 0 ? `+${transpose}` : transpose < 0 ? `−${-transpose}` : "±0"}
             </span>

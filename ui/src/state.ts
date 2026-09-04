@@ -108,6 +108,7 @@ export interface Block {
   velocity?: number; // arp
   outMin?: number; // cc
   outMax?: number; // cc
+  destructive?: boolean; // cc: false/undef = Ziel kehrt am Blockende zur Ruhelage zurück
   layers?: CcLayer[]; // cc
   events?: ProgramChangeEvent[]; // programChange
   messages?: PatternMessage[]; // patternShift
@@ -175,6 +176,8 @@ export interface Lane {
   triggerQuantize: string;
   channel: number; // MIDI-Kanal 1–16 dieser Lane
   ccControlId?: string | null; // cc-Lane: Ziel-Knob (LiveControl-Id desselben Geräts)
+  /** Trigger-Kette: wird ein Slot dieser Lane ausgelöst, feuert (laneId, slotId) mit. */
+  chainSlot?: { laneId: string; slotId: string } | null;
   slots: Slot[];
   controls: LaneControl[];
 }

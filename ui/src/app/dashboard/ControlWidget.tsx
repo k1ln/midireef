@@ -20,6 +20,9 @@ export interface LiveControl {
   /** Bindung „eingehende Note → Lane-Slot auslösen" (control.setTrigger).
    *  `enabled === false` = Bindung pausiert. */
   trigger?: { laneId: string; slotId: string; enabled?: boolean };
+  /** `kind === "laneButton"`: Taster ohne MIDI, der eine Lane scharf/stumm
+   *  schaltet (`lane.enabled`). Kein Mapping, kein Ton. */
+  laneToggle?: { laneId: string };
 }
 
 /** MIDI-Notennummer → Frequenz in Hz (A4 = 69 = 440 Hz, 12-TET). */
@@ -53,18 +56,25 @@ export interface ControlWidgetProps {
   /** True while this ("keyboard"-kind) control is linked to a melody lane
    *  via `record.arm` — shows a small REC badge. */
   recording?: boolean;
+  /** Nur `kind === "laneButton"`: aktueller `lane.enabled`-Stand des Ziels
+   *  (undefined = die Lane gibt es nicht mehr). */
+  laneEnabled?: boolean;
+  laneGone?: boolean;
+  /** Nur `kind === "laneButton"`: Tipp schaltet die Ziel-Lane um. */
+  onToggleLane?: () => void;
 }
 
-export function ControlWidget({ ctrl, deviceName, editMode, zoom, selected, onSelect, onContextMenu, onPress, onRelease, externalActive, recording }: ControlWidgetProps) {
+export function ControlWidget({ ctrl, deviceName, editMode, zoom, selected, onSelect, onContextMenu, onPress, onRelease, externalActive, recording, laneEnabled, laneGone, onToggleLane }: ControlWidgetProps) {
   const send = useSend();
   const isKeyboard = ctrl.kind === "keyboard";
-  const isButton = ctrl.kind === "button" || isKeyboard || ctrl.mapping?.kind === "note";
+  const isLaneButton = ctrl.kind === "laneButton";
+  const isButton = ctrl.kind === "button" || isKeyboard || ctrl.mapping?.kind === "note" || isLaneButton;
   const size = ctrl.w ?? 130;
 
   const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
   const [dragValue, setDragValue] = useState<number | null>(null);
   const [pressed, setPressed] = useState(false);
-  const lit = pressed || !!externalActive;
+  const lit = pressed || !!externalActive || (isLaneButton && !!laneEnabled);
   const mode = useRef<"none" | "drag" | "turn">("none");
   const start = useRef({ gx: 0, gy: 0, x: 0, y: 0, value: 0 });
   // Pointer IDs currently down on THIS widget — lets a second finger landing
@@ -110,6 +120,11 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, selected, onSe
     start.current = { gx: e.clientX, gy: e.clientY, x, y, value };
     if (editMode) {
       mode.current = "drag";
+    } else if (isLaneButton) {
+      // Ein Tipp = einmal umschalten (kein Press/Release, kein MIDI) — das
+      // Umschalten macht Dashboard über `lane.setEnabled`.
+      mode.current = "none";
+      onToggleLane?.();
     } else if (isKeyboard) {
       // Reine Live-Aktivitäts-Anzeige (leuchtet nur, wenn das physische
       // Keyboard tatsächlich gespielt wird) — kein Touch-Trigger hier.
@@ -148,7 +163,7 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, selected, onSe
     if (mode.current === "drag") {
       send({ t: "control.move", controlId: ctrl.id, x: Math.round(x), y: Math.round(y - 30) });
       setDragPos(null);
-    } else if (isButton && !isKeyboard) {
+    } else if (isButton && !isKeyboard && !isLaneButton) {
       setPressed(false);
       send({ t: "control.release", controlId: ctrl.id });
     }
@@ -250,6 +265,11 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, selected, onSe
       <div style={{ width: size, textAlign: "center", marginTop: 4 }}>
         {deviceName && <div style={{ fontSize: 13, fontWeight: 700, color: "var(--pal-white)" }}>{deviceName}</div>}
         <div style={{ fontSize: 16, fontWeight: 600 }}>{ctrl.name || "(new)"}</div>
+        {isLaneButton && (
+          <div className="mono" style={{ fontSize: 11, fontWeight: 700, color: laneGone ? "var(--pal-danger)" : "var(--pal-text-dim)" }}>
+            {laneGone ? "lane removed" : laneEnabled ? "LANE ON" : "LANE OFF"}
+          </div>
+        )}
         {ctrl.mapping && (
           <>
             <div className="mono" style={{ fontSize: 11, color: "var(--pal-text-dim)" }}>

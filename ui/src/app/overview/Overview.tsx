@@ -16,6 +16,7 @@ import {
   AddBlockPickerPopup,
   SwapPickerPopup,
   CcTargetPickerPopup,
+  ChainSlotPickerPopup,
 } from "./popups";
 
 // Stable reference so the useSyncExternalStore selector below returns the
@@ -36,7 +37,8 @@ type PopupState =
   | { kind: "role"; deviceId: string }
   | { kind: "addBlock"; laneId: string; deviceId: string }
   | { kind: "swap"; laneId: string; deviceId: string; slotId: string; currentBlockId: string }
-  | { kind: "ccTarget"; laneId: string; deviceId: string };
+  | { kind: "ccTarget"; laneId: string; deviceId: string }
+  | { kind: "chain"; laneId: string; deviceId: string };
 
 type SettingsState = { kind: "lane"; laneId: string } | { kind: "device"; deviceId: string };
 
@@ -149,6 +151,7 @@ export function Overview({ onOpenBlock }: OverviewProps) {
               onOpenLaneSettings={openLaneSettings}
               onOpenAddBlock={(laneId) => setPopup({ kind: "addBlock", laneId, deviceId: dev.id })}
               onSelectSlot={selectSlot}
+              onOpenBlock={onOpenBlock}
               selectedSlotId={sel?.slotId ?? null}
             />
           ))
@@ -171,6 +174,13 @@ export function Overview({ onOpenBlock }: OverviewProps) {
             return dev && lane ? <CcTargetPickerPopup lane={lane} dev={dev} onClose={closePopup} /> : null;
           })()}
 
+        {popup?.kind === "chain" &&
+          (() => {
+            const dev = findDevice(popup.deviceId);
+            const lane = dev?.lanes.find((l) => l.id === popup.laneId);
+            return lane ? <ChainSlotPickerPopup lane={lane} onClose={closePopup} /> : null;
+          })()}
+
         {popup?.kind === "swap" &&
           (() => {
             const dev = findDevice(popup.deviceId);
@@ -191,6 +201,9 @@ export function Overview({ onOpenBlock }: OverviewProps) {
           lane={settingsLane.lane}
           onOpenCcTarget={() =>
             setPopup({ kind: "ccTarget", laneId: settingsLane!.lane.id, deviceId: settingsLane!.device.id })
+          }
+          onOpenChain={() =>
+            setPopup({ kind: "chain", laneId: settingsLane!.lane.id, deviceId: settingsLane!.device.id })
           }
           onClose={() => setSettings(null)}
         />

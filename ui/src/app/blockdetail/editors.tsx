@@ -14,6 +14,7 @@ import { Button } from "../widgets/Button";
 import { Popup } from "../widgets/Popup";
 import { StepScroller, StepBars, StepCell, ROLL_LOW_NOTE, ROLL_HIGH_NOTE, type StepFlow } from "./StepGrid";
 import { useNumberEditor, useSetField } from "../useNumberEditor";
+import { useWheelPicker } from "../widgets/WheelPicker";
 
 const DIRECTIONS = ["up", "down", "upDown", "random", "asPlayed"];
 const MSG_KINDS = ["programChange", "cc", "note"];
@@ -99,7 +100,7 @@ export function BeatEditor({ block, flow }: { block: Block; flow: StepFlow }) {
 
 export function ChordEditor({ block, flow }: { block: Block; flow: StepFlow }) {
   const send = useSend();
-  const numberEdit = useNumberEditor();
+  const wheel = useWheelPicker();
   const setField = useSetField();
   const stepsPerBar = block.stepsPerBar ?? 16;
   const totalSteps = stepsPerBar * (block.lengthBars ?? 1);
@@ -117,7 +118,9 @@ export function ChordEditor({ block, flow }: { block: Block; flow: StepFlow }) {
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
       <Button
         style={{ width: 150, height: 30, fontSize: 13, marginBottom: 16 }}
-        onClick={() => numberEdit(base, 0, 127, (n) => setField(block.id, "baseNote", n))}
+        onClick={() =>
+          wheel({ title: "Base note", min: 0, max: 127, value: base, format: (v) => `${noteName(v)} (${v})`, onPick: (n) => setField(block.id, "baseNote", n) })
+        }
       >
         Base {noteName(base)}
       </Button>
@@ -161,7 +164,7 @@ export function ChordEditor({ block, flow }: { block: Block; flow: StepFlow }) {
 
 export function ArpEditor({ block }: { block: Block }) {
   const send = useSend();
-  const numberEdit = useNumberEditor();
+  const wheel = useWheelPicker();
   const setField = useSetField();
   const base = block.baseNote ?? 60;
   const low = base - 12;
@@ -197,7 +200,12 @@ export function ArpEditor({ block }: { block: Block }) {
       </StepScroller>
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginTop: 20 }}>
-        <Button style={{ width: 150, height: 34, fontSize: 14 }} onClick={() => numberEdit(base, 0, 127, (n) => setField(block.id, "baseNote", n))}>
+        <Button
+          style={{ width: 150, height: 34, fontSize: 14 }}
+          onClick={() =>
+            wheel({ title: "Base note", min: 0, max: 127, value: base, format: (v) => `${noteName(v)} (${v})`, onPick: (n) => setField(block.id, "baseNote", n) })
+          }
+        >
           Base {noteName(base)}
         </Button>
         <Button
@@ -206,13 +214,22 @@ export function ArpEditor({ block }: { block: Block }) {
         >
           Dir: {direction}
         </Button>
-        <Button style={{ width: 120, height: 34, fontSize: 14 }} onClick={() => numberEdit(gateSteps, 1, 64, (n) => setField(block.id, "gateSteps", n))}>
+        <Button
+          style={{ width: 120, height: 34, fontSize: 14 }}
+          onClick={() => wheel({ title: "Gate", min: 1, max: 64, unit: " step(s)", value: gateSteps, onPick: (n) => setField(block.id, "gateSteps", n) })}
+        >
           Gate {gateSteps}
         </Button>
-        <Button style={{ width: 120, height: 34, fontSize: 14 }} onClick={() => numberEdit(rateSteps, 1, 64, (n) => setField(block.id, "rateSteps", n))}>
+        <Button
+          style={{ width: 120, height: 34, fontSize: 14 }}
+          onClick={() => wheel({ title: "Rate", min: 1, max: 64, unit: " step(s)", value: rateSteps, onPick: (n) => setField(block.id, "rateSteps", n) })}
+        >
           Rate {rateSteps}
         </Button>
-        <Button style={{ width: 120, height: 34, fontSize: 14 }} onClick={() => numberEdit(velocity, 1, 127, (n) => setField(block.id, "velocity", n))}>
+        <Button
+          style={{ width: 120, height: 34, fontSize: 14 }}
+          onClick={() => wheel({ title: "Velocity", min: 1, max: 127, value: velocity, onPick: (n) => setField(block.id, "velocity", n) })}
+        >
           Vel {velocity}
         </Button>
       </div>
@@ -224,7 +241,7 @@ export function ArpEditor({ block }: { block: Block }) {
 
 export function ProgramChangeEditor({ block, flow }: { block: Block; flow: StepFlow }) {
   const send = useSend();
-  const numberEdit = useNumberEditor();
+  const wheel = useWheelPicker();
   const stepsPerBar = block.stepsPerBar ?? 16;
   const totalSteps = stepsPerBar * (block.lengthBars ?? 1);
   const events = block.events ?? [];
@@ -242,7 +259,14 @@ export function ProgramChangeEditor({ block, flow }: { block: Block; flow: StepF
                 height={40}
                 active={!!evt}
                 onClick={() =>
-                  numberEdit(evt?.program ?? 0, 0, 127, (n) => send({ t: "programChange.setEvent", blockId: block.id, step, program: n }))
+                  wheel({
+                    title: `Program · step ${step + 1}`,
+                    min: 0,
+                    max: 127,
+                    value: evt?.program ?? 0,
+                    format: (v) => `PC${v}`,
+                    onPick: (n) => send({ t: "programChange.setEvent", blockId: block.id, step, program: n }),
+                  })
                 }
                 onHold={evt ? () => send({ t: "programChange.setEvent", blockId: block.id, step, program: null }) : undefined}
               >

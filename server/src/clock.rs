@@ -239,6 +239,10 @@ fn clock_loop(
             }
         }
 
+        // Nach Stop/Release stellt die Engine ggf. nicht-destruktive CC-Ziele
+        // zurück — an UI + Projekt spiegeln.
+        flush_cc_restores(&mut engine, &project, &events);
+
         if playing {
             let now = Instant::now();
             while now >= next_pulse {
@@ -249,6 +253,7 @@ fn clock_loop(
                 if res.is_err() {
                     tracing::error!("Engine-Puls {pulses} ist gepanickt — Puls übersprungen (Grund siehe PANIC-Zeile oben)");
                 }
+                flush_cc_restores(&mut engine, &project, &events);
                 pulses += 1;
                 next_pulse += interval;
 
@@ -276,6 +281,40 @@ fn clock_loop(
 
 fn broadcast_tick(events: &broadcast::Sender<serde_json::Value>, t: &TransportState) {
     let _ = events.send(serde_json::json!({ "t": "transport.tick", "transport": t }));
+}
+
+/// Knopf-Rückstellungen der Engine (nicht-destruktive CC-Bausteine am Ende)
+/// an die UI melden UND in `project.controls` spiegeln, damit der Dashboard-Knob
+/// sichtbar zur Ruhelage zurückspringt und der nächste Snapshot den Wert hält.
+fn flush_cc_restores(
+    engine: &mut Engine,
+    project: &Arc<Mutex<Project>>,
+    events: &broadcast::Sender<serde_json::Value>,
+) {
+    let restores = engine.take_cc_restores();
+    if restores.is_empty() {
+        return;
+    }
+    {
+        let mut proj = project.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(arr) = proj.controls.as_array_mut() {
+            for (cid, val) in &restores {
+                if let Some(c) = arr
+                    .iter_mut()
+                    .find(|c| c.get("id").and_then(|v| v.as_str()) == Some(cid.as_str()))
+                {
+                    c["value"] = serde_json::json!(val);
+                }
+            }
+        }
+    }
+    for (cid, val) in restores {
+        let _ = events.send(serde_json::json!({
+            "t": "control.valueChanged",
+            "controlId": cid,
+            "value": val,
+        }));
+    }
 }
 
 /// Wiedergabe-Zustand aller Lanes an die UI (welcher Baustein läuft, wie weit).

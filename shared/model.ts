@@ -330,6 +330,12 @@ export interface CcBlock extends BlockBase {
   /** Ausgabewerte in diesem Bereich (Standard 0–127). */
   outMin: Midi7Bit;
   outMax: Midi7Bit;
+  /**
+   * `true` = der zuletzt gesendete Wert bleibt stehen. `false`/undefined
+   * (Standard) = das CC-Ziel kehrt am Baustein-Ende zur Ruhelage (dem
+   * Knob-Wert vor dem Baustein) zurück — die Automation ist nicht-destruktiv.
+   */
+  destructive?: boolean;
   layers: CcLayer[]; // von unten nach oben kombiniert; der unterste ist die Basis
 }
 
@@ -534,6 +540,14 @@ export interface Lane {
    * `null`/undefined = kein Ziel, die Lane spielt stumm.
    */
   ccControlId?: Id | null;
+
+  /**
+   * Trigger-Kette: wird ein Slot DIESER Lane ausgelöst (Touch / MIDI / selbst
+   * per Kette), wird zusätzlich dieser (Lane, Slot) mit ausgelöst — z.B. eine
+   * Melodie-Lane, die beim Anspielen einen CC-Effekt mitzündet. Läuft auf der
+   * Quantisierung/Play-Mode der Ziel-Lane. `null`/undefined = keine Kette.
+   */
+  chainSlot?: { laneId: Id; slotId: Id } | null;
 
   /** Swing 0..1 nur für diese Lane (überschreibt Projekt-Swing). */
   swing?: number;

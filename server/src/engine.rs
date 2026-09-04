@@ -38,6 +38,26 @@ struct CcTarget {
     port: String,
     channel: u8,
     cc_number: u8,
+    /// Id des Dashboard-Knobs — für das `control.valueChanged`-Echo an die UI,
+    /// wenn ein nicht-destruktiver Baustein das Ziel auf die Ruhelage zurücksetzt.
+    control_id: String,
+    /// Ruhewert des Knobs (dessen `value` beim letzten Rebuild). Dahin kehrt ein
+    /// nicht-destruktiver CC-Baustein zurück, sobald er nicht mehr spielt.
+    rest_value: u8,
+}
+
+/// Ein CC-Ziel, das GERADE von einem CC-Baustein bespielt wird. Pro Puls neu
+/// markiert (`seen`); wer nach einem Puls nicht markiert ist, hat aufgehört —
+/// und wird, falls nicht destruktiv, auf `rest_value` zurückgestellt.
+struct CcDrive {
+    control_id: String,
+    rest_value: u8,
+    destructive: bool,
+    /// Slot des zuletzt treibenden Bausteins — beim Zurückstellen wird dessen
+    /// `cc_send_state` verworfen, damit ein Neustart wieder frisch gegen den
+    /// echten Gerätewert (= Ruhelage) vergleicht statt gegen den alten last_val.
+    slot_id: String,
+    seen: bool,
 }
 
 /// Ein kompilierter CC-Layer (LFO/Envelope/Ramp/Random/Stepped) — einmal beim
@@ -302,6 +322,10 @@ struct CcAutomation {
     /// Knob verknüpft hat — der Baustein spielt dann stumm (wie ein Control
     /// ohne Mapping).
     target: Option<CcTarget>,
+    /// `true` = der zuletzt gesendete Wert bleibt stehen. `false` (Standard) =
+    /// das Ziel kehrt am Baustein-Ende zur Ruhelage (`CcTarget::rest_value`)
+    /// zurück — die Automation ist damit nicht-destruktiv.
+    destructive: bool,
     layers: Vec<CcLayerCompiled>,
 }
 
@@ -353,6 +377,10 @@ struct CLane {
     /// Wann ein per Touch ausgelöster Slot tatsächlich startet:
     /// "immediate" | "nextBeat" | "nextBar" | "nextBlock" (s. `trigger_slot`).
     trigger_quantize: String,
+    /// Trigger-Kette: wird ein Slot DIESER Lane ausgelöst, wird zusätzlich
+    /// `(laneId, slotId)` mit ausgelöst (auf dessen eigener Quantisierung) —
+    /// z.B. Melodie-Lane zündet einen CC-Effekt mit. `None` = keine Kette.
+    chain: Option<(String, String)>,
     blocks: Vec<CBlock>,
 }
 
@@ -452,6 +480,14 @@ pub struct Engine {
     elapsed_secs: f64,
     /// Letzter gesendeter CC-Wert je Slot (Rate-Limit, s. `MIN_CC_SEND_INTERVAL`).
     cc_send_state: HashMap<String, CcSendState>,
+    /// Aktuell von CC-Bausteinen bespielte Ziele, Key = (Port, Kanal, CC-Nr).
+    /// Grundlage der nicht-destruktiven Rückstellung: fällt ein Ziel aus der
+    /// Menge (Baustein zu Ende / Lane gestoppt), geht es zurück auf `rest_value`.
+    cc_driven: HashMap<(String, u8, u8), CcDrive>,
+    /// Vom Clock-Thread nach dem Puls abzuholen: (controlId, value) — als
+    /// `control.valueChanged` an die UI und zurück in `project.controls`,
+    /// damit der Dashboard-Knob sichtbar auf die Ruhelage zurückspringt.
+    cc_restores: Vec<(String, u8)>,
     /// Läuft der Transport? Bei Stillstand kommen keine Puls-Grenzen mehr, also
     /// startet ein getriggerter Slot dann sofort — sonst würde ein Touch bei
     /// gestopptem Transport scheinbar ins Leere gehen.
@@ -471,6 +507,8 @@ impl Engine {
             clock_ports: Vec::new(),
             elapsed_secs: 0.0,
             cc_send_state: HashMap::new(),
+            cc_driven: HashMap::new(),
+            cc_restores: Vec::new(),
             playing: false,
             bar_pulses: pulses_per_bar("4/4"),
         }
@@ -497,11 +535,53 @@ impl Engine {
         }
         self.midi.all_notes_off();
         self.pending.clear();
+        // Nicht-destruktive CC-Ziele auf ihre Ruhelage zurückstellen — sonst
+        // bliebe das Gerät nach dem Stop dort stehen, wo die Automation zuletzt war.
+        self.restore_cc_targets(false);
         // Vormerkungen verwerfen: sie beziehen sich auf eine Zeitachse, die es
         // nach dem Stop nicht mehr gibt.
         for pb in &mut self.playback {
             pb.queued = None;
         }
+    }
+
+    /// Stellt CC-Ziele auf ihre Ruhelage zurück. `only_idle == true`: nur Ziele,
+    /// die im letzten Puls NICHT mehr bespielt wurden (laufende bleiben).
+    /// `false`: alle (Transport-Stop). Destruktive Ziele bleiben stehen.
+    fn restore_cc_targets(&mut self, only_idle: bool) {
+        let keys: Vec<(String, u8, u8)> = self
+            .cc_driven
+            .iter_mut()
+            .filter_map(|(k, d)| {
+                if only_idle {
+                    if d.seen {
+                        d.seen = false;
+                        return None;
+                    }
+                } else {
+                    d.seen = false;
+                }
+                Some(k.clone())
+            })
+            .collect();
+        for key in keys {
+            let Some(drive) = self.cc_driven.remove(&key) else { continue };
+            if drive.destructive {
+                continue;
+            }
+            // Neustart soll wieder gegen den echten Gerätewert vergleichen.
+            self.cc_send_state.remove(&drive.slot_id);
+            let (port, ch, cc) = key;
+            self.midi
+                .send(&port, &[0xB0 | (ch - 1), cc, drive.rest_value]);
+            self.cc_restores.push((drive.control_id, drive.rest_value));
+        }
+    }
+
+    /// Vom Clock-Thread nach jedem Puls / Stop abgeholt: Knopf-Rückstellungen,
+    /// die als `control.valueChanged` an die UI und ins Projekt gespiegelt werden.
+    pub fn take_cc_restores(&mut self) -> Vec<(String, u8)> {
+        std::mem::take(&mut self.cc_restores)
     }
 
     pub fn panic(&mut self) {
@@ -518,6 +598,12 @@ impl Engine {
     /// Touch auf dieselbe wartende Kachel nimmt die Vormerkung zurück — sonst
     /// ließe sich ein Fehlgriff bis zum nächsten Takt nicht mehr korrigieren.
     pub fn trigger_slot(&mut self, lane_id: &str, slot_id: &str, note: Option<u8>) {
+        self.trigger_slot_depth(lane_id, slot_id, note, 0);
+    }
+
+    /// Wie `trigger_slot`, plus Trigger-Kette (`CLane::chain`). `depth` bricht
+    /// eine versehentliche Rückkopplung (A→B→A) nach ein paar Sprüngen ab.
+    fn trigger_slot_depth(&mut self, lane_id: &str, slot_id: &str, note: Option<u8>, depth: u8) {
         let Some(idx) = self.lanes.iter().position(|l| l.id == lane_id) else {
             return;
         };
@@ -532,6 +618,19 @@ impl Engine {
             self.playback[idx].queued = None;
         } else {
             self.playback[idx].queued = Some(block_idx);
+        }
+        self.fire_chain(idx, note, depth);
+    }
+
+    /// Zündet die Trigger-Kette der Lane `idx` (falls gesetzt) mit —
+    /// als regulärer `trigger_slot` auf der Ziel-Lane (deren eigene
+    /// Quantisierung / Play-Mode gelten).
+    fn fire_chain(&mut self, idx: usize, note: Option<u8>, depth: u8) {
+        if depth >= 8 {
+            return;
+        }
+        if let Some((cl, cs)) = self.lanes[idx].chain.clone() {
+            self.trigger_slot_depth(&cl, &cs, note, depth + 1);
         }
     }
 
@@ -623,6 +722,8 @@ impl Engine {
         } else {
             self.playback[idx].queued = Some(block_idx);
         }
+        // Auch ein Press (MIDI-Note-On auf eine getaktete Lane) zündet die Kette.
+        self.fire_chain(idx, note, 1);
     }
 
     /// Touch-Up auf eine "hold"-Lane: Baustein stoppen, Lane wieder stumm
@@ -632,6 +733,14 @@ impl Engine {
         let Some(idx) = self.lanes.iter().position(|l| l.id == lane_id) else {
             return;
         };
+        // Loslassen (Touch-Up / Note-Off) wirkt NUR im "hold"-Modus als Gate.
+        // In allen Auto-Run-Modi (sequential/oneShot/random/manual) läuft ein
+        // ausgelöster Baustein durch — ein Note-Off darf ihn nicht abwürgen.
+        // Der MIDI-Trigger-Pfad schickt `ReleaseSlot` unabhängig vom Modus
+        // (s. `handle_midi_feedback`), also hier aussieben.
+        if self.lanes[idx].play_mode != "hold" {
+            return;
+        }
         // Finger weg, bevor eine Vormerkung scharf wurde: verwerfen, sonst
         // startete die Lane nach dem Loslassen von allein.
         self.playback[idx].queued = None;
@@ -678,6 +787,10 @@ impl Engine {
         }
         self.pending.clear();
         self.elapsed_secs = 0.0;
+        // Frischer Transport-Start: laufende Rückstell-Buchführung verwerfen
+        // (nichts zu senden — die Bausteine fangen ohnehin von vorn an).
+        self.cc_driven.clear();
+        self.cc_restores.clear();
     }
 
     /// Rekompiliert bei geänderter Projekt-Generation.
@@ -726,12 +839,17 @@ impl Engine {
                 let cc_target =
                     resolve_cc_target(&lane.cc_control_id, dev, lane_channel, &project.controls);
                 let blocks = compile_slots(&lane.slots, blocks_json, lane_channel, cc_target);
+                let chain = lane
+                    .chain_slot
+                    .as_ref()
+                    .map(|c| (c.lane_id.clone(), c.slot_id.clone()));
                 lanes.push(CLane {
                     id: lane.id.clone(),
                     port,
                     enabled: lane.enabled && !lane.muted && !dev_muted,
                     play_mode: lane.play_mode.clone(),
                     trigger_quantize: lane.trigger_quantize.clone(),
+                    chain,
                     blocks,
                 });
             }
@@ -909,6 +1027,11 @@ impl Engine {
             self.playback[idx].slot = next_slot;
             self.playback[idx].pos = next;
         }
+
+        // Ziele, die diesen Puls NICHT mehr bespielt wurden (Baustein zu Ende,
+        // Lane gestoppt/gewechselt), auf ihre Ruhelage zurückstellen — sofern
+        // nicht destruktiv.
+        self.restore_cc_targets(true);
     }
 
     fn fire_step(&mut self, lane_idx: usize, slot: usize, step: u32, global_pulse: u64) {
@@ -1035,10 +1158,11 @@ impl Engine {
     /// MIDI-Kanal bei schnellen Hz-LFOs — s. Konstante oben). No-op für
     /// andere Block-Kinds oder wenn kein Knob verknüpft ist.
     fn eval_cc_pulse(&mut self, lane_idx: usize, slot: usize, pos: u32, global_pulse: u64) {
-        let (slot_id, out_min, out_max, target, value01) = {
+        let (slot_id, out_min, out_max, target, destructive, value01) = {
             let block = &self.lanes[lane_idx].blocks[slot];
             let CKind::Cc(ref auto) = block.kind else { return };
             let Some(target) = auto.target.clone() else { return };
+            let destructive = auto.destructive;
             let pulses_per_step = block.pulses_per_step.max(1) as f64;
             let step_pos = pos as f64 / pulses_per_step;
             let ctx = CcEvalCtx {
@@ -1053,7 +1177,7 @@ impl Engine {
                 trigger_note: self.playback[lane_idx].trigger_note,
             };
             let value01 = eval_cc_layers(&auto.layers, &ctx);
-            (block.slot_id.clone(), auto.out_min, auto.out_max, target, value01)
+            (block.slot_id.clone(), auto.out_min, auto.out_max, target, destructive, value01)
         };
 
         // NaN/Inf (etwa aus einer extremen Key-Track-Rate) würde sonst als
@@ -1061,6 +1185,28 @@ impl Engine {
         if !value01.is_finite() {
             return;
         }
+
+        // Dieses Ziel wird JETZT bespielt — für die nicht-destruktive
+        // Rückstellung merken (unabhängig davon, ob der Wert gleich rausgeht;
+        // das Rate-Limit unten ändert daran nichts). Der Ruhewert wird beim
+        // ERSTEN Antreffen festgehalten — spätere Bausteine überschreiben ihn
+        // nicht, damit gestapelte Effekte alle zur selben Ausgangslage zurück.
+        let key = (target.port.clone(), target.channel, target.cc_number);
+        self.cc_driven
+            .entry(key)
+            .and_modify(|d| {
+                d.seen = true;
+                d.destructive = destructive;
+                d.slot_id = slot_id.clone();
+            })
+            .or_insert(CcDrive {
+                control_id: target.control_id.clone(),
+                rest_value: target.rest_value,
+                destructive,
+                slot_id: slot_id.clone(),
+                seen: true,
+            });
+
         let span = out_max as i32 - out_min as i32;
         let val = (out_min as f64 + value01.clamp(0.0, 1.0) * span as f64)
             .round()
@@ -1167,6 +1313,10 @@ struct BlockJson {
     out_min: Option<u8>,
     #[serde(rename = "outMax", default)]
     out_max: Option<u8>,
+    /// CC: `true` = letzter Wert bleibt stehen; `false`/fehlt (Standard) =
+    /// Ziel kehrt am Baustein-Ende zur Ruhelage zurück.
+    #[serde(default)]
+    destructive: bool,
     #[serde(default)]
     layers: Vec<serde_json::Value>,
     // ── Akkord ──
@@ -1284,6 +1434,7 @@ fn compile_block(
             out_min: b.out_min.unwrap_or(0),
             out_max: b.out_max.unwrap_or(127),
             target: cc_target.clone(),
+            destructive: b.destructive,
             layers: compile_cc_layers(&b.layers),
         }),
         // Akkord: jeder ChordEvent wird zu mehreren gleichzeitigen Noten am
@@ -1429,10 +1580,13 @@ fn resolve_cc_target(
         return None;
     }
     let cc_number = (map.get("number").and_then(|v| v.as_u64()).unwrap_or(0) as u8).min(127);
+    let rest_value = (ctrl.get("value").and_then(|v| v.as_u64()).unwrap_or(0) as u8).min(127);
     Some(CcTarget {
         port: dev.midi_out_port.clone(),
         channel: lane_channel.clamp(1, 16),
         cc_number,
+        control_id: id.clone(),
+        rest_value,
     })
 }
 

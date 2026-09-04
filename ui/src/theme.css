@@ -1465,6 +1465,29 @@ textarea {
   cursor: pointer;
   touch-action: pan-y;
 }
+/* Touch-Scroll-Wertrad (WheelPicker): nativer Ein-Finger-Schwung + Snap, die
+   Scrollleiste versteckt — der Griff ist die ganze Liste, nicht ein Balken. */
+.wheel-scroller {
+  height: 100%;
+  overflow-y: auto;
+  scroll-snap-type: y mandatory;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  scrollbar-width: none;
+}
+.wheel-scroller::-webkit-scrollbar {
+  display: none;
+}
+.wheel-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  scroll-snap-align: center;
+  cursor: pointer;
+  user-select: none;
+}
+
 .settings-dock-confirm {
   display: flex;
   flex-direction: column;

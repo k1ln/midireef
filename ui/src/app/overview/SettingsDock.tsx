@@ -101,10 +101,11 @@ function Toggle({ on, onLabel, offLabel, onToggle }: { on: boolean; onLabel: str
 export interface LaneSettingsDockProps {
   lane: Lane;
   onOpenCcTarget: () => void;
+  onOpenChain: () => void;
   onClose: () => void;
 }
 
-export function LaneSettingsDock({ lane, onOpenCcTarget, onClose }: LaneSettingsDockProps) {
+export function LaneSettingsDock({ lane, onOpenCcTarget, onOpenChain, onClose }: LaneSettingsDockProps) {
   const send = useSend();
   const openKeyboard = useTouchKeyboard();
   const [lockedPref, setLockedPref] = useLocalPref<"0" | "1">(`lane.locked.${lane.id}`, "0");
@@ -172,6 +173,18 @@ export function LaneSettingsDock({ lane, onOpenCcTarget, onClose }: LaneSettings
           → CC target
         </Button>
       )}
+
+      <Button
+        variant={lane.chainSlot ? "active" : "alt"}
+        className="settings-dock-row"
+        title="When a slot in this lane is triggered, also fire another lane's slot — e.g. a melody that kicks off a CC effect."
+        onClick={() => {
+          onOpenChain();
+          onClose();
+        }}
+      >
+        {lane.chainSlot ? "⛓ Chain trigger — edit …" : "⛓ Chain trigger …"}
+      </Button>
 
       <Field label="State">
         <div className="settings-dock-grid">

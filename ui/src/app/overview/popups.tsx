@@ -12,6 +12,7 @@ import { Button } from "../widgets/Button";
 // EMPTY_DEVICES comment in Dashboard.tsx.
 const EMPTY_CONTROLS: LiveControl[] = [];
 const EMPTY_BLOCKS: Block[] = [];
+const EMPTY_DEVICES: Device[] = [];
 
 export const ROLES: { role: string; label: string }[] = [
   { role: "melody", label: "Melody" },
@@ -124,6 +125,71 @@ export function CcTargetPickerPopup({ lane, dev, onClose }: { lane: Lane; dev: D
           }}
         >
           Clear target
+        </Button>
+      )}
+    </Popup>
+  );
+}
+
+/**
+ * Trigger-Kette einer Lane: welchen (Lane, Slot) beim Auslösen dieser Lane
+ * mitzünden. Flache Liste (Gerät › Lane › Slot). Die eigene Lane ist
+ * ausgeschlossen — eine Kette auf sich selbst wäre nur eine Endlosschleife.
+ */
+export function ChainSlotPickerPopup({ lane, onClose }: { lane: Lane; onClose: () => void }) {
+  const send = useSend();
+  const devices = useStoreValue((s) => s.project?.devices ?? EMPTY_DEVICES);
+  const blocks = useStoreValue((s) => (s.project?.blocks as Block[] | undefined) ?? EMPTY_BLOCKS);
+  const blockName = (id?: string) => {
+    const b = blocks.find((x) => x.id === id);
+    if (!b) return "?";
+    const slot = b.slot ? `${b.slot.row}-${b.slot.col}` : "?";
+    return `${slot} ${b.name || ""}`.trim();
+  };
+  const rows = devices.flatMap((d) =>
+    (d.lanes ?? [])
+      .filter((l) => l.id !== lane.id)
+      .flatMap((l) => (l.slots ?? []).map((s) => ({ dev: d, lane: l, slot: s }))),
+  );
+
+  return (
+    <Popup onClose={onClose}>
+      <div className="popup-title">Chain trigger — {lane.name}</div>
+      <div style={{ fontSize: 13, color: "var(--pal-text-dim)", marginBottom: 12 }}>
+        When a slot in <b>{lane.name}</b> is triggered, also fire the slot you pick here (on its own lane’s
+        timing). Handy for firing a CC effect whenever a melody is played.
+      </div>
+      {rows.length === 0 ? (
+        <div style={{ color: "var(--pal-text-dim)", fontSize: 15 }}>No other lane slots yet.</div>
+      ) : (
+        rows.map(({ dev, lane: l, slot: s }) => (
+          <Button
+            key={s.id}
+            variant={lane.chainSlot?.slotId === s.id ? "active" : "default"}
+            className="popup-row"
+            style={{ height: 44, marginBottom: 6, flexDirection: "column", alignItems: "flex-start", paddingLeft: 12 }}
+            onClick={() => {
+              onClose();
+              send({ t: "lane.setChainSlot", laneId: lane.id, targetLaneId: l.id, targetSlotId: s.id });
+            }}
+          >
+            <span style={{ fontWeight: 700 }}>
+              {l.name} · {blockName(s.blockId)}
+            </span>
+            <span style={{ fontSize: 11, color: "var(--pal-text-dim)" }}>{dev.name}</span>
+          </Button>
+        ))
+      )}
+      {lane.chainSlot && (
+        <Button
+          variant="danger"
+          className="popup-row"
+          onClick={() => {
+            onClose();
+            send({ t: "lane.setChainSlot", laneId: lane.id, targetLaneId: null, targetSlotId: null });
+          }}
+        >
+          Clear chain
         </Button>
       )}
     </Popup>

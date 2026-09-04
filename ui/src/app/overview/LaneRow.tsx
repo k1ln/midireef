@@ -18,10 +18,11 @@ export interface LaneRowProps {
   onOpenSettings: () => void;
   onOpenAddBlock: () => void;
   onSelectSlot: (slotId: string) => void;
+  onOpenBlock: (blockId: string) => void;
   selectedSlotId: string | null;
 }
 
-export function LaneRow({ lane, onOpenSettings, onOpenAddBlock, onSelectSlot, selectedSlotId }: LaneRowProps) {
+export function LaneRow({ lane, onOpenSettings, onOpenAddBlock, onSelectSlot, onOpenBlock, selectedSlotId }: LaneRowProps) {
   const send = useSend();
   const runtimeRef = useRuntimeLane(lane.id);
   const blocks = useStoreValue((s) => (s.project?.blocks as Block[] | undefined) ?? EMPTY_BLOCKS);
@@ -97,6 +98,7 @@ export function LaneRow({ lane, onOpenSettings, onOpenAddBlock, onSelectSlot, se
                   locked={locked}
                   selected={slot.id === selectedSlotId}
                   onSelect={() => onSelectSlot(slot.id)}
+                  onOpenBlock={onOpenBlock}
                 />
               );
             })}

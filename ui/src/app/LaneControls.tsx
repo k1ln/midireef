@@ -32,8 +32,20 @@ interface FoundLane {
   device: Device;
 }
 
+/** „Ch3 · CC74 · Cutoff" — Kanal, CC-Nummer und Name des Ziel-Knobs einer
+ *  CC-Lane. In den Lane-Details sonst nirgends sichtbar (der Knob lebt im
+ *  Dashboard), aber nötig, um zu wissen, was die Schnellbedienung fernsteuert. */
+function ccTargetLabel(lane: Lane, controls: LiveControl[]): string {
+  const knob = lane.ccControlId ? controls.find((c) => c.id === lane.ccControlId) : undefined;
+  if (!knob) return `Ch${lane.channel} · no CC target`;
+  const cc = knob.mapping?.number != null ? `CC${knob.mapping.number}` : "CC ?";
+  const ch = `Ch${knob.mapping?.channel ?? lane.channel}`;
+  return `${ch} · ${cc} · ${knob.name || "(unnamed)"}`;
+}
+
 export function LaneControls({ laneId, onClose }: LaneControlsProps) {
   const devices = useStoreValue((s) => s.project?.devices ?? EMPTY_DEVICES);
+  const controls = useStoreValue((s) => (s.project?.controls as LiveControl[] | undefined) ?? EMPTY_CONTROLS);
   // Derived via useMemo (not directly in the useSyncExternalStore selector)
   // because constructing a fresh `{ lane, device }` object on every
   // getSnapshot call would never satisfy Object.is and spin React into an
@@ -60,9 +72,14 @@ export function LaneControls({ laneId, onClose }: LaneControlsProps) {
       ) : (
         <>
           <div style={{ margin: "20px 0 4px", fontSize: 24, fontWeight: 700 }}>{found.lane.name}</div>
-          <div style={{ fontSize: 13, color: "var(--pal-text-dim)", fontWeight: 600, marginBottom: 20 }}>
+          <div style={{ fontSize: 13, color: "var(--pal-text-dim)", fontWeight: 600, marginBottom: found.lane.role === "cc" ? 4 : 20 }}>
             {found.lane.role.toUpperCase()}
           </div>
+          {found.lane.role === "cc" && (
+            <div style={{ fontSize: 13, color: "var(--pal-text-dim)", fontWeight: 600, marginBottom: 20 }}>
+              {ccTargetLabel(found.lane, controls)}
+            </div>
+          )}
 
           <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
             {(found.lane.controls ?? []).map((ctrl) => (

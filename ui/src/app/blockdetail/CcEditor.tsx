@@ -15,7 +15,8 @@ import { Button } from "../widgets/Button";
 import { Popup } from "../widgets/Popup";
 import { PillToggle } from "../widgets/PillToggle";
 import { StepBars, type StepFlow } from "./StepGrid";
-import { useNumberEditor, useSetField } from "../useNumberEditor";
+import { useSetField } from "../useNumberEditor";
+import { useWheelPicker } from "../widgets/WheelPicker";
 
 const CC_LAYER_KINDS = ["lfo", "envelope", "ramp", "random", "stepped"];
 const COMBINE_MODES = ["add", "multiply", "max", "min", "replace"];
@@ -57,7 +58,7 @@ type CcLayer = NonNullable<Block["layers"]>[number];
 
 export function CcEditor({ block, flow }: { block: Block; flow: StepFlow }) {
   const send = useSend();
-  const numberEdit = useNumberEditor();
+  const wheel = useWheelPicker();
   const setField = useSetField();
   const [expandedLayerId, setExpandedLayerId] = useState<string | undefined>(undefined);
   const [addingLayer, setAddingLayer] = useState(false);
@@ -85,14 +86,32 @@ export function CcEditor({ block, flow }: { block: Block; flow: StepFlow }) {
   return (
     <div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 8 }}>
-        <Button style={{ width: 100, height: 30, fontSize: 14 }} onClick={() => numberEdit(outMin, 0, 127, (n) => setField(block.id, "outMin", n))}>
+        <Button
+          style={{ width: 100, height: 30, fontSize: 14 }}
+          onClick={() => wheel({ title: "Output min", min: 0, max: 127, value: outMin, onPick: (n) => setField(block.id, "outMin", n) })}
+        >
           Min {outMin}
         </Button>
-        <Button style={{ width: 100, height: 30, fontSize: 14 }} onClick={() => numberEdit(outMax, 0, 127, (n) => setField(block.id, "outMax", n))}>
+        <Button
+          style={{ width: 100, height: 30, fontSize: 14 }}
+          onClick={() => wheel({ title: "Output max", min: 0, max: 127, value: outMax, onPick: (n) => setField(block.id, "outMax", n) })}
+        >
           Max {outMax}
         </Button>
         <Button variant="alt" style={{ width: 100, height: 30, fontSize: 14 }} onClick={() => setAddingLayer(true)}>
           ＋ Layer
+        </Button>
+        <Button
+          variant={block.destructive ? "active" : "default"}
+          style={{ width: 150, height: 30, fontSize: 13 }}
+          title={
+            block.destructive
+              ? "Destructive: the last automated value stays put after the block ends."
+              : "Non-destructive (default): the knob returns to where it was before the block ran."
+          }
+          onClick={() => setField(block.id, "destructive", block.destructive ? undefined : true)}
+        >
+          {block.destructive ? "Destructive" : "⟳ Non-destructive"}
         </Button>
       </div>
 
@@ -174,7 +193,7 @@ function CcLayerRow({
   onDeselect: () => void;
 }) {
   const send = useSend();
-  const numberEdit = useNumberEditor();
+  const wheel = useWheelPicker();
   const patch = (p: object) => send({ t: "cc.updateLayer", blockId: block.id, layerId: layer.id, patch: p });
 
   const depthPct = Math.round((layer.depth ?? 1) * 100);
@@ -208,7 +227,7 @@ function CcLayerRow({
       <Button
         style={{ width: 88, height: 34, fontSize: 13 }}
         title="Depth — scales the movement (contribution = movement × depth + offset)"
-        onClick={() => numberEdit(depthPct, 0, 100, (n) => patch({ depth: n / 100 }))}
+        onClick={() => wheel({ title: "Depth", min: 0, max: 100, unit: "%", value: depthPct, onPick: (n) => patch({ depth: n / 100 }) })}
       >
         Depth {depthPct}%
       </Button>
@@ -282,7 +301,7 @@ function ParamRow({ hint, children }: { hint?: string; children: React.ReactNode
 
 function CcLayerDetail({ block, layer, totalSteps, flow }: { block: Block; layer: CcLayer; totalSteps: number; flow: StepFlow }) {
   const send = useSend();
-  const numberEdit = useNumberEditor();
+  const wheel = useWheelPicker();
   const holdTimer = useRef<number | undefined>(undefined);
   // Gesten-Weiche der Wertekästen. Beim Aufsetzen wird noch NICHTS geschrieben,
   // erst die Richtung entscheidet:
@@ -440,12 +459,18 @@ function CcLayerDetail({ block, layer, totalSteps, flow }: { block: Block; layer
       return (
         <ParamRow hint="A straight sweep across the block — from the first step to the last.">
           <Param label="From">
-            <Button style={{ width: 110, height: 36, fontSize: 15 }} onClick={() => numberEdit(from, 0, 127, (n) => patch({ from: n / 127 }))}>
+            <Button
+              style={{ width: 110, height: 36, fontSize: 15 }}
+              onClick={() => wheel({ title: "Ramp from", min: 0, max: 127, value: from, onPick: (n) => patch({ from: n / 127 }) })}
+            >
               {from}
             </Button>
           </Param>
           <Param label="To">
-            <Button style={{ width: 110, height: 36, fontSize: 15 }} onClick={() => numberEdit(to, 0, 127, (n) => patch({ to: n / 127 }))}>
+            <Button
+              style={{ width: 110, height: 36, fontSize: 15 }}
+              onClick={() => wheel({ title: "Ramp to", min: 0, max: 127, value: to, onPick: (n) => patch({ to: n / 127 }) })}
+            >
               {to}
             </Button>
           </Param>
@@ -504,7 +529,18 @@ function CcLayerDetail({ block, layer, totalSteps, flow }: { block: Block; layer
             {rateMode === "hz" ? (
               <Button
                 style={{ width: 150, height: 36, fontSize: 13 }}
-                onClick={() => numberEdit(Math.round(rateHz * 100), 5, 2500, (n) => patch({ rateHz: n / 100 }), 4)}
+                onClick={() =>
+                  wheel({
+                    title: "Rate",
+                    min: 5,
+                    max: 2500,
+                    step: 5,
+                    unit: " Hz",
+                    value: Math.round(rateHz * 100),
+                    format: (v) => (v / 100).toFixed(2),
+                    onPick: (n) => patch({ rateHz: n / 100 }),
+                  })
+                }
               >
                 {rateHz.toFixed(2)} Hz
               </Button>
@@ -524,19 +560,29 @@ function CcLayerDetail({ block, layer, totalSteps, flow }: { block: Block; layer
             label="Phase"
             sub="Where in the cycle it starts. 25% begins at the peak, 50% flips the shape — use it to line the dive up with the downbeat."
           >
-            <Button style={{ width: 110, height: 36, fontSize: 14 }} onClick={() => numberEdit(phasePct, 0, 100, (n) => patch({ phase: n / 100 }))}>
+            <Button
+              style={{ width: 110, height: 36, fontSize: 14 }}
+              onClick={() => wheel({ title: "Phase", min: 0, max: 100, unit: "%", value: phasePct, onPick: (n) => patch({ phase: n / 100 }) })}
+            >
               {phasePct}%
             </Button>
           </Param>
           <Param
             label="Key-track"
-            sub="Wobble speed follows the triggering note: higher note = faster. 1.00 = one octave up doubles the rate. Tap to type the amount (×100: 150 = 1.50). off = fixed rate."
+            sub="Wobble speed follows the triggering note: higher note = faster. 1.00 = one octave up doubles the rate. 0 = fixed rate."
           >
             <Button
               variant={keyTrack !== 0 ? "active" : "default"}
               style={{ width: 150, height: 36, fontSize: 13 }}
               onClick={() =>
-                numberEdit(Math.round(keyTrack * 100), 0, 400, (n) => patch({ rateKeyTrack: n / 100 }), 3)
+                wheel({
+                  title: "Key-track",
+                  min: 0,
+                  max: 400,
+                  value: Math.round(keyTrack * 100),
+                  format: (v) => (v === 0 ? "off" : `${(v / 100).toFixed(2)}×/oct`),
+                  onPick: (n) => patch({ rateKeyTrack: n / 100 }),
+                })
               }
             >
               {keyTrack === 0 ? "off" : `${keyTrack.toFixed(2)}×/oct`}
@@ -551,7 +597,12 @@ function CcLayerDetail({ block, layer, totalSteps, flow }: { block: Block; layer
       return (
         <ParamRow hint="New value every n steps, counted from transport start — so it keeps changing instead of repeating each loop.">
           <Param label="New value every">
-            <Button style={{ width: 160, height: 36, fontSize: 13 }} onClick={() => numberEdit(everySteps, 1, 64, (n) => patch({ everySteps: n }))}>
+            <Button
+              style={{ width: 160, height: 36, fontSize: 13 }}
+              onClick={() =>
+                wheel({ title: "New value every", min: 1, max: 64, unit: " step(s)", value: everySteps, onPick: (n) => patch({ everySteps: n }) })
+              }
+            >
               {everySteps} step(s)
             </Button>
           </Param>
