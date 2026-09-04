@@ -232,6 +232,16 @@ export interface NetworkState {
   active: boolean;
 }
 
+/** Zustand der GitHub-Backup-Verbindung (Einstellungen → „GitHub backup").
+ *  Spiegelt das ServerEvent `github.config` — das Token selbst kommt NIE mit,
+ *  nur ob eins hinterlegt ist. */
+export interface GithubState {
+  configured: boolean;
+  owner: string;
+  repo: string;
+  branch: string;
+}
+
 export class Store {
   project?: Project;
   transport?: TransportState;
@@ -241,6 +251,8 @@ export class Store {
   recordArmed: RecordArm | null = null;
   /** Latest `network.state` from the server — null until it first arrives. */
   network: NetworkState | null = null;
+  /** Latest `github.config` from the server — null until it first arrives. */
+  github: GithubState | null = null;
   private listeners: Listener[] = [];
 
   /** Returns an unsubscribe function — React components mount/unmount
@@ -278,6 +290,11 @@ export class Store {
 
   setNetwork(n: NetworkState) {
     this.network = n;
+    this.emit();
+  }
+
+  setGithub(g: GithubState) {
+    this.github = g;
     this.emit();
   }
 

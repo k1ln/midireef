@@ -7,6 +7,10 @@ import { createContext, useContext, useState, type ReactNode } from "react";
 import { Button } from "./widgets/Button";
 
 const ROWS = ["1234567890", "qwertzuiop", "asdfghjkl", "yxcvbnm"];
+/** Symbole, die reine Buchstaben/Ziffern nicht abdecken, aber für Tokens
+ *  (GitHub PATs: „ghp_…“, „github_pat_…") und Repo-/Nutzernamen (Bindestriche)
+ *  gebraucht werden. ⇧ neben dran togglet Groß-/Kleinschreibung der Buchstaben. */
+const SYMBOLS = ["-", "_", ".", "@", "/", ":"];
 
 type OpenFn = (current: string, maxLen: number, done: (v: string | null) => void) => void;
 
@@ -31,9 +35,14 @@ interface Session {
 
 export function TouchKeyboardProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
+  // Toggle statt Einmal-Shift — bei Tokens/Repo-Namen folgen oft mehrere
+  // Großbuchstaben hintereinander (z.B. "ghp_", Präfixe), ein Einmal-Shift
+  // würde nach jedem Zeichen wieder zurückfallen.
+  const [caps, setCaps] = useState(false);
 
   const open: OpenFn = (current, maxLen, done) => {
     setSession({ value: current, maxLen, primed: current.length > 0, done });
+    setCaps(false);
   };
 
   const close = (result: string | null) => {
@@ -42,11 +51,12 @@ export function TouchKeyboardProvider({ children }: { children: ReactNode }) {
   };
 
   const type = (ch: string) => {
+    const out = caps ? ch.toUpperCase() : ch;
     setSession((s) => {
       if (!s) return s;
       // Markiert → der erste Tastendruck fängt einen frischen String an.
-      if (s.primed) return { ...s, value: ch.slice(0, s.maxLen), primed: false };
-      return s.value.length < s.maxLen ? { ...s, value: s.value + ch } : s;
+      if (s.primed) return { ...s, value: out.slice(0, s.maxLen), primed: false };
+      return s.value.length < s.maxLen ? { ...s, value: s.value + out } : s;
     });
   };
 
@@ -104,15 +114,32 @@ export function TouchKeyboardProvider({ children }: { children: ReactNode }) {
               maxHeight: "min(420px, 62vh)",
             }}
           >
-            {ROWS.map((row) => (
+            {ROWS.map((row, i) => (
               <div key={row} className="kb-row">
+                {i === ROWS.length - 1 && (
+                  <Button
+                    variant={caps ? "active" : undefined}
+                    className="kb-key"
+                    style={{ flex: "1.6 1 0" }}
+                    onClick={() => setCaps((c) => !c)}
+                  >
+                    ⇧
+                  </Button>
+                )}
                 {row.split("").map((ch) => (
                   <Button key={ch} className="kb-key" onClick={() => type(ch)}>
-                    {ch}
+                    {caps ? ch.toUpperCase() : ch}
                   </Button>
                 ))}
               </div>
             ))}
+            <div className="kb-row">
+              {SYMBOLS.map((ch) => (
+                <Button key={ch} className="kb-key" onClick={() => type(ch)}>
+                  {ch}
+                </Button>
+              ))}
+            </div>
             <div className="kb-row">
               <Button className="kb-key" style={{ flex: "2 1 0" }} onClick={backspace}>
                 ⌫

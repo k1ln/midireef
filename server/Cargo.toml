@@ -14,6 +14,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 futures-util = "0.3"
 tower-http = { version = "0.5", features = ["fs"] }
+# rustls statt native-tls/OpenSSL: der Server wird für aarch64 gegen einen
+# Cross-Container gebaut (deploy/build-server.sh) — dort ist kein System-
+# OpenSSL für das Zielarchitektur vorhanden, rustls braucht keins.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+base64 = "0.22"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 coremidi = "0.9"

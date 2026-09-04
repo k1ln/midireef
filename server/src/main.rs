@@ -6,6 +6,7 @@ mod clock;
 #[cfg(target_os = "macos")]
 mod coremidi_hotplug;
 mod engine;
+mod github;
 mod logbuf;
 mod midi;
 mod model;
@@ -124,6 +125,10 @@ async fn main() {
     // über Reboots, indem der Soll-Zustand hier aus network.json kommt.
     let network = Arc::new(Mutex::new(net_ap::load(&data_dir)));
 
+    // GitHub-Backup-Konfiguration (siehe github.rs): Token + Ziel-Repo,
+    // persistiert in github.json, niemals im Klartext an die UI zurück.
+    let github_cfg = Arc::new(Mutex::new(github::load(&data_dir)));
+
     let state = AppState {
         project,
         transport,
@@ -137,6 +142,7 @@ async fn main() {
         record_armed: Arc::new(Mutex::new(None)),
         note_input: Arc::new(Mutex::new(None)),
         network: network.clone(),
+        github: github_cfg,
         last_streamed_snapshot: Arc::new(Mutex::new(None)),
         snapshot_pending: Arc::new(AtomicBool::new(false)),
     };

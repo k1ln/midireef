@@ -466,7 +466,165 @@ export function ProjectSettings({ onClose }: { onClose: () => void }) {
       </section>
 
       <WifiApCard />
+      <GithubBackupCard />
       </div>
+    </div>
+  );
+}
+
+/** „GitHub backup" — pusht jede gespeicherte Projekt-Datei über die
+ *  Contents API in ein Repo (server/src/github.rs), ein manueller Knopf statt
+ *  automatisch bei jedem Save. Das Token geht nur ZUM Server (getippt über
+ *  das Touch-Keyboard, das dafür jetzt auch Groß-/Kleinschreibung und „_"/"-"
+ *  kann — Tokens wie „ghp_…" brauchen beides) und nie wieder zurück; die
+ *  Karte weiß nur `configured: true/false`, kein Vorschau-Wert fürs Feld. */
+function GithubBackupCard() {
+  const net = useNet();
+  const send = useSend();
+  const openKeyboard = useTouchKeyboard();
+  const github = useStoreValue((s) => s.github);
+
+  const [owner, setOwner] = useState("");
+  const [repo, setRepo] = useState("");
+  const [branch, setBranch] = useState("");
+  /** Nur ein neu eingetipptes Token — leer heißt „unverändert lassen", der
+   *  Server kennt das schon gespeicherte selbst nicht preisgibt. */
+  const [tokenDraft, setTokenDraft] = useState("");
+  const [dirty, setDirty] = useState(false);
+  const [savePending, setSavePending] = useState(false);
+  const [pushPending, setPushPending] = useState(false);
+  const [pushResult, setPushResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  const dirtyRef = useRef(dirty);
+  useEffect(() => {
+    dirtyRef.current = dirty;
+  }, [dirty]);
+
+  useEffect(() => {
+    const off = net.onEvent((evt) => {
+      if (evt.t === "github.config") {
+        setSavePending(false);
+      } else if (evt.t === "github.pushing") {
+        setPushPending(true);
+        setPushResult(null);
+      } else if (evt.t === "github.pushResult") {
+        setPushPending(false);
+        setPushResult({ ok: !!evt.ok, message: evt.message ?? "" });
+      }
+    });
+    send({ t: "github.getConfig" });
+    return off;
+  }, [net, send]);
+
+  useEffect(() => {
+    if (!github || dirtyRef.current) return;
+    setOwner(github.owner);
+    setRepo(github.repo);
+    setBranch(github.branch);
+  }, [github]);
+
+  const edit = (fn: () => void) => {
+    fn();
+    setDirty(true);
+  };
+
+  const ownerTrim = owner.trim();
+  const repoTrim = repo.trim();
+  const canSave = ownerTrim.length > 0 && repoTrim.length > 0 && dirty && !savePending;
+  const canPush = (github?.configured ?? false) && !pushPending;
+
+  return (
+    <section className="settings-card">
+      <div className="popup-subtitle">GitHub backup — push saved projects to a repo</div>
+
+      <FieldRow
+        label="Owner"
+        value={owner || "—"}
+        onTap={() => openKeyboard(owner, 39, (v) => v != null && edit(() => setOwner(v)))}
+      />
+      <FieldRow
+        label="Repo"
+        value={repo || "—"}
+        onTap={() => openKeyboard(repo, 100, (v) => v != null && edit(() => setRepo(v)))}
+      />
+      <FieldRow
+        label="Branch"
+        value={branch || "default"}
+        onTap={() => openKeyboard(branch, 100, (v) => v != null && edit(() => setBranch(v)))}
+      />
+      <FieldRow
+        label="Token"
+        mono
+        value={tokenDraft ? "•".repeat(Math.min(tokenDraft.length, 24)) : github?.configured ? "set — tap to replace" : "not set"}
+        onTap={() => openKeyboard("", 255, (v) => v != null && edit(() => setTokenDraft(v)))}
+      />
+      <div style={{ fontSize: 11, color: "var(--pal-text-dim)", margin: "2px 0 12px" }}>
+        Fine-grained personal access token from github.com/settings/tokens, with Contents: Read and write on the
+        target repo.
+      </div>
+
+      <Button
+        variant="active"
+        style={{ width: "100%", height: 46, fontSize: 15, marginBottom: 8 }}
+        disabled={!canSave}
+        onClick={() => {
+          setSavePending(true);
+          setDirty(false);
+          const patch: Record<string, unknown> = { t: "github.setConfig", owner: ownerTrim, repo: repoTrim, branch: branch.trim() };
+          if (tokenDraft) patch.token = tokenDraft;
+          send(patch);
+          setTokenDraft("");
+        }}
+      >
+        {savePending ? "Saving…" : "Save"}
+      </Button>
+
+      <Button
+        style={{ width: "100%", height: 46, fontSize: 15 }}
+        disabled={!canPush}
+        onClick={() => {
+          setPushResult(null);
+          send({ t: "github.push" });
+        }}
+      >
+        {pushPending ? "Pushing…" : "⇪ Push all projects"}
+      </Button>
+
+      {!github?.configured && (
+        <div style={{ fontSize: 12, color: "var(--pal-text-dim)", marginTop: 8 }}>
+          Set owner, repo and a token, then Save, to enable pushing.
+        </div>
+      )}
+
+      {pushResult && (
+        <div
+          style={{
+            fontSize: 13,
+            fontWeight: 600,
+            color: pushResult.ok ? "var(--pal-run)" : "var(--pal-warn, #d88)",
+            marginTop: 10,
+          }}
+        >
+          {pushResult.ok ? "✓ " : "⚠ "}
+          {pushResult.message}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** Eine Label+Wert-Zeile, die zum Bearbeiten das Touch-Keyboard öffnet — wie
+ *  die Wi-Fi-Name/Passwort-Zeilen in `WifiApCard`, hier für vier Felder
+ *  wiederverwendet statt viermal dupliziert. */
+function FieldRow({ label, value, onTap, mono }: { label: string; value: string; onTap: () => void; mono?: boolean }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+      <div style={{ flex: 1, fontSize: 14 }}>{label}</div>
+      <Button style={{ height: 44, padding: "0 14px", fontSize: 15, maxWidth: 220, overflow: "hidden" }} onClick={onTap}>
+        <span className={mono ? "mono" : undefined} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {value}
+        </span>
+      </Button>
     </div>
   );
 }

@@ -7,6 +7,7 @@ use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 
 use crate::clock::ClockCommand;
+use crate::github;
 use crate::midi;
 use crate::model::{ClockSource, Device, Lane, Project};
 use crate::net_ap;
@@ -98,6 +99,13 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             false
         };
         let evt = net_ap::state_event(&cfg, server_port(), active);
+        let _ = sender.send(Message::Text(evt.to_string())).await;
+    }
+
+    // GitHub-Backup-Konfiguration — wie network.state nur an diesen Client.
+    {
+        let cfg = state.github.lock().unwrap().clone();
+        let evt = github::state_event(&cfg);
         let _ = sender.send(Message::Text(evt.to_string())).await;
     }
 
@@ -1809,6 +1817,93 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                             let _ = events.send(net_ap::state_event(&cfg, port, false));
                         }
                     }
+                });
+            }
+        }
+        // ── GitHub-Backup ──────────────────────────────────────────────────
+        "github.getConfig" => {
+            let cfg = state.github.lock().unwrap().clone();
+            let _ = state.events.send(github::state_event(&cfg));
+        }
+        "github.setConfig" => {
+            let mut cfg = state.github.lock().unwrap().clone();
+            // Token nur überschreiben, wenn eins mitkommt — so kann man Repo/Branch
+            // ändern, ohne das schon gespeicherte Token erneut eintippen zu müssen.
+            // Ein eigenes `clearToken` löst es ausdrücklich, statt still leer zu laufen.
+            if let Some(token) = cmd.get("token").and_then(|v| v.as_str()) {
+                if !token.is_empty() {
+                    cfg.token = token.to_string();
+                }
+            }
+            if cmd.get("clearToken").and_then(|v| v.as_bool()).unwrap_or(false) {
+                cfg.token.clear();
+            }
+            if let Some(owner) = cmd.get("owner").and_then(|v| v.as_str()) {
+                cfg.owner = owner.trim().to_string();
+            }
+            if let Some(repo) = cmd.get("repo").and_then(|v| v.as_str()) {
+                cfg.repo = repo.trim().to_string();
+            }
+            if let Some(branch) = cmd.get("branch").and_then(|v| v.as_str()) {
+                cfg.branch = branch.trim().to_string();
+            }
+            if let Err(e) = github::save(&state.data_dir, &cfg) {
+                tracing::warn!("github.json speichern fehlgeschlagen: {e}");
+            }
+            *state.github.lock().unwrap() = cfg.clone();
+            let _ = state.events.send(github::state_event(&cfg));
+        }
+        "github.push" => {
+            let cfg = state.github.lock().unwrap().clone();
+            if !cfg.configured() {
+                let _ = state.events.send(serde_json::json!({
+                    "t": "github.pushResult",
+                    "ok": false,
+                    "message": "GitHub is not configured yet — set token, owner and repo first.",
+                }));
+            } else {
+                // Das offene Projekt zuerst auf Platte bringen, sonst pusht der
+                // Lauf unten den Stand VOR den letzten Änderungen.
+                if let Err(e) = state.save_project() {
+                    tracing::warn!("Projekt vor GitHub-Push speichern fehlgeschlagen: {e}");
+                }
+                let _ = state
+                    .events
+                    .send(serde_json::json!({ "t": "github.pushing" }));
+                let events = state.events.clone();
+                let data_dir = state.data_dir.clone();
+                tokio::spawn(async move {
+                    let evt = match github::push_all_projects(&cfg, &data_dir).await {
+                        Ok(summary) => {
+                            let ok = summary.failed.is_empty();
+                            let message = if ok {
+                                format!(
+                                    "Pushed {} project{} to {}/{}.",
+                                    summary.pushed,
+                                    if summary.pushed == 1 { "" } else { "s" },
+                                    cfg.owner,
+                                    cfg.repo
+                                )
+                            } else {
+                                let details = summary
+                                    .failed
+                                    .iter()
+                                    .map(|(name, err)| format!("{name}: {err}"))
+                                    .collect::<Vec<_>>()
+                                    .join("; ");
+                                format!(
+                                    "Pushed {} of {} project(s); failed — {details}",
+                                    summary.pushed,
+                                    summary.pushed + summary.failed.len()
+                                )
+                            };
+                            serde_json::json!({ "t": "github.pushResult", "ok": ok, "message": message })
+                        }
+                        Err(msg) => {
+                            serde_json::json!({ "t": "github.pushResult", "ok": false, "message": msg })
+                        }
+                    };
+                    let _ = events.send(evt);
                 });
             }
         }

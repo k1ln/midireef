@@ -67,6 +67,9 @@ pub struct AppState {
     /// Soll-Zustand des Pi-WLAN-Access-Points (Einstellungen → „Wi-Fi access
     /// point"). Persistiert als `<data_dir>/network.json`, siehe `net_ap`.
     pub network: Arc<Mutex<crate::net_ap::NetworkConfig>>,
+    /// GitHub-Backup-Ziel (Token + Repo, Einstellungen → „GitHub backup").
+    /// Persistiert als `<data_dir>/github.json`, siehe `github`.
+    pub github: Arc<Mutex<crate::github::GithubConfig>>,
     /// Zeitpunkt des letzten gedrosselten Snapshots (s. `broadcast_snapshot_throttled`
     /// in ws.rs) — CC-Step-/Envelope-Balken und Velocity-Balken ziehen sonst bei
     /// jedem Zwischenwert einen vollen Engine-Rebuild + JSON-Snapshot + Autosave

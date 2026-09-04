@@ -89,6 +89,9 @@ export function App() {
         case "network.state":
           store.setNetwork(evt);
           break;
+        case "github.config":
+          store.setGithub(evt);
+          break;
         case "record.armState":
           store.setRecordArmed(evt.controlId && evt.laneId ? { controlId: evt.controlId, laneId: evt.laneId } : null);
           break;
