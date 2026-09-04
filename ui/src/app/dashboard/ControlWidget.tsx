@@ -17,8 +17,9 @@ export interface LiveControl {
   w: number;
   h: number;
   value?: number;
-  /** Bindung „eingehende Note → Lane-Slot auslösen" (control.setTrigger). */
-  trigger?: { laneId: string; slotId: string };
+  /** Bindung „eingehende Note → Lane-Slot auslösen" (control.setTrigger).
+   *  `enabled === false` = Bindung pausiert. */
+  trigger?: { laneId: string; slotId: string; enabled?: boolean };
 }
 
 /** MIDI-Notennummer → Frequenz in Hz (A4 = 69 = 440 Hz, 12-TET). */
@@ -183,6 +184,26 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, selected, onSe
           }}
         >
           REC
+        </div>
+      )}
+      {ctrl.trigger && (
+        <div
+          title={ctrl.trigger.enabled === false ? "Trigger bound but off" : "Fires a lane slot on this note"}
+          style={{
+            position: "absolute",
+            top: -8,
+            left: -8,
+            padding: "2px 6px",
+            borderRadius: 4,
+            background:
+              ctrl.trigger.enabled === false ? "rgba(255,255,255,0.18)" : "rgba(var(--pal-run-rgb), 0.9)",
+            color: "var(--pal-white)",
+            fontSize: 10,
+            fontWeight: 800,
+            zIndex: 1,
+          }}
+        >
+          {ctrl.trigger.enabled === false ? "▶ off" : "▶"}
         </div>
       )}
       {isButton ? (

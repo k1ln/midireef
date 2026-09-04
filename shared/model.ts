@@ -633,8 +633,10 @@ export interface LiveControl {
 
   /** Optional: eine passende eingehende Note löst diesen Lane-Slot aus
    *  (control.setTrigger). Note-On = press, Note-Off = release; die Note treibt
-   *  zugleich das LFO-Key-Tracking eines CC-Bausteins in der Lane. */
-  trigger?: { laneId: Id; slotId: Id };
+   *  zugleich das LFO-Key-Tracking eines CC-Bausteins in der Lane.
+   *  `enabled === false` = Bindung bleibt bestehen, feuert aber nicht (schnelles
+   *  An/Aus im Control-Dock). */
+  trigger?: { laneId: Id; slotId: Id; enabled?: boolean };
 }
 
 /** Ein frei zusammenstellbarer Screen mit Live-Controls. */
@@ -1043,6 +1045,7 @@ export type Command =
   | { t: "control.setDevice"; controlId: Id; deviceId: Id | null } // Ziel-Device (Name erscheint am Button)
   | { t: "control.setKind"; controlId: Id; kind: ControlKind } // z.B. CC als Taster statt Regler reproduzieren
   | { t: "control.setTrigger"; controlId: Id; laneId: Id | null; slotId: Id | null } // Note dieses Controls löst einen Lane-Slot aus (null = Bindung lösen)
+  | { t: "control.setTriggerEnabled"; controlId: Id; enabled: boolean } // Trigger-Bindung scharf/aus, ohne sie zu lösen
   | { t: "control.move"; controlId: Id; x: number; y: number }
   | { t: "control.setSize"; controlId: Id; w: number; h: number } // Dashboard: einzelnen Taster/Regler frei skalieren
   | { t: "control.delete"; controlId: Id }

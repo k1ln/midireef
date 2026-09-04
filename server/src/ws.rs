@@ -474,13 +474,31 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                     if let Some(c) = find_control_mut(&mut proj, &id) {
                         match (lane, slot) {
                             (Some(l), Some(s)) => {
-                                c["trigger"] = serde_json::json!({ "laneId": l, "slotId": s });
+                                c["trigger"] =
+                                    serde_json::json!({ "laneId": l, "slotId": s, "enabled": true });
                             }
                             _ => {
                                 if let Some(o) = c.as_object_mut() {
                                     o.remove("trigger");
                                 }
                             }
+                        }
+                    }
+                }
+                broadcast_snapshot(state);
+            }
+        }
+        // Trigger-Bindung scharf/aus schalten, ohne sie zu entfernen.
+        "control.setTriggerEnabled" => {
+            if let (Some(id), Some(on)) = (
+                str_field(&cmd, "controlId"),
+                cmd.get("enabled").and_then(|v| v.as_bool()),
+            ) {
+                {
+                    let mut proj = state.project.lock().unwrap();
+                    if let Some(c) = find_control_mut(&mut proj, &id) {
+                        if let Some(t) = c.get_mut("trigger").and_then(|t| t.as_object_mut()) {
+                            t.insert("enabled".to_string(), serde_json::json!(on));
                         }
                     }
                 }

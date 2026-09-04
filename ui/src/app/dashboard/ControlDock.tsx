@@ -28,10 +28,14 @@ export interface ControlDockProps {
   onDevice: () => void;
   onRecord: () => void;
   onRemove: () => void;
-  /** „Trigger" — Bindung Note → Lane-Slot wählen/lösen. */
+  /** „Trigger" — Bindung Note → Lane-Slot wählen/lösen (öffnet den Picker). */
   onTrigger: () => void;
+  /** Bindung scharf/aus schalten, ohne sie zu lösen. */
+  onToggleTrigger: () => void;
   /** Kurzer Name der aktuellen Bindung, sonst undefined. */
   triggerLabel?: string;
+  /** true = Bindung feuert, false = pausiert. */
+  triggerEnabled?: boolean;
 }
 
 export function ControlDock({
@@ -46,7 +50,9 @@ export function ControlDock({
   onRecord,
   onRemove,
   onTrigger,
+  onToggleTrigger,
   triggerLabel,
+  triggerEnabled,
 }: ControlDockProps) {
   const openKeyboard = useTouchKeyboard();
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -100,14 +106,35 @@ export function ControlDock({
       <Button variant="alt" className="settings-dock-row" onClick={onDevice}>
         → Device …
       </Button>
-      <Button
-        variant={triggerLabel ? "active" : "alt"}
-        className="settings-dock-row"
-        title="Bind this control's note to fire a lane slot (e.g. a stored filter effect)"
-        onClick={onTrigger}
-      >
-        {triggerLabel ? `▶ ${triggerLabel}` : "▶ Trigger …"}
-      </Button>
+      {triggerLabel ? (
+        <>
+          <Button
+            variant={triggerEnabled ? "active" : "alt"}
+            className="settings-dock-row"
+            title="Tap to arm / pause — the binding stays either way"
+            onClick={onToggleTrigger}
+          >
+            {triggerEnabled ? `▶ ${triggerLabel}` : `❙❙ ${triggerLabel} — off`}
+          </Button>
+          <Button
+            variant="alt"
+            className="settings-dock-row"
+            style={{ height: 34, fontSize: 12 }}
+            onClick={onTrigger}
+          >
+            ↳ change / clear …
+          </Button>
+        </>
+      ) : (
+        <Button
+          variant="alt"
+          className="settings-dock-row"
+          title="Bind this control's note to fire a lane slot (e.g. a stored filter effect)"
+          onClick={onTrigger}
+        >
+          ▶ Trigger …
+        </Button>
+      )}
       {isKeyboard && (
         <Button variant={isRecording ? "danger" : "alt"} className="settings-dock-row" onClick={onRecord}>
           {isRecording ? "■ Stop rec" : "● Record …"}

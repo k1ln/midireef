@@ -389,7 +389,15 @@ export function Dashboard({ centerSignal }: { centerSignal?: number }) {
           }}
           onDevice={() => setDevicePicker({ ctrl: selectedCtrl })}
           onTrigger={() => setTriggerPicker({ ctrl: selectedCtrl })}
+          onToggleTrigger={() =>
+            send({
+              t: "control.setTriggerEnabled",
+              controlId: selectedCtrl.id,
+              enabled: selectedCtrl.trigger?.enabled === false,
+            })
+          }
           triggerLabel={triggerLabelFor(selectedCtrl)}
+          triggerEnabled={selectedCtrl.trigger?.enabled !== false}
           onRecord={() => {
             if (recordArmed?.controlId === selectedCtrl.id) {
               // Bereits armiert → nochmal senden hebt es auf (Toggle, siehe Server).

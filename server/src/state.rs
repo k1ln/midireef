@@ -276,6 +276,10 @@ impl AppState {
                         Some(c) => (
                             c.get("id").and_then(|v| v.as_str()).map(str::to_string),
                             c.get("trigger").and_then(|t| {
+                                // `enabled === false` → Bindung ist pausiert.
+                                if t.get("enabled").and_then(|v| v.as_bool()) == Some(false) {
+                                    return None;
+                                }
                                 Some((
                                     t.get("laneId")?.as_str()?.to_string(),
                                     t.get("slotId")?.as_str()?.to_string(),
