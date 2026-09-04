@@ -196,6 +196,61 @@ export function ChainSlotPickerPopup({ lane, onClose }: { lane: Lane; onClose: (
   );
 }
 
+/**
+ * Keytrack-Quelle einer CC-Lane: welche Melodie-Lane treibt mit ihren
+ * gespielten Noten das LFO-Key-Tracking (`rateKeyTrack`) dieser Lane. Nur
+ * Melodie-Lanes werden angeboten — für alles andere hätte „key" nichts,
+ * dem er folgen könnte.
+ */
+export function KeytrackSourcePickerPopup({ lane, onClose }: { lane: Lane; onClose: () => void }) {
+  const send = useSend();
+  const devices = useStoreValue((s) => s.project?.devices ?? EMPTY_DEVICES);
+  const rows = devices.flatMap((d) =>
+    (d.lanes ?? []).filter((l) => l.role === "melody").map((l) => ({ dev: d, lane: l })),
+  );
+
+  return (
+    <Popup onClose={onClose}>
+      <div className="popup-title">Keytrack source — {lane.name}</div>
+      <div style={{ fontSize: 13, color: "var(--pal-text-dim)", marginBottom: 12 }}>
+        While the melody lane you pick here plays, its highest note each step drives this lane's LFO key-track
+        (same as an external MIDI-keyboard trigger would) — no MIDI-in needed.
+      </div>
+      {rows.length === 0 ? (
+        <div style={{ color: "var(--pal-text-dim)", fontSize: 15 }}>No melody lane set up yet.</div>
+      ) : (
+        rows.map(({ dev, lane: l }) => (
+          <Button
+            key={l.id}
+            variant={lane.keytrackSourceLaneId === l.id ? "active" : "default"}
+            className="popup-row"
+            style={{ height: 44, marginBottom: 8, flexDirection: "column", alignItems: "flex-start", paddingLeft: 12 }}
+            onClick={() => {
+              onClose();
+              send({ t: "lane.setKeytrackSource", laneId: lane.id, sourceLaneId: l.id });
+            }}
+          >
+            <span style={{ fontWeight: 700 }}>{l.name}</span>
+            <span style={{ fontSize: 11, color: "var(--pal-text-dim)" }}>{dev.name}</span>
+          </Button>
+        ))
+      )}
+      {lane.keytrackSourceLaneId && (
+        <Button
+          variant="danger"
+          className="popup-row"
+          onClick={() => {
+            onClose();
+            send({ t: "lane.setKeytrackSource", laneId: lane.id, sourceLaneId: null });
+          }}
+        >
+          Clear keytrack source
+        </Button>
+      )}
+    </Popup>
+  );
+}
+
 /** "＋" auf einer Lane: neu anlegen ODER einen vorhandenen Baustein
  *  (gleicher Typ, noch nicht in dieser Lane) per ID auswählen. */
 export function AddBlockPickerPopup({ lane, onClose }: { lane: Lane; onClose: () => void }) {

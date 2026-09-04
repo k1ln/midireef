@@ -2,9 +2,9 @@
 //! Steps (Beat/CC/…) editieren. Geöffnet von der Sequencer-Übersicht per
 //! langem Druck auf eine Slot-Kachel.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Block, BlockType } from "../state";
-import { useSend, useStoreValue, useRuntimeBlock } from "./store";
+import { useNet, useSend, useStoreValue, useRuntimeBlock } from "./store";
 import { useTouchKeyboard } from "./TouchKeyboard";
 import { Button } from "./widgets/Button";
 import { TRANSPORT_H } from "./layout";
@@ -14,7 +14,7 @@ import type { StepFlow } from "./blockdetail/StepGrid";
 import { useLocalPref } from "./useLocalPref";
 import { CcEditor } from "./blockdetail/CcEditor";
 import { BlockLengthControls } from "./blockdetail/LengthControls";
-import { BlockRuntimeStatus } from "./blockdetail/RuntimeStatus";
+import { BlockRuntimeStatus, PLAYABLE } from "./blockdetail/RuntimeStatus";
 
 // Stable reference for the useSyncExternalStore selector below — see the
 // EMPTY_DEVICES comment in Dashboard.tsx.
@@ -58,6 +58,100 @@ export function BlockDetail({ blockId, onClose, onMove }: BlockDetailProps) {
         <BlockDetailBody block={block} onClose={onClose} onMove={onMove} openKeyboard={openKeyboard} send={send} />
       )}
     </div>
+  );
+}
+
+/** „▶ Play" — spielt GENAU diesen Baustein einmal oder in Schleife ab, egal
+ *  ob/wo er in einer Lane steckt (s. `Engine::start_block_preview`). Läuft
+ *  unabhängig vom Transport, auch bei Stillstand.
+ *
+ *  Einmal (Loop aus): reiner Fire-and-forget-Tipper — kein eigener „läuft
+ *  gerade"-Zustand, ein erneuter Tipp startet einfach neu (die Vorschau löst
+ *  sich serverseitig ohnehin selbst ab). Loop an: der Knopf wird zu „■ Stop",
+ *  weil eine Schleife sonst nur über den Editor-Umweg wieder aufzuhalten wäre. */
+function PlayPreviewButtons({ block, send }: { block: Block; send: ReturnType<typeof useSend> }) {
+  const net = useNet();
+  const [loop, setLoop] = useState(false);
+  const [playing, setPlaying] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    const off = net.onEvent((evt) => {
+      if (evt.t === "control.sendError" && evt.message) {
+        setPlaying(false);
+        setToast(evt.message);
+      }
+    });
+    return off;
+  }, [net]);
+
+  // Baustein gewechselt oder Editor verlassen: eine laufende Schleife nicht
+  // im Hintergrund weiterlaufen lassen — die "▶ Play"-Vorschau gehört an den
+  // offenen Editor, nicht ans Projekt.
+  useEffect(() => {
+    return () => {
+      if (playing) send({ t: "block.stopPreview" });
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [block.id]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = window.setTimeout(() => setToast(null), 4000);
+    return () => window.clearTimeout(t);
+  }, [toast]);
+
+  return (
+    <>
+      <Button
+        variant={loop ? "active" : "alt"}
+        style={{ width: 70, height: 40, fontSize: 14 }}
+        title={playing ? "Stop the running loop before changing this" : "Loop the preview instead of playing it once"}
+        disabled={playing}
+        onClick={() => setLoop(!loop)}
+      >
+        ⟲ Loop
+      </Button>
+      <Button
+        variant={playing ? "active" : "default"}
+        style={{ width: 90, height: 40, fontSize: 14 }}
+        title="Play this block standalone — not tied to any lane"
+        onClick={() => {
+          if (loop && playing) {
+            send({ t: "block.stopPreview" });
+            setPlaying(false);
+          } else {
+            send({ t: "block.play", blockId: block.id, loop });
+            setPlaying(loop);
+          }
+        }}
+      >
+        {loop && playing ? "■ Stop" : "▶ Play"}
+      </Button>
+      {toast && (
+        <div
+          style={{
+            position: "fixed",
+            bottom: 24,
+            left: "50%",
+            transform: "translateX(-50%)",
+            maxWidth: 480,
+            padding: "0 20px",
+            height: 56,
+            display: "flex",
+            alignItems: "center",
+            borderRadius: 10,
+            background: "rgba(17, 17, 17, 0.97)",
+            border: "1.5px solid rgba(255, 255, 255, 0.4)",
+            fontSize: 14,
+            fontWeight: 600,
+            zIndex: 20,
+          }}
+        >
+          {toast}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -112,6 +206,10 @@ function BlockDetailBody({
         {/* Raster des Bausteins — Takte und Substeps pro Takt. Gehört zum
             Baustein (nicht zur Lane), gilt also überall, wo er steckt. */}
         <BlockLengthControls block={block} />
+
+        {/* Standalone-Vorschau — für jeden abspielbaren Baustein-Typ, nicht
+            nur Melodie, deshalb hier statt in einer typspezifischen Toolbar. */}
+        {PLAYABLE.includes(block.type) && <PlayPreviewButtons block={block} send={send} />}
 
         {/* Grundnote und Spalten/Piano-Roll — die Schalter der Melodie gehören
             in dieselbe Leiste wie Länge und Raster, nicht in eine zweite. */}

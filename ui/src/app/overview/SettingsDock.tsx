@@ -102,10 +102,11 @@ export interface LaneSettingsDockProps {
   lane: Lane;
   onOpenCcTarget: () => void;
   onOpenChain: () => void;
+  onOpenKeytrack: () => void;
   onClose: () => void;
 }
 
-export function LaneSettingsDock({ lane, onOpenCcTarget, onOpenChain, onClose }: LaneSettingsDockProps) {
+export function LaneSettingsDock({ lane, onOpenCcTarget, onOpenChain, onOpenKeytrack, onClose }: LaneSettingsDockProps) {
   const send = useSend();
   const openKeyboard = useTouchKeyboard();
   const [lockedPref, setLockedPref] = useLocalPref<"0" | "1">(`lane.locked.${lane.id}`, "0");
@@ -171,6 +172,20 @@ export function LaneSettingsDock({ lane, onOpenCcTarget, onOpenChain, onClose }:
           }}
         >
           → CC target
+        </Button>
+      )}
+
+      {lane.role === "cc" && (
+        <Button
+          variant={lane.keytrackSourceLaneId ? "active" : "alt"}
+          className="settings-dock-row"
+          title="A melody lane whose played notes drive this lane's LFO key-track live — no external MIDI keyboard needed."
+          onClick={() => {
+            onOpenKeytrack();
+            onClose();
+          }}
+        >
+          {lane.keytrackSourceLaneId ? "♫ Keytrack source — edit …" : "♫ Keytrack source …"}
         </Button>
       )}
 

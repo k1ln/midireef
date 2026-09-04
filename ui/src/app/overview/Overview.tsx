@@ -17,6 +17,7 @@ import {
   SwapPickerPopup,
   CcTargetPickerPopup,
   ChainSlotPickerPopup,
+  KeytrackSourcePickerPopup,
 } from "./popups";
 
 // Stable reference so the useSyncExternalStore selector below returns the
@@ -38,7 +39,8 @@ type PopupState =
   | { kind: "addBlock"; laneId: string; deviceId: string }
   | { kind: "swap"; laneId: string; deviceId: string; slotId: string; currentBlockId: string }
   | { kind: "ccTarget"; laneId: string; deviceId: string }
-  | { kind: "chain"; laneId: string; deviceId: string };
+  | { kind: "chain"; laneId: string; deviceId: string }
+  | { kind: "keytrack"; laneId: string; deviceId: string };
 
 type SettingsState = { kind: "lane"; laneId: string } | { kind: "device"; deviceId: string };
 
@@ -181,6 +183,13 @@ export function Overview({ onOpenBlock }: OverviewProps) {
             return lane ? <ChainSlotPickerPopup lane={lane} onClose={closePopup} /> : null;
           })()}
 
+        {popup?.kind === "keytrack" &&
+          (() => {
+            const dev = findDevice(popup.deviceId);
+            const lane = dev?.lanes.find((l) => l.id === popup.laneId);
+            return lane ? <KeytrackSourcePickerPopup lane={lane} onClose={closePopup} /> : null;
+          })()}
+
         {popup?.kind === "swap" &&
           (() => {
             const dev = findDevice(popup.deviceId);
@@ -204,6 +213,9 @@ export function Overview({ onOpenBlock }: OverviewProps) {
           }
           onOpenChain={() =>
             setPopup({ kind: "chain", laneId: settingsLane!.lane.id, deviceId: settingsLane!.device.id })
+          }
+          onOpenKeytrack={() =>
+            setPopup({ kind: "keytrack", laneId: settingsLane!.lane.id, deviceId: settingsLane!.device.id })
           }
           onClose={() => setSettings(null)}
         />

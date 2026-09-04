@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::midi::{MidiOutManager, MIDI_CLOCK, MIDI_START, MIDI_STOP};
-use crate::model::{Device, Project};
+use crate::model::{Device, Lane, Project};
 
 const PPQN: u32 = 24;
 const PULSES_PER_WHOLE: u32 = PPQN * 4; // 96 Pulse pro ganze Note
@@ -366,6 +366,33 @@ struct CcSendState {
     last_sent: Instant,
 }
 
+/// Eigenständige „▶ Play" im Baustein-Detail: spielt GENAU einen Baustein
+/// einmal oder in Schleife ab — unabhängig vom Transport (läuft auch bei
+/// Stillstand) und ohne dass er in einer Lane stecken muss. Bewusst NICHT
+/// Teil von `Engine::lanes`/`playback`: es gibt immer höchstens eine aktive
+/// Vorschau (das aktuell offene Baustein-Detail), ein neuer Start (oder das
+/// Schließen des Editors) löst die alte einfach ab.
+struct PreviewPlayback {
+    port: String,
+    cb: CBlock,
+    /// Position im Baustein — läuft bei `looping` am Ende auf 0 zurück.
+    pos: u32,
+    /// Freilaufender Puls-Zähler, NIE zurückgesetzt — Grundlage der
+    /// Note-Off-Fälligkeiten, damit eine über eine Schleifengrenze klingende
+    /// Note nicht mit der neuen Runde verwechselt wird.
+    global_pulse: u64,
+    /// Sekunden seit Start — Zeitbasis für Hz-LFOs eines CC-Bausteins.
+    elapsed_secs: f64,
+    looping: bool,
+    /// Fällige Note-Offs dieser Vorschau: (Kanal, Note, fällig bei `global_pulse`).
+    /// Eigener, kleiner Puffer statt `Engine::pending` — der ist über
+    /// `PendingOff::lane_idx` an echte Lanes gebunden.
+    pending: Vec<(u8, u8, u64)>,
+    /// Rate-Limit-Zustand für CC-Bausteine, analog `CcSendState`.
+    cc_last_val: Option<u8>,
+    cc_last_sent: Instant,
+}
+
 struct CLane {
     id: String,
     port: String,
@@ -381,6 +408,10 @@ struct CLane {
     /// `(laneId, slotId)` mit ausgelöst (auf dessen eigener Quantisierung) —
     /// z.B. Melodie-Lane zündet einen CC-Effekt mit. `None` = keine Kette.
     chain: Option<(String, String)>,
+    /// Index (in `Engine::lanes`) einer Melodie-Lane, deren gespielte Noten
+    /// das LFO-Key-Tracking dieser (CC-)Lane treiben (`Lane::keytrack_source_lane_id`,
+    /// aufgelöst beim Rebuild). `None` = kein internes Keytrack.
+    keytrack_source: Option<usize>,
     blocks: Vec<CBlock>,
 }
 
@@ -494,6 +525,9 @@ pub struct Engine {
     playing: bool,
     /// Pulse pro Takt aus der Projekt-Taktart — Grenze für "nextBar".
     bar_pulses: u32,
+    /// Eigenständige Baustein-Vorschau des Baustein-Details (s. `PreviewPlayback`).
+    /// `None` = kein Editor mit aktiver „▶ Play" gerade offen.
+    preview: Option<PreviewPlayback>,
 }
 
 impl Engine {
@@ -511,6 +545,7 @@ impl Engine {
             cc_restores: Vec::new(),
             playing: false,
             bar_pulses: pulses_per_bar("4/4"),
+            preview: None,
         }
     }
 
@@ -823,6 +858,10 @@ impl Engine {
         self.clock_ports = clock_ports;
 
         let mut lanes = Vec::new();
+        // Roh-Ids parallel zu `lanes` gesammelt — die Ziel-Lane eines
+        // Keytrack-Bezugs kann im flachen Index vor ODER nach der Quelle
+        // liegen, also erst nach dem Aufbau aller Lanes zu Indizes auflösen.
+        let mut keytrack_source_ids: Vec<Option<String>> = Vec::new();
         // Bausteine liegen projektweit (nicht mehr je Device) — einmal referenzieren.
         let blocks_json = &project.blocks;
         for dev in &project.devices {
@@ -843,6 +882,7 @@ impl Engine {
                     .chain_slot
                     .as_ref()
                     .map(|c| (c.lane_id.clone(), c.slot_id.clone()));
+                keytrack_source_ids.push(lane.keytrack_source_lane_id.clone());
                 lanes.push(CLane {
                     id: lane.id.clone(),
                     port,
@@ -850,9 +890,23 @@ impl Engine {
                     play_mode: lane.play_mode.clone(),
                     trigger_quantize: lane.trigger_quantize.clone(),
                     chain,
+                    keytrack_source: None, // unten aufgelöst
                     blocks,
                 });
             }
+        }
+        // Ids → Indizes auflösen. Eine gelöschte/unbekannte Quelle verwirft
+        // sich selbst (bleibt `None`) statt auf die falsche Lane zu zeigen.
+        let resolved: Vec<Option<usize>> = {
+            let idx_by_id: HashMap<&str, usize> =
+                lanes.iter().enumerate().map(|(i, l)| (l.id.as_str(), i)).collect();
+            keytrack_source_ids
+                .iter()
+                .map(|source_id| source_id.as_deref().and_then(|id| idx_by_id.get(id).copied()))
+                .collect()
+        };
+        for (i, source_idx) in resolved.into_iter().enumerate() {
+            lanes[i].keytrack_source = source_idx;
         }
 
         self.playback = lanes
@@ -1043,6 +1097,7 @@ impl Engine {
 
         // (note, vel, off_at) einsammeln, dann senden (Borrow-Konflikt vermeiden).
         let mut hits: Vec<(u8, u8, u64)> = Vec::new();
+        let is_notey = matches!(block.kind, CKind::Melody(_) | CKind::Chord(_) | CKind::Arp(_));
         match &block.kind {
             CKind::Melody(notes) | CKind::Chord(notes) | CKind::Arp(notes) => {
                 for n in notes {
@@ -1062,6 +1117,22 @@ impl Engine {
             // CC-Bausteine haben keine Step-"Hits" — ihr Ausgang wird
             // kontinuierlich in `eval_cc_pulse` erzeugt, nicht hier.
             CKind::Cc(_) => {}
+        }
+
+        // Keytrack-Weitergabe: eine Melodie/Chord/Arp-Lane treibt live das
+        // LFO-Key-Tracking jeder CC-Lane, die sie als Quelle gewählt hat
+        // (`Lane::keytrack_source_lane_id`) — dieselbe `trigger_note`, die
+        // sonst nur ein externer MIDI-Trigger setzt (s. `press_slot`). Bei
+        // einem Akkord zählt die höchste Note; ohne neue Noten in diesem
+        // Step bleibt die zuletzt gehaltene Note stehen (Sample & Hold).
+        if is_notey {
+            if let Some(top_note) = hits.iter().map(|h| h.0).max() {
+                for i in 0..self.lanes.len() {
+                    if self.lanes[i].keytrack_source == Some(lane_idx) {
+                        self.playback[i].trigger_note = Some(top_note);
+                    }
+                }
+            }
         }
 
         // Alle Note-Ons dieses Steps in EINEM Puffer sammeln und mit einem
@@ -1223,6 +1294,217 @@ impl Engine {
             state.last_val = Some(val);
             state.last_sent = now;
             self.midi.send(&target.port, &[0xB0 | (target.channel - 1), target.cc_number, val]);
+        }
+    }
+
+    // ── Baustein-Detail „▶ Play" (Vorschau eines einzelnen Bausteins) ──────
+
+    /// Kompiliert `block_id` aus der projektweiten Bibliothek und startet eine
+    /// eigenständige Vorschau — läuft unabhängig vom Transport (auch bei
+    /// Stillstand) und ohne dass der Baustein in einer Lane stecken muss.
+    /// Port/Kanal (und bei CC das Ziel) kommen von einer PASSENDEN Lane, nach
+    /// derselben Regel wie `block.previewNote` (`block_preview_target` in
+    /// ws.rs): bevorzugt eine Lane, die den Baustein wirklich enthält, sonst
+    /// die erste Lane derselben Rolle, sonst irgendeine. Ein `Err` trägt einen
+    /// UI-tauglichen Grund, warum es nicht ging.
+    pub fn start_block_preview(&mut self, project: &Project, block_id: &str, looping: bool) -> Result<(), String> {
+        let blocks = project.blocks.as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+        let block_json = blocks
+            .iter()
+            .find(|b| b.get("id").and_then(|v| v.as_str()) == Some(block_id))
+            .ok_or_else(|| "This block no longer exists.".to_string())?;
+        let block_type = block_json.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if !matches!(block_type, "melody" | "beat" | "cc" | "chord" | "arp") {
+            return Err(format!("Preview isn't supported for {block_type} blocks yet."));
+        }
+
+        let mut found: Option<(&Device, &Lane)> = None;
+        let mut same_role: Option<(&Device, &Lane)> = None;
+        let mut any: Option<(&Device, &Lane)> = None;
+        'outer: for dev in &project.devices {
+            for lane in &dev.lanes {
+                if any.is_none() {
+                    any = Some((dev, lane));
+                }
+                if same_role.is_none() && lane.role == block_type {
+                    same_role = Some((dev, lane));
+                }
+                if lane
+                    .slots
+                    .as_array()
+                    .is_some_and(|s| s.iter().any(|s| s.get("blockId").and_then(|v| v.as_str()) == Some(block_id)))
+                {
+                    found = Some((dev, lane));
+                    break 'outer;
+                }
+            }
+        }
+        let (dev, lane) = found
+            .or(same_role)
+            .or(any)
+            .ok_or_else(|| "No device/lane set up yet to preview through.".to_string())?;
+        if dev.midi_out_port.is_empty() {
+            return Err(format!("\"{}\" has no MIDI output port set.", dev.name));
+        }
+        let channel = lane.channel.clamp(1, 16);
+        let cc_target = if block_type == "cc" {
+            let target = resolve_cc_target(&lane.cc_control_id, dev, channel, &project.controls);
+            if target.is_none() {
+                return Err(format!("Lane \"{}\" has no CC target knob set yet.", lane.name));
+            }
+            target
+        } else {
+            None
+        };
+
+        let block: BlockJson = serde_json::from_value(block_json.clone())
+            .map_err(|_| "Could not read this block.".to_string())?;
+        let slot = SlotJson {
+            id: String::new(),
+            block_id: block_id.to_string(),
+            transpose: 0,
+            speed: 1.0,
+            loop_mode: if looping { "loop".to_string() } else { String::new() },
+            loop_count: 0,
+        };
+        let cb = compile_block(&block, &slot, channel, &cc_target)
+            .ok_or_else(|| "Could not compile this block.".to_string())?;
+
+        self.stop_preview();
+        let now = Instant::now();
+        self.preview = Some(PreviewPlayback {
+            port: dev.midi_out_port.clone(),
+            cb,
+            pos: 0,
+            global_pulse: 0,
+            elapsed_secs: 0.0,
+            looping,
+            pending: Vec::new(),
+            cc_last_val: None,
+            cc_last_sent: now.checked_sub(MIN_CC_SEND_INTERVAL).unwrap_or(now),
+        });
+        Ok(())
+    }
+
+    /// Beendet eine laufende Baustein-Vorschau sofort — noch fällige
+    /// Note-Offs gehen sofort raus statt erst am regulären Fälligkeitspuls
+    /// (der käme ja nie mehr, sobald `on_preview_pulse` nicht mehr tickt).
+    pub fn stop_preview(&mut self) {
+        if let Some(p) = self.preview.take() {
+            if !p.pending.is_empty() {
+                let ch = p.cb.channel;
+                let mut bytes = Vec::with_capacity(p.pending.len() * 3);
+                for (_, note, _) in &p.pending {
+                    bytes.extend_from_slice(&[0x80 | (ch - 1), *note, 0]);
+                }
+                self.midi.send(&p.port, &bytes);
+            }
+        }
+    }
+
+    /// Ein freilaufender Puls der Baustein-Vorschau — unabhängig vom
+    /// Transport, im selben BPM-Intervall wie `on_pulse` getickt (s.
+    /// `clock.rs`). No-op ohne aktive Vorschau.
+    pub fn on_preview_pulse(&mut self, dt_secs: f64) {
+        let Some(p) = &mut self.preview else { return };
+        p.elapsed_secs += dt_secs;
+        let global_pulse = p.global_pulse;
+        let ch = p.cb.channel;
+
+        // Fällige Note-Offs.
+        let mut off_bytes = Vec::new();
+        p.pending.retain(|(c, note, at)| {
+            if *at <= global_pulse {
+                off_bytes.extend_from_slice(&[0x80 | (c - 1), *note, 0]);
+                false
+            } else {
+                true
+            }
+        });
+        if !off_bytes.is_empty() {
+            self.midi.send(&p.port, &off_bytes);
+        }
+
+        let pps = p.cb.pulses_per_step.max(1);
+        let mut finished = false;
+        if p.pos % pps == 0 {
+            let step = p.pos / pps;
+            match &p.cb.kind {
+                CKind::Melody(notes) | CKind::Chord(notes) | CKind::Arp(notes) => {
+                    let mut on_bytes = Vec::new();
+                    for n in notes {
+                        if n.step == step {
+                            on_bytes.extend_from_slice(&[0x90 | (ch - 1), n.note, n.vel]);
+                            p.pending.push((ch, n.note, global_pulse + (n.len_steps.max(1) * pps) as u64));
+                        }
+                    }
+                    if !on_bytes.is_empty() {
+                        self.midi.send(&p.port, &on_bytes);
+                    }
+                }
+                CKind::Beat(steps) => {
+                    if let Some(row) = steps.get(step as usize) {
+                        let mut on_bytes = Vec::new();
+                        for (note, vel) in row {
+                            on_bytes.extend_from_slice(&[0x90 | (ch - 1), *note, *vel]);
+                            p.pending.push((ch, *note, global_pulse + pps as u64));
+                        }
+                        if !on_bytes.is_empty() {
+                            self.midi.send(&p.port, &on_bytes);
+                        }
+                    }
+                }
+                CKind::Cc(_) => {} // unten, kontinuierlich statt an Step-Grenzen
+            }
+        }
+        if let CKind::Cc(auto) = &p.cb.kind {
+            if let Some(target) = auto.target.clone() {
+                let pulses_per_step = pps as f64;
+                let step_pos = p.pos as f64 / pulses_per_step;
+                let ctx = CcEvalCtx {
+                    step_pos,
+                    step_index: step_pos.floor().max(0.0) as usize,
+                    global_step_pos: global_pulse as f64 / pulses_per_step,
+                    pos: p.pos,
+                    len_pulses: p.cb.len_pulses,
+                    global_pulse,
+                    ppb: p.cb.ppb,
+                    elapsed_secs: p.elapsed_secs,
+                    // Eigenständige Vorschau, keine Lane, die sie ausgelöst
+                    // haben könnte — kein Key-Tracking.
+                    trigger_note: None,
+                };
+                let value01 = eval_cc_layers(&auto.layers, &ctx);
+                if value01.is_finite() {
+                    let span = auto.out_max as i32 - auto.out_min as i32;
+                    let val = (auto.out_min as f64 + value01.clamp(0.0, 1.0) * span as f64)
+                        .round()
+                        .clamp(0.0, 127.0) as u8;
+                    let now = Instant::now();
+                    let changed = p.cc_last_val != Some(val);
+                    let ready = now.duration_since(p.cc_last_sent) >= MIN_CC_SEND_INTERVAL;
+                    if changed && ready {
+                        p.cc_last_val = Some(val);
+                        p.cc_last_sent = now;
+                        self.midi.send(&p.port, &[0xB0 | (ch - 1), target.cc_number, val]);
+                    }
+                }
+            }
+        }
+
+        p.global_pulse += 1;
+        p.pos += 1;
+        if p.pos >= p.cb.len_pulses.max(1) {
+            if p.looping {
+                p.pos = 0;
+            } else {
+                finished = true;
+            }
+        }
+        // Einmal durch und nichts mehr fällig: Vorschau von selbst beenden,
+        // statt endlos leer weiterzuticken.
+        if finished && p.pending.is_empty() {
+            self.preview = None;
         }
     }
 }

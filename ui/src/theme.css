@@ -1251,17 +1251,18 @@ textarea {
   font-size: 13px;
 }
 
-/* ── Schnell-Start/Stop einer Lane — ganz links in der Zeile, volle Höhe,
-   damit man sie live blind trifft. „on" = Lane läuft (■ = stoppen). ── */
+/* ── Schnell-Start/Stop einer Lane — ganz links in der Zeile, volle Höhe und
+   doppelt breit, damit man sie live blind trifft. Ampel-Logik: aus (▶) grün,
+   „on" = Lane läuft (■ = stoppen) rot — wie Play/Stop im Transport. ── */
 .lane-run {
   flex: 0 0 auto;
   align-self: stretch;
-  width: 44px;
+  width: 88px;
   min-height: 44px;
-  border: 1.5px solid rgba(255, 255, 255, 0.3);
+  border: 1.5px solid var(--pal-run);
   border-radius: 10px;
-  background: var(--pal-btn);
-  color: var(--pal-text-dim);
+  background: color-mix(in srgb, var(--pal-run) 26%, var(--pal-btn));
+  color: var(--pal-run);
   font-size: 18px;
   font-weight: 800;
   cursor: pointer;
@@ -1272,9 +1273,9 @@ textarea {
   opacity: 0.55;
 }
 .lane-run.on {
-  background: color-mix(in srgb, var(--pal-run) 26%, var(--pal-btn));
-  border-color: var(--pal-run);
-  color: var(--pal-run);
+  background: color-mix(in srgb, var(--pal-stop) 26%, var(--pal-btn));
+  border-color: var(--pal-stop);
+  color: var(--pal-stop);
 }
 
 /* ── Schnell-Mute des ganzen Geräts — Stopp-Schild ganz links am Geräte-Panel.

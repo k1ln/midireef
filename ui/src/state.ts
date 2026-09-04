@@ -178,6 +178,10 @@ export interface Lane {
   ccControlId?: string | null; // cc-Lane: Ziel-Knob (LiveControl-Id desselben Geräts)
   /** Trigger-Kette: wird ein Slot dieser Lane ausgelöst, feuert (laneId, slotId) mit. */
   chainSlot?: { laneId: string; slotId: string } | null;
+  /** cc-Lane: eine Melodie-Lane, deren gespielte Noten das LFO-Key-Tracking
+   *  (rateKeyTrack) dieser Lane treiben — Alternative zum externen MIDI-
+   *  Trigger. Nur Melodie-Lanes sind ein gültiges Ziel. */
+  keytrackSourceLaneId?: string | null;
   slots: Slot[];
   controls: LaneControl[];
 }

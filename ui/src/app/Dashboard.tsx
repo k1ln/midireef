@@ -45,7 +45,7 @@ function clampZoom(z: number): number {
   return Math.min(2, Math.max(0.3, z));
 }
 
-export function Dashboard({ centerSignal }: { centerSignal?: number }) {
+export function Dashboard({ centerSignal, addLaneSwitchSignal }: { centerSignal?: number; addLaneSwitchSignal?: number }) {
   const send = useSend();
   const net = useNet();
   const store = useStore();
@@ -240,6 +240,16 @@ export function Dashboard({ centerSignal }: { centerSignal?: number }) {
     resetView();
   }, [centerSignal]);
 
+  // „＋ Lane switch" sitzt ebenfalls in der Transport-Leiste, aus demselben
+  // Grund wie „Center" (steht nicht mehr frei über dem Canvas und deckt
+  // Controls zu) — gleiches Zähler-Muster, hier nur die Reaktion.
+  const addLaneSwitchSeen = useRef(addLaneSwitchSignal);
+  useEffect(() => {
+    if (addLaneSwitchSignal === addLaneSwitchSeen.current) return;
+    addLaneSwitchSeen.current = addLaneSwitchSignal;
+    setLaneTogglePicker(true);
+  }, [addLaneSwitchSignal]);
+
   const cx = w / 2;
   const cy = (TOP + h) / 2;
 
@@ -347,23 +357,10 @@ export function Dashboard({ centerSignal }: { centerSignal?: number }) {
         </div>
       )}
 
-      {!editMode && !armed && (
-        <div style={{ position: "fixed", top: TOP + 12, left: 16, zIndex: 6 }}>
-          <Button
-            variant="alt"
-            style={{ height: 34, fontSize: 13, padding: "0 12px" }}
-            title="Add a button that starts / stops a lane — no MIDI needed"
-            onClick={() => setLaneTogglePicker(true)}
-          >
-            ＋ Lane switch
-          </Button>
-        </div>
-      )}
-
       {laneTogglePicker && (
         <LanePickerPopup
           x={16}
-          y={TOP + 52}
+          y={TOP + 16}
           devices={devices}
           filter={() => true}
           prompt="Which lane should this button start / stop?"

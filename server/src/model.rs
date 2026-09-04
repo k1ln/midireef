@@ -84,6 +84,14 @@ pub struct Lane {
     /// hier hinterlegte `(laneId, slotId)` mit ausgelöst. `None` = keine Kette.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chain_slot: Option<ChainSlot>,
+    /// Nur für `role == "cc"`: Id einer Melodie-Lane, deren gespielte Noten
+    /// das LFO-Key-Tracking (`rateKeyTrack`) dieser Lane treiben — die
+    /// höchste Note jedes Note-Steps setzt laufend `Playback::trigger_note`
+    /// (s. `Engine::fire_step`). Alternative zum externen MIDI-Trigger
+    /// (`control.setTrigger`), der denselben Wert nur bei einer physisch
+    /// gespielten Note setzt. `None` = kein internes Keytrack.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keytrack_source_lane_id: Option<Id>,
     #[serde(default)]
     pub slots: serde_json::Value,
     #[serde(default)]
@@ -108,6 +116,7 @@ impl Lane {
             channel: 1,
             cc_control_id: None,
             chain_slot: None,
+            keytrack_source_lane_id: None,
             slots: serde_json::json!([]),
             controls: serde_json::json!([]),
         }

@@ -28,6 +28,7 @@ import type { Block } from "../../state";
 import { useSend } from "../store";
 import { useNotePicker, noteName } from "../NotePicker";
 import { Button } from "../widgets/Button";
+import { Popup } from "../widgets/Popup";
 import { StepBars, StepCell, RollKey, ROLL_LOW_NOTE, ROLL_HIGH_NOTE, type StepFlow } from "./StepGrid";
 import { useSetField } from "../useNumberEditor";
 import { useLongPress } from "../useLongPress";
@@ -57,9 +58,12 @@ export function MelodyToolbar({
   playIn: boolean;
   setPlayIn: (v: boolean) => void;
 }) {
+  const send = useSend();
   const openNotePicker = useNotePicker();
   const setField = useSetField();
   const base = block.baseNote ?? 60;
+  const [confirmClear, setConfirmClear] = useState(false);
+  const noteCount = block.notes?.length ?? 0;
 
   return (
     <>
@@ -88,6 +92,39 @@ export function MelodyToolbar({
         >
           {playIn ? "● Play in" : "○ Play in"}
         </Button>
+      )}
+      <Button
+        variant="danger"
+        style={{ width: 90, height: 40, fontSize: 14 }}
+        title="Remove every note in this melody"
+        disabled={noteCount === 0}
+        onClick={() => setConfirmClear(true)}
+      >
+        🗑 Clear
+      </Button>
+
+      {confirmClear && (
+        <Popup onClose={() => setConfirmClear(false)}>
+          <div className="popup-title">Clear this melody?</div>
+          <div style={{ fontSize: 13, color: "var(--pal-text-dim)", marginBottom: 16 }}>
+            This removes all {noteCount} note{noteCount === 1 ? "" : "s"} right now — there's no undo.
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <Button
+              variant="danger"
+              style={{ flex: 1, height: 44 }}
+              onClick={() => {
+                send({ t: "melody.clear", blockId: block.id });
+                setConfirmClear(false);
+              }}
+            >
+              Clear everything
+            </Button>
+            <Button variant="alt" style={{ flex: 1, height: 44 }} onClick={() => setConfirmClear(false)}>
+              Cancel
+            </Button>
+          </div>
+        </Popup>
       )}
     </>
   );
@@ -218,8 +255,8 @@ function MelodyStack({ block, flow }: { block: Block; flow: StepFlow }) {
 // Quadratische Zellen: eine 34×20-Zelle ist mit dem Finger senkrecht kaum zu
 // treffen — daneben liegt sofort die nächste Tonhöhe. Gleich hoch wie breit
 // kostet Sichtfeld (der Ausschnitt scrollt ohnehin), trifft dafür.
-const ROW_H = 32;
-const CELL_W = 32;
+const ROW_H = 50;
+const CELL_W = 50;
 
 function MelodyGrid({ block, flow, playIn }: { block: Block; flow: StepFlow; playIn: boolean }) {
   const send = useSend();

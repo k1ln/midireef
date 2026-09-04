@@ -44,6 +44,13 @@ pub enum ClockCommand {
         velocity: u8,
         on: bool,
     },
+    /// Baustein-Detail „▶ Play": den offenen Baustein einmal oder in Schleife
+    /// abspielen — unabhängig vom Transport. Löst eine ggf. schon laufende
+    /// Vorschau ab (s. `Engine::start_block_preview`).
+    PlayBlockPreview(String, bool),
+    /// „■ Stop" / Editor geschlossen: eine laufende Baustein-Vorschau sofort
+    /// beenden (fällige Note-Offs gehen sofort raus).
+    StopBlockPreview,
 }
 
 #[derive(Clone)]
@@ -98,6 +105,10 @@ fn clock_loop(
     let mut playing = false;
     let mut interval = pulse_interval(bpm);
     let mut next_pulse = Instant::now();
+    // Baustein-Vorschau (BlockDetail „▶ Play") tickt im selben BPM-Intervall
+    // wie der Haupt-Puls, aber UNABHÄNGIG von `playing` — sonst ließe sich ein
+    // Baustein bei gestopptem Transport gar nicht anspielen.
+    let mut preview_next_pulse = Instant::now();
     let mut pulses: u64 = 0;
     let mut taps: Vec<Instant> = Vec::new();
     // Live-Aufnahme (record.arm): pro (laneId, Note) der Step, an dem die
@@ -236,12 +247,27 @@ fn clock_loop(
                         }
                     }
                 }
+                ClockCommand::PlayBlockPreview(block_id, looping) => {
+                    let proj = project.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    if let Err(reason) = engine.start_block_preview(&proj, &block_id, looping) {
+                        let _ = events.send(serde_json::json!({ "t": "control.sendError", "message": reason }));
+                    }
+                }
+                ClockCommand::StopBlockPreview => engine.stop_preview(),
             }
         }
 
         // Nach Stop/Release stellt die Engine ggf. nicht-destruktive CC-Ziele
         // zurück — an UI + Projekt spiegeln.
         flush_cc_restores(&mut engine, &project, &events);
+
+        // s. `preview_next_pulse` oben — läuft immer, ob der Transport spielt
+        // oder nicht.
+        let preview_now = Instant::now();
+        while preview_now >= preview_next_pulse {
+            engine.on_preview_pulse(interval.as_secs_f64());
+            preview_next_pulse += interval;
+        }
 
         if playing {
             let now = Instant::now();

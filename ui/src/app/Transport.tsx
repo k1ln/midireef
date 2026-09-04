@@ -40,9 +40,13 @@ export interface TransportProps {
   /** „Center" — nur im Dashboard: setzt dessen Pan/Zoom zurück. Steht hier,
    *  weil das Dashboard selbst keine eigene Beschriftung/Leiste mehr trägt. */
   onCenter?: () => void;
+  /** „＋ Lane switch" — nur im Dashboard: öffnet den Lane-Picker dort, der
+   *  einen MIDI-losen Start/Stop-Taster aufs Dashboard legt. Steht hier statt
+   *  frei über dem Canvas, damit er die Controls nicht zuklebt. */
+  onAddLaneSwitch?: () => void;
 }
 
-export function Transport({ view, onNav, onAddDevice, onCenter }: TransportProps) {
+export function Transport({ view, onNav, onAddDevice, onCenter, onAddLaneSwitch }: TransportProps) {
   const net = useNet();
   const send = useSend();
   const [t, setT] = useState<TransportState | null>(null);
@@ -175,11 +179,22 @@ export function Transport({ view, onNav, onAddDevice, onCenter }: TransportProps
       {view === "start" && onCenter && (
         <Button
           className="transport-nav"
-          style={{ height: BTN, padding: "0 16px", fontSize: 18, fontWeight: 700, marginRight: 16 }}
+          style={{ height: BTN, padding: "0 16px", fontSize: 18, fontWeight: 700, marginRight: 6 }}
           title="Reset the dashboard pan / zoom"
           onClick={onCenter}
         >
           Center
+        </Button>
+      )}
+
+      {view === "start" && onAddLaneSwitch && (
+        <Button
+          className="transport-nav"
+          style={{ height: BTN, padding: "0 16px", fontSize: 18, fontWeight: 700, marginRight: 16 }}
+          title="Add a button that starts / stops a lane — no MIDI needed"
+          onClick={onAddLaneSwitch}
+        >
+          ＋ Lane switch
         </Button>
       )}
 

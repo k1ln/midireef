@@ -549,6 +549,17 @@ export interface Lane {
    */
   chainSlot?: { laneId: Id; slotId: Id } | null;
 
+  /**
+   * Nur für `role === "cc"`: eine Melodie-Lane, deren gespielte Noten das
+   * LFO-Key-Tracking (`CcLfoLayer.rateKeyTrack`) dieser Lane treiben — die
+   * höchste Note jedes Note-Steps setzt `Playback.trigger_note`, live,
+   * während die Melodie läuft. Alternative zum externen MIDI-Trigger
+   * (`LiveControl.trigger`/`control.setTrigger`), der denselben Wert nur bei
+   * einer physisch gespielten Note setzt. Nur Melodie-Lanes sind ein
+   * gültiges Ziel. `null`/undefined = kein internes Keytrack.
+   */
+  keytrackSourceLaneId?: Id | null;
+
   /** Swing 0..1 nur für diese Lane (überschreibt Projekt-Swing). */
   swing?: number;
   /** Humanize: leichte Zufallsstreuung von Timing/Velocity (0..1). */

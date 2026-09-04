@@ -395,6 +395,29 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 });
             }
         }
+        // Keytrack-Quelle einer CC-Lane setzen/lösen (sourceLaneId null → lösen):
+        // die gewählte Melodie-Lane treibt fortan mit ihren gespielten Noten das
+        // LFO-Key-Tracking (`rateKeyTrack`) dieser Lane — s. `Engine::fire_step`.
+        // Nur Melodie-Lanes sind ein gültiges Ziel (sonst hätte „key" keine
+        // Bedeutung).
+        "lane.setKeytrackSource" => {
+            if let Some(lane_id) = str_field(&cmd, "laneId") {
+                let source_lane_id = str_field(&cmd, "sourceLaneId");
+                {
+                    let mut proj = state.project.lock().unwrap();
+                    let allowed = match &source_lane_id {
+                        Some(sid) => find_lane(&proj, sid).map(|(_, l)| l.role == "melody").unwrap_or(false),
+                        None => true,
+                    };
+                    if allowed {
+                        if let Some(l) = find_lane_mut(&mut proj, &lane_id) {
+                            l.keytrack_source_lane_id = source_lane_id;
+                        }
+                    }
+                }
+                broadcast_snapshot(state);
+            }
+        }
         // ── MIDI-Learn (Startbildschirm) ──
         "learn.start" => {
             state
@@ -1002,6 +1025,18 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 broadcast_snapshot(state);
             }
         }
+        // Baustein-Detail: ALLE Noten dieses Bausteins auf einen Schlag
+        // entfernen (die UI fragt vorher nach — das hier räumt ohne Rückfrage).
+        "melody.clear" => {
+            if let Some(id) = str_field(&cmd, "blockId") {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(b) = find_block_mut(&mut proj, &id) {
+                    b["notes"] = serde_json::json!([]);
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
         // Baustein-Detail: Tonhöhe einer bestehenden Note am Step ändern
         // (identifiziert über die bisherige Tonhöhe). No-op, wenn die Ziel-
         // Tonhöhe am selben Step schon durch eine andere Note belegt ist.
@@ -1111,6 +1146,20 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                     state.clock.send(ClockCommand::Midi(port, bytes));
                 }
             }
+        }
+        // Baustein-Detail: „▶ Play" — den offenen Baustein einmal oder in
+        // Schleife abspielen, unabhängig vom Transport und ohne dass er in
+        // einer Lane stecken muss (s. `Engine::start_block_preview`).
+        "block.play" => {
+            if let Some(id) = str_field(&cmd, "blockId") {
+                let looping = cmd.get("loop").and_then(|v| v.as_bool()).unwrap_or(false);
+                state.clock.send(ClockCommand::PlayBlockPreview(id, looping));
+            }
+        }
+        // „■ Stop" bzw. Editor geschlossen: eine laufende Baustein-Vorschau
+        // sofort beenden.
+        "block.stopPreview" => {
+            state.clock.send(ClockCommand::StopBlockPreview);
         }
         // Baustein-Detail: Step einer Beat-Line an/aus (velocity 0/100).
         "beat.toggleStep" => {
