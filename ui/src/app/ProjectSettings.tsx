@@ -466,6 +466,7 @@ export function ProjectSettings({ onClose }: { onClose: () => void }) {
       </section>
 
       <WifiApCard />
+      <DisplayCard />
       <GithubBackupCard />
       </div>
     </div>
@@ -818,6 +819,69 @@ function WifiApCard() {
           </div>
         )}
       </div>
+    </section>
+  );
+}
+
+/** „Display" — Kiosk-Bildschirm um 180° drehen (Touchscreen sitzt bei manchen
+ *  Gehäusen kopfüber im Gehäuse). Schickt sofort `display.setRotation`; der
+ *  Server dreht den Output live über `deploy/bin/midireef-display` (kein
+ *  Chromium-Neustart nötig). Auf dem Mac-Dev-Rechner fehlt der Helfer →
+ *  `supported:false`, die Karte ist dann deaktiviert. */
+function DisplayCard() {
+  const net = useNet();
+  const send = useSend();
+  const display = useStoreValue((s) => s.display);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const off = net.onEvent((evt) => {
+      if (evt.t === "display.error") {
+        setError(evt.message ?? "Unknown error");
+        setPending(false);
+      } else if (evt.t === "display.state") {
+        setPending(false);
+      }
+    });
+    send({ t: "display.getState" });
+    return off;
+  }, [net, send]);
+
+  const supported = display?.supported ?? false;
+  const flipped = display?.rotated ?? false;
+
+  return (
+    <section className="settings-card">
+      <div className="popup-subtitle">Display — flip the kiosk screen 180°</div>
+
+      {!supported && (
+        <div style={{ color: "var(--pal-text-dim)", fontSize: 14, marginBottom: 12 }}>
+          Runs only on the Pi.
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 6, opacity: supported ? 1 : 0.4 }}>
+        {([false, true] as boolean[]).map((on) => (
+          <Button
+            key={String(on)}
+            variant={flipped === on ? (on ? "active" : undefined) : "alt"}
+            style={{ flex: 1, height: 48, fontSize: 15 }}
+            disabled={!supported || pending}
+            onClick={() => {
+              setError(null);
+              setPending(true);
+              send({ t: "display.setRotation", rotated: on });
+            }}
+          >
+            {on ? "Flipped 180°" : "Normal"}
+          </Button>
+        ))}
+      </div>
+
+      {error && (
+        <div style={{ fontSize: 13, color: "var(--pal-warn, #d88)", marginTop: 10 }}>{error}</div>
+      )}
     </section>
   );
 }

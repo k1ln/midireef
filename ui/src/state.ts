@@ -232,6 +232,14 @@ export interface NetworkState {
   active: boolean;
 }
 
+/** Zustand der Kiosk-Bildschirmdrehung (Einstellungen → „Display"). Spiegelt
+ *  das ServerEvent `display.state`. `supported` ist false, wo der Helfer
+ *  fehlt (Mac-Dev) — die Karte ist dann deaktiviert. */
+export interface DisplayState {
+  supported: boolean;
+  rotated: boolean;
+}
+
 /** Zustand der GitHub-Backup-Verbindung (Einstellungen → „GitHub backup").
  *  Spiegelt das ServerEvent `github.config` — das Token selbst kommt NIE mit,
  *  nur ob eins hinterlegt ist. */
@@ -251,6 +259,8 @@ export class Store {
   recordArmed: RecordArm | null = null;
   /** Latest `network.state` from the server — null until it first arrives. */
   network: NetworkState | null = null;
+  /** Latest `display.state` from the server — null until it first arrives. */
+  display: DisplayState | null = null;
   /** Latest `github.config` from the server — null until it first arrives. */
   github: GithubState | null = null;
   private listeners: Listener[] = [];
@@ -290,6 +300,11 @@ export class Store {
 
   setNetwork(n: NetworkState) {
     this.network = n;
+    this.emit();
+  }
+
+  setDisplay(d: DisplayState) {
+    this.display = d;
     this.emit();
   }
 

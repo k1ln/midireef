@@ -5,6 +5,7 @@
 mod clock;
 #[cfg(target_os = "macos")]
 mod coremidi_hotplug;
+mod display;
 mod engine;
 mod github;
 mod logbuf;
@@ -125,6 +126,9 @@ async fn main() {
     // über Reboots, indem der Soll-Zustand hier aus network.json kommt.
     let network = Arc::new(Mutex::new(net_ap::load(&data_dir)));
 
+    // Display-Drehung (siehe display.rs): Soll-Zustand aus display.json.
+    let display_cfg = Arc::new(Mutex::new(display::load(&data_dir)));
+
     // GitHub-Backup-Konfiguration (siehe github.rs): Token + Ziel-Repo,
     // persistiert in github.json, niemals im Klartext an die UI zurück.
     let github_cfg = Arc::new(Mutex::new(github::load(&data_dir)));
@@ -142,6 +146,7 @@ async fn main() {
         record_armed: Arc::new(Mutex::new(None)),
         note_input: Arc::new(Mutex::new(None)),
         network: network.clone(),
+        display: display_cfg.clone(),
         github: github_cfg,
         last_streamed_snapshot: Arc::new(Mutex::new(None)),
         snapshot_pending: Arc::new(AtomicBool::new(false)),
@@ -159,6 +164,21 @@ async fn main() {
             tokio::task::spawn_blocking(move || match net_ap::apply(&cfg) {
                 Ok(()) => tracing::info!("WLAN-Access-Point „{}“ aktiviert", cfg.ssid),
                 Err(e) => tracing::warn!("WLAN-Access-Point-Start fehlgeschlagen: {e}"),
+            });
+        }
+    }
+
+    // Display-Drehung beim Start anwenden (self-healing, z.B. falls
+    // display.json von Hand geändert wurde) — nicht blockierend.
+    {
+        let cfg = *display_cfg.lock().unwrap();
+        if display::supported() {
+            tokio::task::spawn_blocking(move || match display::apply(&cfg) {
+                Ok(()) => tracing::info!(
+                    "Display-Drehung angewendet: {}°",
+                    if cfg.rotated { 180 } else { 0 }
+                ),
+                Err(e) => tracing::warn!("Display-Drehung beim Start fehlgeschlagen: {e}"),
             });
         }
     }

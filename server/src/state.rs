@@ -67,6 +67,9 @@ pub struct AppState {
     /// Soll-Zustand des Pi-WLAN-Access-Points (Einstellungen → „Wi-Fi access
     /// point"). Persistiert als `<data_dir>/network.json`, siehe `net_ap`.
     pub network: Arc<Mutex<crate::net_ap::NetworkConfig>>,
+    /// Soll-Zustand der Kiosk-Bildschirmdrehung (Einstellungen → „Display
+    /// drehen"). Persistiert als `<data_dir>/display.json`, siehe `display`.
+    pub display: Arc<Mutex<crate::display::DisplayConfig>>,
     /// GitHub-Backup-Ziel (Token + Repo, Einstellungen → „GitHub backup").
     /// Persistiert als `<data_dir>/github.json`, siehe `github`.
     pub github: Arc<Mutex<crate::github::GithubConfig>>,

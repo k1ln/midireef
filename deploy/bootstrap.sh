@@ -43,6 +43,7 @@ fi
 log "Kiosk-Skript, WLAN-Helfer und systemd-Units installieren"
 pi_rsync -a deploy/kiosk.sh "$PI:$PI_DIR/bin/kiosk.sh"
 pi_rsync -a deploy/bin/midireef-net "$PI:$PI_DIR/bin/midireef-net"
+pi_rsync -a deploy/bin/midireef-display "$PI:$PI_DIR/bin/midireef-display"
 pi_ssh "chmod +x '$PI_DIR/bin/kiosk.sh' '$PI_DIR/bin/midireef-net'"
 
 render() {  # Platzhalter der Unit-Templates füllen

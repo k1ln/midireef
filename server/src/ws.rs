@@ -7,6 +7,7 @@ use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 
 use crate::clock::ClockCommand;
+use crate::display;
 use crate::github;
 use crate::midi;
 use crate::model::{ClockSource, Device, Lane, Project};
@@ -40,6 +41,14 @@ fn broadcast_network_state(state: &AppState) {
         };
         let _ = events.send(net_ap::state_event(&cfg, port, active));
     });
+}
+
+/// Broadcastet `display.state` an alle Clients. Anders als beim WLAN-AP gibt
+/// es keinen separaten Ist-Zustand zu erfragen — `apply()` meldet Erfolg/
+/// Misserfolg schon synchron zurück —, daher reicht ein direkter Send.
+fn broadcast_display_state(state: &AppState) {
+    let cfg = *state.display.lock().unwrap();
+    let _ = state.events.send(display::state_event(&cfg));
 }
 
 pub async fn ws_handler(
@@ -99,6 +108,13 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             false
         };
         let evt = net_ap::state_event(&cfg, server_port(), active);
+        let _ = sender.send(Message::Text(evt.to_string())).await;
+    }
+
+    // Display-Drehungs-Zustand — wie network.state nur an diesen Client.
+    {
+        let cfg = *state.display.lock().unwrap();
+        let evt = display::state_event(&cfg);
         let _ = sender.send(Message::Text(evt.to_string())).await;
     }
 
@@ -1815,6 +1831,41 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                                 serde_json::json!({ "t": "network.error", "message": msg }),
                             );
                             let _ = events.send(net_ap::state_event(&cfg, port, false));
+                        }
+                    }
+                });
+            }
+        }
+        // ── Display-Drehung ──────────────────────────────────────────────────
+        "display.getState" => broadcast_display_state(state),
+        "display.setRotation" => {
+            let rotated = cmd.get("rotated").and_then(|v| v.as_bool()).unwrap_or(false);
+            let cfg = display::DisplayConfig { rotated };
+
+            if !display::supported() {
+                let _ = state.events.send(serde_json::json!({
+                    "t": "display.error",
+                    "message": "Display-Drehung gibt es nur auf dem Pi.",
+                }));
+            } else {
+                *state.display.lock().unwrap() = cfg;
+                if let Err(e) = display::save(&state.data_dir, &cfg) {
+                    tracing::warn!("display.json speichern fehlgeschlagen: {e}");
+                }
+                let events = state.events.clone();
+                tokio::spawn(async move {
+                    let res = tokio::task::spawn_blocking(move || display::apply(&cfg))
+                        .await
+                        .unwrap_or_else(|e| Err(format!("Task abgebrochen: {e}")));
+                    match res {
+                        Ok(()) => {
+                            let _ = events.send(display::state_event(&cfg));
+                        }
+                        Err(msg) => {
+                            let _ = events.send(
+                                serde_json::json!({ "t": "display.error", "message": msg }),
+                            );
+                            let _ = events.send(display::state_event(&cfg));
                         }
                     }
                 });

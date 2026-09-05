@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Dreht das Kiosk-Display live um 180° (oder zurück auf normal) — ohne
+# Chromium neu zu starten. Braucht anders als midireef-net kein sudo: das
+# Drehen eines eigenen Wayland-/X11-Outputs ist eine normale Aktion der
+# Desktop-Sitzung, keine System-Änderung.
+#
+# Aufruf: midireef-display 0|180
+#
+# Wird sowohl vom Server (Einstellungen → „Display drehen", server/src/display.rs)
+# als auch von kiosk.sh selbst beim Start aufgerufen (letzteres, damit die
+# Ausrichtung nach einem Reboot sofort stimmt, auch bevor jemand die
+# Einstellung erneut anfasst).
+set -uo pipefail
+
+ROTATION="${1:?Nutzung: midireef-display 0|180}"
+case "$ROTATION" in
+  0|180) ;;
+  *) echo "midireef-display: ungültige Drehung: $ROTATION (erlaubt: 0, 180)" >&2; exit 1 ;;
+esac
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+# Compositor-Socket finden — gleiche Erkennung wie kiosk.sh, aber ohne
+# Warteschleife: wenn dieser Helfer läuft, läuft der Kiosk bereits.
+if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
+  for sock in "$XDG_RUNTIME_DIR"/wayland-[0-9]*; do
+    [[ -S "$sock" ]] || continue
+    export WAYLAND_DISPLAY="$(basename "$sock")"
+    break
+  done
+fi
+
+if [[ -n "${WAYLAND_DISPLAY:-}" ]] && command -v wlr-randr >/dev/null 2>&1; then
+  ok=0
+  while IFS= read -r output; do
+    wlr-randr --output "$output" --transform "$ROTATION" 2>/dev/null && ok=1
+  done < <(wlr-randr 2>/dev/null | awk '/^[^ ]/{print $1}')
+  [[ "$ok" == "1" ]] || { echo "midireef-display: wlr-randr fehlgeschlagen" >&2; exit 1; }
+elif [[ -n "${DISPLAY:-}" || -e /tmp/.X11-unix/X0 ]] && command -v xrandr >/dev/null 2>&1; then
+  export DISPLAY="${DISPLAY:-:0}"
+  ORIENT=normal; [[ "$ROTATION" == "180" ]] && ORIENT=inverted
+  xrandr --orientation "$ORIENT" 2>/dev/null || { echo "midireef-display: xrandr fehlgeschlagen" >&2; exit 1; }
+else
+  echo "midireef-display: kein Compositor gefunden (weder Wayland noch X11)" >&2
+  exit 1
+fi
+
+# Für kiosk.sh: nach einem Reboot soll dieselbe Ausrichtung sofort wieder gelten.
+mkdir -p "$HOME/.config/midireef"
+echo "$ROTATION" > "$HOME/.config/midireef/kiosk-rotation"

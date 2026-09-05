@@ -56,22 +56,12 @@ if [[ "$PLATFORM" == x11 ]]; then
   xset s off -dpms s noblank 2>/dev/null || true
 fi
 
-# Bildschirmdrehung — Touchdisplay steckt standardmässig kopfüber im Gehäuse.
-# Umschaltbar per: deploy/kiosk-rotate.sh 0|90|180|270
-ROTATION="$(cat "$HOME/.config/midireef/kiosk-rotation" 2>/dev/null || echo 180)"
-if [[ "$ROTATION" != "0" ]]; then
-  if [[ "$PLATFORM" == wayland ]] && command -v wlr-randr >/dev/null 2>&1; then
-    while IFS= read -r output; do
-      wlr-randr --output "$output" --transform "$ROTATION" 2>/dev/null || true
-    done < <(wlr-randr 2>/dev/null | awk '/^[^ ]/{print $1}')
-  elif [[ "$PLATFORM" == x11 ]]; then
-    case "$ROTATION" in
-      90) ORIENT=left ;;
-      270) ORIENT=right ;;
-      *) ORIENT=inverted ;;
-    esac
-    xrandr --orientation "$ORIENT" 2>/dev/null || true
-  fi
+# Bildschirmdrehung — umschaltbar in den UI-Einstellungen (display.setRotation).
+# Nach einem Reboot, bevor der Server läuft, gilt hier erstmal der zuletzt
+# gespeicherte Wert aus der Datei, die der Server bei jeder Umschaltung schreibt.
+ROTATION="$(cat "$HOME/.config/midireef/kiosk-rotation" 2>/dev/null || echo 0)"
+if [[ "$ROTATION" == "180" ]]; then
+  "$(dirname "$0")/midireef-display" 180 2>/dev/null || true
 fi
 
 CHROMIUM="$(command -v chromium-browser || command -v chromium)"

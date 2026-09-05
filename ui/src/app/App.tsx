@@ -89,6 +89,9 @@ export function App() {
         case "network.state":
           store.setNetwork(evt);
           break;
+        case "display.state":
+          store.setDisplay(evt);
+          break;
         case "github.config":
           store.setGithub(evt);
           break;
