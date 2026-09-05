@@ -1,7 +1,7 @@
 # MidiReef — Entwicklung auf dem Mac, Betrieb auf dem Raspberry Pi.
 # Details und Ersteinrichtung: deploy/README.md
 .DEFAULT_GOAL := help
-.PHONY: help setup dev watch hmr deploy push server ui logs kiosk-restart kiosk-url status shell
+.PHONY: help setup dev watch hmr deploy push server ui logs kiosk-restart kiosk-url kiosk-rotate status shell
 
 help: ## Diese Übersicht
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -44,6 +44,9 @@ kiosk-restart: ## Chromium auf dem Pi neu starten
 
 kiosk-url: ## Kiosk auf eine URL schicken:  make kiosk-url URL=http://…
 	@deploy/kiosk-url.sh "$(URL)"
+
+kiosk-rotate: ## Kiosk-Anzeige drehen:  make kiosk-rotate DEG=0|90|180|270
+	@deploy/kiosk-rotate.sh "$(DEG)"
 
 shell: ## SSH-Shell auf dem Pi
 	@. deploy/config.env && ssh $$PI_USER@$$PI_HOST

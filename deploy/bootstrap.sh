@@ -11,9 +11,9 @@ log "Richte $PI ein …"
 # point"). Auf Bookworm i.d.R. schon da; mitinstallieren schadet nicht.
 log "Pakete installieren (chromium, alsa, network-manager, git …)"
 pi_ssh "sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-  chromium-browser libasound2 alsa-utils network-manager curl rsync git nodejs npm \
+  chromium-browser libasound2 alsa-utils network-manager curl rsync git nodejs npm wlr-randr \
   || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-  chromium libasound2 alsa-utils network-manager curl rsync git nodejs npm"
+  chromium libasound2 alsa-utils network-manager curl rsync git nodejs npm wlr-randr"
 
 # --- Verzeichnisse --------------------------------------------------------
 pi_ssh "mkdir -p '$PI_DIR'/bin '$PI_DIR'/ui '$PI_DIR'/data/projects \

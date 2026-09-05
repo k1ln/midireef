@@ -56,6 +56,24 @@ if [[ "$PLATFORM" == x11 ]]; then
   xset s off -dpms s noblank 2>/dev/null || true
 fi
 
+# Bildschirmdrehung — Touchdisplay steckt standardmässig kopfüber im Gehäuse.
+# Umschaltbar per: deploy/kiosk-rotate.sh 0|90|180|270
+ROTATION="$(cat "$HOME/.config/midireef/kiosk-rotation" 2>/dev/null || echo 180)"
+if [[ "$ROTATION" != "0" ]]; then
+  if [[ "$PLATFORM" == wayland ]] && command -v wlr-randr >/dev/null 2>&1; then
+    while IFS= read -r output; do
+      wlr-randr --output "$output" --transform "$ROTATION" 2>/dev/null || true
+    done < <(wlr-randr 2>/dev/null | awk '/^[^ ]/{print $1}')
+  elif [[ "$PLATFORM" == x11 ]]; then
+    case "$ROTATION" in
+      90) ORIENT=left ;;
+      270) ORIENT=right ;;
+      *) ORIENT=inverted ;;
+    esac
+    xrandr --orientation "$ORIENT" 2>/dev/null || true
+  fi
+fi
+
 CHROMIUM="$(command -v chromium-browser || command -v chromium)"
 [[ -n "$CHROMIUM" ]] || { echo "kiosk: chromium nicht installiert" >&2; exit 1; }
 
