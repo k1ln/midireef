@@ -998,17 +998,34 @@ textarea {
 }
 
 /* ── Touch keyboard — mirrors ui/keyboard.ts's grid math via CSS instead of
-   hand-computed key widths. ── */
+   hand-computed key widths. Zielgerät ist das Raspberry-Pi-Touchdisplay mit
+   1280×720 (Querformat); die min()-Fallbacks halten es auf kleineren/anderen
+   Viewports (Handy im Hochformat) benutzbar. ── */
 .kb-row {
   display: flex;
   justify-content: center;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: 10px;
+  margin-bottom: 10px;
 }
 .kb-key {
-  width: min(74px, 8.6vw);
-  height: min(64px, 10.5vh);
-  font-size: 26px;
+  width: min(96px, 8.4vw);
+  height: min(72px, 9.6vh);
+  font-size: 30px;
+}
+
+/* Pi-Touchdisplay (und ähnliche Querformat-Panels): feste, fingergerechte
+   Tastengrößen statt der vw/vh-Fallbacks — bei 1280×720 passen alle 6 Reihen
+   plus Anzeige ohne Scrollen in die untere Bildschirmhälfte. */
+@media (min-width: 1000px) and (max-height: 820px) and (orientation: landscape) {
+  .kb-row {
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+  .kb-key {
+    width: 100px;
+    height: 74px;
+    font-size: 32px;
+  }
 }
 
 

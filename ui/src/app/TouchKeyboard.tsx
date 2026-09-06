@@ -110,8 +110,20 @@ export function TouchKeyboardProvider({ children }: { children: ReactNode }) {
             style={{
               background: "rgba(17, 17, 17, 0.97)",
               borderRadius: "18px 18px 0 0",
-              padding: 8,
-              maxHeight: "min(420px, 62vh)",
+              padding: 10,
+              // Auf dem 1280er-Querformat-Panel zentriert und begrenzt, damit
+              // die Funktionsreihe (⌫/Space/Cancel/OK) mit den Buchstaben-
+              // reihen fluchtet statt über die volle Breite zu laufen.
+              width: "100%",
+              maxWidth: 1180,
+              margin: "0 auto",
+              boxSizing: "border-box",
+              // 6 Reihen (inkl. Symbol-Reihe) + Anzeige passen bei 1280×720
+              // ohne Scrollen rein; auf sehr flachen Viewports scrollt die
+              // Tastatur intern, damit OK/Cancel erreichbar bleiben statt
+              // unter den Bildschirmrand zu rutschen.
+              maxHeight: "90vh",
+              overflowY: "auto",
             }}
           >
             {ROWS.map((row, i) => (
@@ -120,7 +132,10 @@ export function TouchKeyboardProvider({ children }: { children: ReactNode }) {
                   <Button
                     variant={caps ? "active" : undefined}
                     className="kb-key"
-                    style={{ flex: "1.6 1 0" }}
+                    // Feste Breite (~1,5 Tasten) — NICHT flex-grow, sonst
+                    // frisst ⇧ die ganze Restbreite dieser Reihe und sie
+                    // fluchtet nicht mehr mit den übrigen.
+                    style={{ flex: "none", width: "min(150px, 14vw)" }}
                     onClick={() => setCaps((c) => !c)}
                   >
                     ⇧
