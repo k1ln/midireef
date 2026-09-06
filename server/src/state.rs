@@ -783,9 +783,24 @@ fn set_control_value_by_mapping(
             let min = c.get("min").and_then(|v| v.as_i64()).unwrap_or(0);
             let max = c.get("max").and_then(|v| v.as_i64()).unwrap_or(127);
             let cur = c.get("value").and_then(|v| v.as_i64()).unwrap_or(min);
-            ((cur + step as i64).clamp(min, max) as u8, true)
+            let next = (cur + step as i64).clamp(min, max) as u8;
+            if crate::midi::MIDI_LOG.load(std::sync::atomic::Ordering::Relaxed) {
+                tracing::info!(
+                    "CC{number} ch{channel} raw={value} · encoder={encoder} step={step:+} · {cur} → {next}"
+                );
+            }
+            (next, true)
         }
-        None => (value, false),
+        None => {
+            if encoder != "absolute"
+                && crate::midi::MIDI_LOG.load(std::sync::atomic::Ordering::Relaxed)
+            {
+                // Modus gesetzt, aber `relative_step` kennt ihn nicht → tippfehler
+                // o.ä.; als Absolutwert behandelt (das erklärt „flackert").
+                tracing::warn!("CC{number} ch{channel}: unbekannter encoder=\"{encoder}\" → absolut");
+            }
+            (value, false)
+        }
     };
 
     c["value"] = serde_json::json!(applied);
