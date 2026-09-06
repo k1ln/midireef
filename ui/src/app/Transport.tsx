@@ -24,6 +24,11 @@ import { getBgConfig, BG_CONFIG_EVENT } from "./bgConfig";
 import { useWheelPicker } from "./widgets/WheelPicker";
 
 const BTN = 50;
+/** Navigations-„Tabs" — enger gesetzt als die Transport-Tasten und in einer
+ *  eigenen Gruppe zusammengefasst, damit die Leiste rechts wieder Platz für
+ *  die Uhr hat. */
+const NAV = 42;
+const NAV_H = 46;
 /** BPM-Wippe: kleiner als die Transport-Tasten, aber noch fingerbreit. */
 const NUDGE = 46;
 
@@ -106,8 +111,8 @@ export function Transport({ view, onNav, onAddDevice, onCenter, onAddLaneSwitch 
         height: TRANSPORT_H,
         display: "flex",
         alignItems: "center",
-        gap: 10,
-        padding: "0 16px",
+        gap: 6,
+        padding: "0 14px",
         // Nur die Farbe hier — den Glas-Verlauf (background-image) und die
         // Fase liefert .hifi-rail in theme.css.
         backgroundColor: "rgba(17, 17, 17, 0.82)",
@@ -131,78 +136,87 @@ export function Transport({ view, onNav, onAddDevice, onCenter, onAddLaneSwitch 
       </Button>
       <Button
         className={t?.fillActive ? "transport-nav on" : "transport-nav"}
-        style={{ height: BTN, padding: "0 14px", fontSize: 14, fontWeight: 700, marginRight: 6 }}
+        style={{ height: BTN, padding: "0 12px", fontSize: 14, fontWeight: 700, marginRight: 8 }}
         title="Fill — steps with a 'fill' trig-condition only play while this is on"
         onClick={() => send({ t: "transport.setFill", active: !t?.fillActive })}
       >
         FILL
       </Button>
-      <Button
-        className={view === "seq" ? "transport-nav on" : "transport-nav"}
-        style={{ width: BTN, height: BTN, fontSize: 20 }}
-        onClick={() => onNav("seq")}
-      >
-        SQ
-      </Button>
-      <Button
-        className={view === "start" ? "transport-nav on" : "transport-nav"}
-        style={{ width: BTN, height: BTN, fontSize: 20 }}
-        title="Dashboard"
-        onClick={() => onNav("start")}
-      >
-        DB
-      </Button>
-      <Button
-        className={view === "library" ? "transport-nav on" : "transport-nav"}
-        style={{ width: BTN, height: BTN, fontSize: 22 }}
-        title="Block library"
-        onClick={() => onNav("library")}
-      >
-        ▤
-      </Button>
-      <Button
-        className={view === "scenes" ? "transport-nav on" : "transport-nav"}
-        style={{ width: BTN, height: BTN, fontSize: 18 }}
-        title="Scenes"
-        onClick={() => onNav("scenes")}
-      >
-        SC
-      </Button>
-      <Button
-        className={view === "routing" ? "transport-nav on" : "transport-nav"}
-        style={{ width: BTN, height: BTN, fontSize: 16 }}
-        title="Routing Hub"
-        onClick={() => onNav("routing")}
-      >
-        RT
-      </Button>
-      <Button
-        className={view === "mod" ? "transport-nav on" : "transport-nav"}
-        style={{ width: BTN, height: BTN, fontSize: 16 }}
-        title="Mod-Matrix"
-        onClick={() => onNav("mod")}
-      >
-        MX
-      </Button>
-      <Button
-        className={view === "settings" ? "transport-nav on" : "transport-nav"}
+
+      {/* Navigations-Tabs: eine Gruppe, eng gesetzt (gap 3) auf einer eigenen
+          Fläche, damit sie nicht die halbe Leiste frisst. */}
+      <div
         style={{
-          width: BTN,
-          height: BTN,
-          fontSize: 26,
-          marginRight:
-            (view === "seq" && onAddDevice && ports.length > 0) || (view === "start" && onCenter) ? 6 : 16,
+          display: "flex",
+          alignItems: "center",
+          gap: 3,
+          padding: 3,
+          borderRadius: 10,
+          background: "rgba(255, 255, 255, 0.05)",
+          marginRight: 10,
         }}
-        title="Projects"
-        onClick={() => onNav("settings")}
       >
-        ⚙
-      </Button>
+        <Button
+          className={view === "seq" ? "transport-nav on" : "transport-nav"}
+          style={{ width: NAV, height: NAV_H, fontSize: 17 }}
+          onClick={() => onNav("seq")}
+        >
+          SQ
+        </Button>
+        <Button
+          className={view === "start" ? "transport-nav on" : "transport-nav"}
+          style={{ width: NAV, height: NAV_H, fontSize: 17 }}
+          title="Dashboard"
+          onClick={() => onNav("start")}
+        >
+          DB
+        </Button>
+        <Button
+          className={view === "library" ? "transport-nav on" : "transport-nav"}
+          style={{ width: NAV, height: NAV_H, fontSize: 19 }}
+          title="Block library"
+          onClick={() => onNav("library")}
+        >
+          ▤
+        </Button>
+        <Button
+          className={view === "scenes" ? "transport-nav on" : "transport-nav"}
+          style={{ width: NAV, height: NAV_H, fontSize: 15 }}
+          title="Scenes"
+          onClick={() => onNav("scenes")}
+        >
+          SC
+        </Button>
+        <Button
+          className={view === "routing" ? "transport-nav on" : "transport-nav"}
+          style={{ width: NAV, height: NAV_H, fontSize: 14 }}
+          title="Routing Hub"
+          onClick={() => onNav("routing")}
+        >
+          RT
+        </Button>
+        <Button
+          className={view === "mod" ? "transport-nav on" : "transport-nav"}
+          style={{ width: NAV, height: NAV_H, fontSize: 14 }}
+          title="Mod-Matrix"
+          onClick={() => onNav("mod")}
+        >
+          MX
+        </Button>
+        <Button
+          className={view === "settings" ? "transport-nav on" : "transport-nav"}
+          style={{ width: NAV, height: NAV_H, fontSize: 22 }}
+          title="Projects"
+          onClick={() => onNav("settings")}
+        >
+          ⚙
+        </Button>
+      </div>
 
       {view === "seq" && onAddDevice && ports.length > 0 && (
         <Button
           className="transport-nav"
-          style={{ height: BTN, padding: "0 16px", fontSize: 20, fontWeight: 700, marginRight: 16 }}
+          style={{ height: NAV_H, padding: "0 10px", fontSize: 12, fontWeight: 700, marginRight: 8 }}
           title="Add a MIDI device"
           onClick={onAddDevice}
         >
@@ -213,7 +227,7 @@ export function Transport({ view, onNav, onAddDevice, onCenter, onAddLaneSwitch 
       {view === "start" && onCenter && (
         <Button
           className="transport-nav"
-          style={{ height: BTN, padding: "0 16px", fontSize: 18, fontWeight: 700, marginRight: 6 }}
+          style={{ height: NAV_H, padding: "0 10px", fontSize: 12, fontWeight: 700, marginRight: 4 }}
           title="Reset the dashboard pan / zoom"
           onClick={onCenter}
         >
@@ -224,7 +238,7 @@ export function Transport({ view, onNav, onAddDevice, onCenter, onAddLaneSwitch 
       {view === "start" && onAddLaneSwitch && (
         <Button
           className="transport-nav"
-          style={{ height: BTN, padding: "0 16px", fontSize: 18, fontWeight: 700, marginRight: 6 }}
+          style={{ height: NAV_H, padding: "0 10px", fontSize: 11, fontWeight: 700, marginRight: 4 }}
           title="Add a button that starts / stops a lane — no MIDI needed"
           onClick={onAddLaneSwitch}
         >
@@ -235,7 +249,7 @@ export function Transport({ view, onNav, onAddDevice, onCenter, onAddLaneSwitch 
       {view === "start" && (
         <Button
           className="transport-nav"
-          style={{ height: BTN, padding: "0 16px", fontSize: 18, fontWeight: 700, marginRight: 16 }}
+          style={{ height: NAV_H, padding: "0 10px", fontSize: 11, fontWeight: 700, marginRight: 8 }}
           title="Add a big knob on the dashboard you can scratch to change the tempo — no MIDI needed"
           onClick={() => send({ t: "control.addTempoKnob" })}
         >
