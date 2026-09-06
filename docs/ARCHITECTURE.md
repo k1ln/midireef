@@ -176,12 +176,15 @@ MiniLab ─┬─► D mini   (KeyLink, LIVE)
 
 1. **Transport-Leiste (immer oben):** Play/Stop, BPM, Clock-Status, Projekt-Name.
 2. **Startbildschirm / Live-Control (Dashboard):** Alle MIDI-Knobs/Buttons/Fader live bedienbar.
-   - **Long-Press** → MIDI-Learn startet → eingehende MIDI-Nachricht drücken → Zuordnung → mit **Touch-Keyboard** benennen.
-   - Controls per Drag auf einen **individuellen Screen** verschiebbar.
-   - **„＋ Keys link"** (Transport-Leiste): legt eine Kachel an, die die Tasten
-     eines angeschlossenen Controllers live an einen Ziel-Synth schickt —
-     Ziel per Tipp umhängbar, mehrere Links gleichzeitig „LIVE" möglich
-     (`KeyLink`, `AppState::forward_key_links`).
+   - **Kurzer Tipp auf freie Fläche** → seitliches **„Add"-Menü**: *Center view*,
+     *＋ Lane switch*, *＋ Tempo knob*, *＋ Keys link*. Verschwindet wieder beim
+     nächsten Tipp, sobald ein anderes Menü aufgeht oder MIDI-Learn startet.
+   - **Long-Press auf freie Fläche** → MIDI-Learn startet → eingehende MIDI-Nachricht drücken → Zuordnung → mit **Touch-Keyboard** benennen.
+   - Controls per Drag (im „Move"-Modus) auf einen **individuellen Screen** verschiebbar.
+   - **„Keys link"**: eine Kachel, die die Tasten eines angeschlossenen
+     Controllers live an einen Ziel-Synth schickt — Tipp = Menü
+     (Ziel/Kanal/Transpose), „LIVE"-Pille = an/aus, Ziehen = positionieren,
+     mehrere gleichzeitig „LIVE" möglich (`KeyLink`, `AppState::forward_key_links`).
 3. **Sequencer Overview:** Tabelle aller Devices/Lanes/Bausteine.
 4. **Device-Ansicht:** Lanes an/aus, ein-/ausblenden; Baustein-Bibliothek.
 5. **Baustein-Detail:** Noten/Beats/CC-Kurven editieren (Melodie, Beat-Lines mit Mute, CC-Layer wie LFO), inkl. Per-Step Probability/Conditions/Ratchets.

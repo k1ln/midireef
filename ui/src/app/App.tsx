@@ -47,17 +47,6 @@ export function App() {
   /** „＋ Device"-Port-Picker — der Knopf sitzt in der Transport-Leiste (nur im
    *  Sequencer), das Popup rendert hier auf oberster Ebene. */
   const [addDeviceOpen, setAddDeviceOpen] = useState(false);
-  /** Zähler, den „Center" in der Transport-Leiste hochzählt — das Dashboard
-   *  hört darauf und setzt Pan/Zoom zurück (kein eigener Knopf mehr auf dem
-   *  Dashboard selbst). */
-  const [centerSignal, setCenterSignal] = useState(0);
-  /** Zähler, den „＋ Lane switch" in der Transport-Leiste hochzählt — das
-   *  Dashboard hört darauf und öffnet dort seinen Lane-Picker (kein eigener
-   *  Knopf mehr über dem Canvas, der die Controls zuklebt). */
-  const [addLaneSwitchSignal, setAddLaneSwitchSignal] = useState(0);
-  /** Zähler für „＋ Keys link" in der Transport-Leiste — das Dashboard öffnet
-   *  daraufhin seinen Controller→Synth-Picker. */
-  const [addKeyLinkSignal, setAddKeyLinkSignal] = useState(0);
 
   const navigate = (next: View) => {
     setSub(null);
@@ -123,22 +112,9 @@ export function App() {
       <TouchKeyboardProvider>
         <NotePickerProvider>
           <WheelPickerProvider>
-          <Transport
-            view={view}
-            onNav={navigate}
-            onAddDevice={() => setAddDeviceOpen(true)}
-            onCenter={() => setCenterSignal((n) => n + 1)}
-            onAddLaneSwitch={() => setAddLaneSwitchSignal((n) => n + 1)}
-            onAddKeyLink={() => setAddKeyLinkSignal((n) => n + 1)}
-          />
+          <Transport view={view} onNav={navigate} onAddDevice={() => setAddDeviceOpen(true)} />
 
-          {view === "start" && (
-            <Dashboard
-              centerSignal={centerSignal}
-              addLaneSwitchSignal={addLaneSwitchSignal}
-              addKeyLinkSignal={addKeyLinkSignal}
-            />
-          )}
+          {view === "start" && <Dashboard />}
 
           {view === "seq" && (
             <Overview onOpenBlock={(blockId) => setSub({ kind: "blockDetail", blockId })} />

@@ -50,15 +50,7 @@ function clampZoom(z: number): number {
   return Math.min(2, Math.max(0.3, z));
 }
 
-export function Dashboard({
-  centerSignal,
-  addLaneSwitchSignal,
-  addKeyLinkSignal,
-}: {
-  centerSignal?: number;
-  addLaneSwitchSignal?: number;
-  addKeyLinkSignal?: number;
-}) {
+export function Dashboard() {
   const send = useSend();
   const net = useNet();
   const store = useStore();
@@ -83,6 +75,10 @@ export function Dashboard({
   const [triggerPicker, setTriggerPicker] = useState<{ ctrl: LiveControl } | null>(null);
   const [kindPicker, setKindPicker] = useState<{ controlId: string; mappingKind: "cc" | "note" } | null>(null);
   const [laneTogglePicker, setLaneTogglePicker] = useState(false);
+  // Seitliches „Add"-Menü — ein kurzer Tipp auf freie Dashboard-Fläche öffnet
+  // es (Center, ＋ Lane switch / Tempo knob / Keys link). Verschwindet, sobald
+  // ein anderes Menü aufgeht oder MIDI-Learn startet (s. Effekte unten).
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
   // „＋ Keys link" — Schritt 1: MIDI-Eingang wählen; Schritt 2: Ziel-Device.
   const [keyLinkPortPicker, setKeyLinkPortPicker] = useState(false);
   const [keyLinkAddPort, setKeyLinkAddPort] = useState<string | null>(null);
@@ -106,6 +102,10 @@ export function Dashboard({
   const pressTimer = useRef<number | undefined>(undefined);
   const toastTimer = useRef<number | undefined>(undefined);
   const keyLinkActiveTimers = useRef(new Map<string, number>());
+  // Kurzer-Tipp-Erkennung für das „Add"-Menü: gesetzt beim pointerdown auf
+  // freie Fläche, verworfen sobald daraus ein Pan / Learn wird.
+  const bgTap = useRef<{ at: number; hadSelection: boolean; hadMenu: boolean } | null>(null);
+  const learnFired = useRef(false);
 
   const cancelPress = () => {
     if (pressTimer.current) {
@@ -238,8 +238,17 @@ export function Dashboard({
       // Tipp auf freie Fläche schließt das Control-Dock wieder.
       setSelectedId(null);
       panStart.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y };
+      // Kandidat für einen kurzen Tipp → seitliches „Add"-Menü (s. pointerUp).
+      // Merkt sich, ob gerade ein Dock/Menü offen war: dann ist der Tipp ein
+      // „Wegtippen", kein „Add-Menü-öffnen".
+      bgTap.current = { at: Date.now(), hadSelection: selectedId != null, hadMenu: addMenuOpen };
+      learnFired.current = false;
       if (!armed) {
-        pressTimer.current = window.setTimeout(() => send({ t: "learn.start" }), LONG_PRESS_MS);
+        pressTimer.current = window.setTimeout(() => {
+          learnFired.current = true;
+          bgTap.current = null;
+          send({ t: "learn.start" });
+        }, LONG_PRESS_MS);
       }
     }
   };
@@ -261,6 +270,7 @@ export function Dashboard({
       if (!isPanning.current && Math.hypot(dx, dy) > 8) {
         isPanning.current = true;
         cancelPress();
+        bgTap.current = null; // aus dem Tipp wurde ein Pan
       }
       if (isPanning.current) setPan({ x: panStart.current.panX + dx, y: panStart.current.panY + dy });
     }
@@ -271,6 +281,20 @@ export function Dashboard({
     cancelPress();
     if (pointers.current.size < 2) pinch.current = null;
     if (pointers.current.size === 0) {
+      // Kurzer Tipp auf freie Fläche (kein Pan, kein Learn, unter der
+      // Lang-Druck-Schwelle) → seitliches „Add"-Menü auf/zu.
+      const tap = bgTap.current;
+      bgTap.current = null;
+      if (
+        tap &&
+        !isPanning.current &&
+        !learnFired.current &&
+        !editMode &&
+        Date.now() - tap.at < LONG_PRESS_MS
+      ) {
+        if (tap.hadMenu) setAddMenuOpen(false);
+        else if (!tap.hadSelection) setAddMenuOpen(true);
+      }
       panStart.current = null;
       isPanning.current = false;
     }
@@ -286,33 +310,39 @@ export function Dashboard({
     setPan({ x: 0, y: 0 });
   };
 
-  // „Center" sitzt jetzt in der Transport-Leiste (App zählt `centerSignal`
-  // hoch) — hier nur die Reaktion, den ersten Wert überspringen.
-  const centerSeen = useRef(centerSignal);
+  // Das seitliche „Add"-Menü verschwindet, sobald MIDI-Learn scharf wird …
   useEffect(() => {
-    if (centerSignal === centerSeen.current) return;
-    centerSeen.current = centerSignal;
-    resetView();
-  }, [centerSignal]);
+    if (armed) setAddMenuOpen(false);
+  }, [armed]);
 
-  // „＋ Lane switch" sitzt ebenfalls in der Transport-Leiste, aus demselben
-  // Grund wie „Center" (steht nicht mehr frei über dem Canvas und deckt
-  // Controls zu) — gleiches Zähler-Muster, hier nur die Reaktion.
-  const addLaneSwitchSeen = useRef(addLaneSwitchSignal);
+  // … oder irgendein anderes Menü / das Control-Dock aufgeht.
   useEffect(() => {
-    if (addLaneSwitchSignal === addLaneSwitchSeen.current) return;
-    addLaneSwitchSeen.current = addLaneSwitchSignal;
-    setLaneTogglePicker(true);
-  }, [addLaneSwitchSignal]);
-
-  // „＋ Keys link" in der Transport-Leiste — öffnet hier den MIDI-Eingangs-Picker.
-  const addKeyLinkSeen = useRef(addKeyLinkSignal);
-  useEffect(() => {
-    if (addKeyLinkSignal === addKeyLinkSeen.current) return;
-    addKeyLinkSeen.current = addKeyLinkSignal;
-    setKeyLinkAddPort(null);
-    setKeyLinkPortPicker(true);
-  }, [addKeyLinkSignal]);
+    if (
+      devicePicker ||
+      lanePicker ||
+      triggerPicker ||
+      kindPicker ||
+      laneTogglePicker ||
+      keyLinkPortPicker ||
+      keyLinkAddPort ||
+      keyLinkMenu ||
+      keyLinkDevicePicker ||
+      selectedId
+    ) {
+      setAddMenuOpen(false);
+    }
+  }, [
+    devicePicker,
+    lanePicker,
+    triggerPicker,
+    kindPicker,
+    laneTogglePicker,
+    keyLinkPortPicker,
+    keyLinkAddPort,
+    keyLinkMenu,
+    keyLinkDevicePicker,
+    selectedId,
+  ]);
 
   const cx = w / 2;
   const cy = (TOP + h) / 2;
@@ -436,6 +466,68 @@ export function Dashboard({
           <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Move mode: drag controls</div>
           <Button variant="active" style={{ width: 120, height: 44, fontSize: 18 }} onClick={() => setEditMode(false)}>
             Done
+          </Button>
+        </div>
+      )}
+
+      {/* Seitliches „Add"-Menü — kurzer Tipp auf freie Fläche öffnet es. */}
+      {addMenuOpen && !editMode && (
+        <div
+          style={{
+            position: "fixed",
+            top: TOP + 12,
+            left: 12,
+            zIndex: 12,
+            width: 196,
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+            padding: 12,
+            borderRadius: 12,
+            background: "rgba(17, 17, 17, 0.96)",
+            border: "1.5px solid rgba(255, 255, 255, 0.3)",
+            boxShadow: "0 8px 30px rgba(0, 0, 0, 0.45)",
+          }}
+        >
+          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--pal-text-dim)", letterSpacing: 0.4 }}>
+            DASHBOARD
+          </div>
+          <Button
+            style={{ height: 42, fontSize: 13, fontWeight: 700, justifyContent: "flex-start", paddingLeft: 12 }}
+            onClick={() => {
+              setAddMenuOpen(false);
+              resetView();
+            }}
+          >
+            Center view
+          </Button>
+          <Button
+            style={{ height: 42, fontSize: 13, fontWeight: 700, justifyContent: "flex-start", paddingLeft: 12 }}
+            onClick={() => {
+              setAddMenuOpen(false);
+              setLaneTogglePicker(true);
+            }}
+          >
+            ＋ Lane switch
+          </Button>
+          <Button
+            style={{ height: 42, fontSize: 13, fontWeight: 700, justifyContent: "flex-start", paddingLeft: 12 }}
+            onClick={() => {
+              setAddMenuOpen(false);
+              send({ t: "control.addTempoKnob" });
+            }}
+          >
+            ＋ Tempo knob
+          </Button>
+          <Button
+            style={{ height: 42, fontSize: 13, fontWeight: 700, justifyContent: "flex-start", paddingLeft: 12 }}
+            onClick={() => {
+              setAddMenuOpen(false);
+              setKeyLinkAddPort(null);
+              setKeyLinkPortPicker(true);
+            }}
+          >
+            ＋ Keys link
           </Button>
         </div>
       )}

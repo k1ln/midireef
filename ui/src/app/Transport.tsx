@@ -43,19 +43,9 @@ export interface TransportProps {
   /** „＋ Device" — nur im Sequencer sinnvoll, steht deshalb hier in der Leiste
    *  (statt klein im Übersichts-Body) und öffnet den Port-Picker. */
   onAddDevice?: () => void;
-  /** „Center" — nur im Dashboard: setzt dessen Pan/Zoom zurück. Steht hier,
-   *  weil das Dashboard selbst keine eigene Beschriftung/Leiste mehr trägt. */
-  onCenter?: () => void;
-  /** „＋ Lane switch" — nur im Dashboard: öffnet den Lane-Picker dort, der
-   *  einen MIDI-losen Start/Stop-Taster aufs Dashboard legt. Steht hier statt
-   *  frei über dem Canvas, damit er die Controls nicht zuklebt. */
-  onAddLaneSwitch?: () => void;
-  /** „＋ Keys link" — nur im Dashboard: verbindet einen angeschlossenen
-   *  Controller schnell mit einem Ziel-Synth (on-the-fly umhängbar). */
-  onAddKeyLink?: () => void;
 }
 
-export function Transport({ view, onNav, onAddDevice, onCenter, onAddLaneSwitch, onAddKeyLink }: TransportProps) {
+export function Transport({ view, onNav, onAddDevice }: TransportProps) {
   const net = useNet();
   const send = useSend();
   const wheel = useWheelPicker();
@@ -194,49 +184,9 @@ export function Transport({ view, onNav, onAddDevice, onCenter, onAddLaneSwitch,
         </Button>
       )}
 
-      {view === "start" && onCenter && (
-        <Button
-          className="transport-nav"
-          style={{ height: NAV_H, padding: "0 10px", fontSize: 12, fontWeight: 700, marginRight: 4 }}
-          title="Reset the dashboard pan / zoom"
-          onClick={onCenter}
-        >
-          Center
-        </Button>
-      )}
-
-      {view === "start" && onAddLaneSwitch && (
-        <Button
-          className="transport-nav"
-          style={{ height: NAV_H, padding: "0 10px", fontSize: 11, fontWeight: 700, marginRight: 4 }}
-          title="Add a button that starts / stops a lane — no MIDI needed"
-          onClick={onAddLaneSwitch}
-        >
-          ＋ Lane switch
-        </Button>
-      )}
-
-      {view === "start" && onAddKeyLink && (
-        <Button
-          className="transport-nav"
-          style={{ height: NAV_H, padding: "0 10px", fontSize: 11, fontWeight: 700, marginRight: 4 }}
-          title="Send a connected controller's keys straight to a synth — switch targets on the fly"
-          onClick={onAddKeyLink}
-        >
-          ＋ Keys link
-        </Button>
-      )}
-
-      {view === "start" && (
-        <Button
-          className="transport-nav"
-          style={{ height: NAV_H, padding: "0 10px", fontSize: 11, fontWeight: 700, marginRight: 8 }}
-          title="Add a big knob on the dashboard you can scratch to change the tempo — no MIDI needed"
-          onClick={() => send({ t: "control.addTempoKnob" })}
-        >
-          ＋ Tempo knob
-        </Button>
-      )}
+      {/* Dashboard-Aktionen (Center, ＋ Lane switch / Tempo knob / Keys link)
+          leben jetzt im Dashboard selbst — kurzer Tipp auf freie Fläche
+          öffnet dort das seitliche „Add"-Menü. */}
 
       <RepeatButton width={NUDGE} height={NUDGE} onFire={() => nudgeBpm(-1)}>
         −
