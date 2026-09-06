@@ -17,7 +17,7 @@ import { useViewportSize } from "./useViewportSize";
 import { Button } from "./widgets/Button";
 import { ControlWidget, type LiveControl } from "./dashboard/ControlWidget";
 import { KeyLinkWidget } from "./dashboard/KeyLinkWidget";
-import { DevicePickerPopup, KindPickerPopup, LanePickerPopup, TriggerPickerPopup } from "./dashboard/menus";
+import { DevicePickerPopup, KindPickerPopup, LanePickerPopup, SteerTargetPopup, TriggerPickerPopup } from "./dashboard/menus";
 import { Popup } from "./widgets/Popup";
 import type { Block, KeyLink } from "../state";
 import { ControlDock, CONTROL_DOCK_W } from "./dashboard/ControlDock";
@@ -38,6 +38,7 @@ const EMPTY_CONTROLS: LiveControl[] = [];
 const EMPTY_BLOCKS: Block[] = [];
 const EMPTY_KEYLINKS: KeyLink[] = [];
 const EMPTY_INPUTS: string[] = [];
+const EMPTY_PROFILES: { id: string; ccs?: { number: number; name: string }[] }[] = [];
 
 interface Pt {
   x: number;
@@ -74,6 +75,10 @@ export function Dashboard() {
   const [lanePicker, setLanePicker] = useState<{ ctrl: LiveControl } | null>(null);
   const [triggerPicker, setTriggerPicker] = useState<{ ctrl: LiveControl } | null>(null);
   const [kindPicker, setKindPicker] = useState<{ controlId: string; mappingKind: "cc" | "note" } | null>(null);
+  // Fan-out: ein Knob fährt mehrere Synths. `targetPicker` = neues Ziel anlegen,
+  // `targetEditor` = ein bestehendes Ziel (CC/Bereich) bearbeiten/entfernen.
+  const [targetPicker, setTargetPicker] = useState<{ ctrl: LiveControl } | null>(null);
+  const [targetEditor, setTargetEditor] = useState<{ ctrl: LiveControl; targetId: string } | null>(null);
   const [laneTogglePicker, setLaneTogglePicker] = useState(false);
   // Seitliches „Add"-Menü — ein kurzer Tipp auf freie Dashboard-Fläche öffnet
   // es (Center, ＋ Lane switch / Tempo knob / Keys link). Verschwindet, sobald
@@ -327,6 +332,8 @@ export function Dashboard() {
       keyLinkAddPort ||
       keyLinkMenu ||
       keyLinkDevicePicker ||
+      targetPicker ||
+      targetEditor ||
       selectedId
     ) {
       setAddMenuOpen(false);
@@ -341,6 +348,8 @@ export function Dashboard() {
     keyLinkAddPort,
     keyLinkMenu,
     keyLinkDevicePicker,
+    targetPicker,
+    targetEditor,
     selectedId,
   ]);
 
@@ -369,6 +378,28 @@ export function Dashboard() {
   }, [keyLinkMenu, keyLinkDevicePicker, keyLinks]);
 
   const deviceName = (deviceId?: string | null) => devices.find((d) => d.id === deviceId)?.name;
+  const deviceLabel = (deviceId: string) => devices.find((d) => d.id === deviceId)?.name ?? "(gone)";
+
+  // Benannte CCs des Geräte-Profils (falls verknüpft) — für den CC-Picker im
+  // Fan-out-Dialog ("Cutoff · 74" statt roher Nummer). Kein Profil ⇒ leer,
+  // der Dialog fällt dann auf die Rohnummer-Eingabe zurück.
+  const deviceProfiles = useStoreValue(
+    (s) => (s.project?.deviceProfiles as { id: string; ccs?: { number: number; name: string }[] }[] | undefined) ?? EMPTY_PROFILES,
+  );
+  const profileCcsFor = (deviceId: string) => {
+    const dev = devices.find((d) => d.id === deviceId) as (typeof devices)[number] & { profileId?: string };
+    const prof = dev?.profileId ? deviceProfiles.find((p) => p.id === dev.profileId) : undefined;
+    return prof?.ccs ?? [];
+  };
+
+  // Fan-out-Dialoge schließen, wenn ihr Control / Ziel wegfällt.
+  const targetCtrl = targetPicker ? controls.find((c) => c.id === targetPicker.ctrl.id) : undefined;
+  const editorCtrl = targetEditor ? controls.find((c) => c.id === targetEditor.ctrl.id) : undefined;
+  const editorTarget = editorCtrl?.targets?.find((t) => t.id === targetEditor?.targetId);
+  useEffect(() => {
+    if (targetPicker && !targetCtrl) setTargetPicker(null);
+    if (targetEditor && !editorTarget) setTargetEditor(null);
+  }, [targetPicker, targetCtrl, targetEditor, editorTarget]);
 
   // Ziel-Lane eines „laneButton"-Controls (Taster ohne MIDI, schaltet
   // `lane.enabled`) — undefined, wenn die Lane gelöscht wurde.
@@ -756,6 +787,15 @@ export function Dashboard() {
             setEditMode(true);
           }}
           onDevice={() => setDevicePicker({ ctrl: selectedCtrl })}
+          onCycleEncoder={() => {
+            const order = ["absolute", "rel-2c", "rel-offset", "rel-signed"];
+            const cur = selectedCtrl.mapping?.encoder ?? "absolute";
+            const next = order[(order.indexOf(cur) + 1) % order.length];
+            send({ t: "control.setEncoder", controlId: selectedCtrl.id, encoder: next });
+          }}
+          onAddTarget={() => setTargetPicker({ ctrl: selectedCtrl })}
+          onEditTarget={(targetId) => setTargetEditor({ ctrl: selectedCtrl, targetId })}
+          deviceLabel={deviceLabel}
           onTrigger={() => setTriggerPicker({ ctrl: selectedCtrl })}
           onToggleTrigger={() =>
             send({
@@ -832,6 +872,37 @@ export function Dashboard() {
             send({ t: "control.setDevice", controlId: devicePicker.ctrl.id, deviceId });
             setDevicePicker(null);
           }}
+        />
+      )}
+
+      {targetCtrl && (
+        <SteerTargetPopup
+          devices={devices}
+          profileCcsFor={profileCcsFor}
+          onAdd={(deviceId, cc) => {
+            send({ t: "control.addTarget", controlId: targetCtrl.id, deviceId, cc });
+            setTargetPicker(null);
+          }}
+          onUpdate={() => {}}
+          onRemove={() => {}}
+          onClose={() => setTargetPicker(null)}
+        />
+      )}
+
+      {editorCtrl && editorTarget && (
+        <SteerTargetPopup
+          devices={devices}
+          profileCcsFor={profileCcsFor}
+          target={editorTarget}
+          onAdd={() => {}}
+          onUpdate={(patch) =>
+            send({ t: "control.updateTarget", controlId: editorCtrl.id, targetId: editorTarget.id, ...patch })
+          }
+          onRemove={() => {
+            send({ t: "control.removeTarget", controlId: editorCtrl.id, targetId: editorTarget.id });
+            setTargetEditor(null);
+          }}
+          onClose={() => setTargetEditor(null)}
         />
       )}
 

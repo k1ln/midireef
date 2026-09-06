@@ -10,8 +10,13 @@ export interface LiveControl {
   id: string;
   name: string;
   kind: string;
-  mapping?: { channel: number; kind: string; number?: number }; // number fehlt nur bei kind="keyboard" (Wildcard-Mapping)
+  // number fehlt nur bei kind="keyboard" (Wildcard-Mapping); encoder fehlt = "absolute",
+  // Relativ-Modi ("rel-2c" | "rel-offset" | "rel-signed") nur für Endlos-Encoder-Knobs.
+  mapping?: { channel: number; kind: string; number?: number; encoder?: string };
   deviceId?: string | null;
+  /** Fan-out: derselbe Knob-Wert fährt zusätzlich diese Synths (je eigene CC/
+   *  Bereich). Nicht leer ⇒ ersetzt das Einzel-`deviceId`-Thru für CC. */
+  targets?: { id: string; deviceId: string; cc: number; channel?: number; min?: number; max?: number }[];
   x: number;
   y: number;
   w: number;

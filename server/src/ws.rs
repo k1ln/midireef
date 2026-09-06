@@ -821,6 +821,99 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 broadcast_snapshot(state);
             }
         }
+        // Endlos-/Relativ-Encoder: wie der eingehende CC-Wert eines Knobs
+        // gedeutet wird — `"absolute"` (roher 0–127-Wert) oder eine der drei
+        // Relativ-Kodierungen `"rel-2c"` / `"rel-offset"` / `"rel-signed"`
+        // (Schritt wird auf den aktuellen Wert addiert, s. `midi::relative_step`).
+        "control.setEncoder" => {
+            if let (Some(id), Some(mode)) = (str_field(&cmd, "controlId"), str_field(&cmd, "encoder")) {
+                {
+                    let mut proj = state.project.lock().unwrap();
+                    if let Some(c) = find_control_mut(&mut proj, &id) {
+                        if let Some(m) = c.get_mut("mapping").and_then(|m| m.as_object_mut()) {
+                            if mode == "absolute" {
+                                m.remove("encoder");
+                            } else {
+                                m.insert("encoder".into(), serde_json::json!(mode));
+                            }
+                        }
+                    }
+                }
+                broadcast_snapshot(state);
+            }
+        }
+        // Fan-out-Ziele eines Knobs (`LiveControl.targets`): derselbe Knob-Wert
+        // fährt zusätzlich die (unterschiedlichen) Cutoff-CCs mehrerer Synths.
+        // Ideal für einen Endlos-Encoder, der „alle Filter zugleich" regelt.
+        "control.addTarget" => {
+            if let (Some(id), Some(device_id), Some(cc)) = (
+                str_field(&cmd, "controlId"),
+                str_field(&cmd, "deviceId"),
+                cmd.get("cc").and_then(|v| v.as_u64()),
+            ) {
+                {
+                    let mut proj = state.project.lock().unwrap();
+                    if let Some(c) = find_control_mut(&mut proj, &id) {
+                        let entry = serde_json::json!({
+                            "id": uuid::Uuid::new_v4().to_string(),
+                            "deviceId": device_id,
+                            "cc": (cc as u8 & 0x7F),
+                            "min": 0,
+                            "max": 127,
+                        });
+                        match c.get_mut("targets").and_then(|t| t.as_array_mut()) {
+                            Some(arr) => arr.push(entry),
+                            None => c["targets"] = serde_json::json!([entry]),
+                        }
+                    }
+                }
+                broadcast_snapshot(state);
+            }
+        }
+        "control.updateTarget" => {
+            if let (Some(id), Some(target_id)) =
+                (str_field(&cmd, "controlId"), str_field(&cmd, "targetId"))
+            {
+                {
+                    let mut proj = state.project.lock().unwrap();
+                    if let Some(t) = find_control_mut(&mut proj, &id)
+                        .and_then(|c| c.get_mut("targets"))
+                        .and_then(|t| t.as_array_mut())
+                        .and_then(|arr| {
+                            arr.iter_mut()
+                                .find(|t| t.get("id").and_then(|v| v.as_str()) == Some(target_id.as_str()))
+                        })
+                        .and_then(|t| t.as_object_mut())
+                    {
+                        if let Some(v) = str_field(&cmd, "deviceId") {
+                            t.insert("deviceId".into(), serde_json::json!(v));
+                        }
+                        for key in ["cc", "channel", "min", "max"] {
+                            if let Some(n) = cmd.get(key).and_then(|v| v.as_u64()) {
+                                t.insert(key.into(), serde_json::json!(n));
+                            }
+                        }
+                    }
+                }
+                broadcast_snapshot(state);
+            }
+        }
+        "control.removeTarget" => {
+            if let (Some(id), Some(target_id)) =
+                (str_field(&cmd, "controlId"), str_field(&cmd, "targetId"))
+            {
+                {
+                    let mut proj = state.project.lock().unwrap();
+                    if let Some(arr) = find_control_mut(&mut proj, &id)
+                        .and_then(|c| c.get_mut("targets"))
+                        .and_then(|t| t.as_array_mut())
+                    {
+                        arr.retain(|t| t.get("id").and_then(|v| v.as_str()) != Some(target_id.as_str()));
+                    }
+                }
+                broadcast_snapshot(state);
+            }
+        }
         "control.setValue" => {
             if let (Some(id), Some(value)) = (
                 str_field(&cmd, "controlId"),
@@ -833,17 +926,29 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 }
                 let cc = control_cc(&proj, &id);
                 let has_dev = has_device(&proj, &id);
+                // Fan-out an mehrere Synths (`LiveControl.targets`) — greift
+                // genauso beim Touch wie beim physischen Encoder (s.
+                // `handle_midi_feedback`).
+                let target_sends = find_control(&proj, &id)
+                    .map(|c| crate::model::control_target_sends(&proj, &c, value))
+                    .unwrap_or_default();
                 drop(proj);
-                match cc {
-                    Some((port, ch, num)) => {
-                        if !has_dev {
-                            warn_no_device(state, &id);
-                        }
-                        state
-                            .clock
-                            .send(ClockCommand::Midi(port, vec![0xB0 | (ch - 1), num, value]));
+                if !target_sends.is_empty() {
+                    for (port, bytes) in target_sends {
+                        state.clock.send(ClockCommand::Midi(port, bytes));
                     }
-                    None => warn_no_mapping(state, &id),
+                } else {
+                    match cc {
+                        Some((port, ch, num)) => {
+                            if !has_dev {
+                                warn_no_device(state, &id);
+                            }
+                            state
+                                .clock
+                                .send(ClockCommand::Midi(port, vec![0xB0 | (ch - 1), num, value]));
+                        }
+                        None => warn_no_mapping(state, &id),
+                    }
                 }
                 // Echo back like `lane_control_set_value`/`handle_midi_feedback` do —
                 // without this, a second connected client (or this same one, once it

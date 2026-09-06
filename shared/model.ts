@@ -686,10 +686,40 @@ export type ControlKind = "knob" | "fader" | "button" | "toggle" | "xy" | "keybo
  * auf `channel`, statt an der einen beim Lernen zufällig gedrückten Taste
  * hängen zu bleiben (siehe `control.setKind` im Server).
  */
+/**
+ * Wie der eingehende CC-Wert eines gelernten Knobs gedeutet wird.
+ * `"absolute"` (Default, Feld fehlt dann): der 0–127-Wert IST die Zielposition.
+ * Die drei Relativ-Modi sind für **Endlos-Encoder** (z.B. Arturia MiniLab
+ * „Relative 1/2/3"): der Wert kodiert einen ±Schritt, der auf den aktuellen
+ * Control-Wert addiert wird (auf min/max geklemmt). Sie unterscheiden sich nur
+ * in der Bit-Kodierung des Schritts — welche der Encoder sendet, sieht man im
+ * Roh-MIDI-Log:
+ * - `"rel-2c"`     Zweierkomplement:  rechts 1,2,3… · links 127,126…
+ * - `"rel-offset"` 64 als Mitte:      rechts 65,66… · links 63,62…
+ * - `"rel-signed"` Vorzeichen-Bit:    rechts 1,2…  · links 65,66…
+ */
+export type EncoderMode = "absolute" | "rel-2c" | "rel-offset" | "rel-signed";
+
 export interface MidiMapping {
   channel: MidiChannel;
   kind: MidiMessageKind;
   number?: number; // CC-/Note-/NRPN-Nr — optional nur für kind="keyboard"-Controls
+  encoder?: EncoderMode; // fehlt = "absolute"; Relativ-Modi nur für Endlos-Encoder-Knobs
+}
+
+/**
+ * Ein Fan-out-Ziel eines Knobs (`LiveControl.targets`): derselbe — bei einem
+ * Endlos-Encoder bereits aufsummierte — Knob-Wert geht zusätzlich als CC an
+ * dieses Device. So fährt ein Encoder z.B. den Cutoff mehrerer Synths auf
+ * einmal, obwohl „Cutoff" bei jedem Synth eine andere CC-Nummer ist.
+ */
+export interface ControlTarget {
+  id: Id;
+  deviceId: Id; // Ziel-Device
+  cc: number; // dessen Cutoff-/Ziel-CC (74, 19, …)
+  channel?: MidiChannel; // sonst der Kanal, auf dem der Knob gelernt wurde
+  min?: Midi7Bit; // 0–127-Knobwert wird in [min, max] skaliert (Standard 0…127);
+  max?: Midi7Bit; // min > max ist erlaubt = invertierter Regelweg
 }
 
 export interface LiveControl {
@@ -697,7 +727,10 @@ export interface LiveControl {
   name: string; // per Touch-Keyboard
   kind: ControlKind;
   mapping?: MidiMapping; // via Learn gesetzt
-  deviceId?: Id; // Ziel-Device
+  deviceId?: Id; // Ziel-Device (Einzel-Thru; von targets[] überstimmt, falls gesetzt)
+  /** Mehrere Ziel-Synths zugleich. Nicht leer ⇒ ersetzt das `deviceId`-Thru
+   *  für CC (sonst käme der Wert doppelt raus). */
+  targets?: ControlTarget[];
   min: Midi7Bit;
   max: Midi7Bit;
   value: number; // aktueller Wert
@@ -1063,6 +1096,19 @@ export type Command =
   | { t: "control.assignName"; controlId: Id; name: string }
   | { t: "control.setDevice"; controlId: Id; deviceId: Id | null } // Ziel-Device (Name erscheint am Button)
   | { t: "control.setKind"; controlId: Id; kind: ControlKind } // z.B. CC als Taster statt Regler reproduzieren
+  | { t: "control.setEncoder"; controlId: Id; encoder: EncoderMode } // Endlos-Encoder: CC-Wert relativ statt absolut deuten
+  | { t: "control.addTarget"; controlId: Id; deviceId: Id; cc: number } // Fan-out-Ziel anhängen
+  | {
+      t: "control.updateTarget";
+      controlId: Id;
+      targetId: Id;
+      deviceId?: Id;
+      cc?: number;
+      channel?: MidiChannel;
+      min?: Midi7Bit;
+      max?: Midi7Bit;
+    }
+  | { t: "control.removeTarget"; controlId: Id; targetId: Id }
   | {
       t: "control.setTrigger";
       controlId: Id;

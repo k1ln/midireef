@@ -45,5 +45,5 @@ kiosk-restart: ## Chromium auf dem Pi neu starten
 kiosk-url: ## Kiosk auf eine URL schicken:  make kiosk-url URL=http://…
 	@deploy/kiosk-url.sh "$(URL)"
 
-shell: ## SSH-Shell auf dem Pi
-	@. deploy/config.env && ssh $$PI_USER@$$PI_HOST
+shell: ## SSH-Shell auf dem Pi, direkt im Projektordner
+	@deploy/shell.sh

@@ -474,3 +474,105 @@ pub fn now_iso() -> String {
         .unwrap_or(0);
     format!("unix:{secs}")
 }
+
+/// Skaliert einen 0–127-Wert linear in den Bereich `[lo, hi]`. `lo > hi` ist
+/// erlaubt (invertierter Regelweg: Knob auf ⇒ Ziel-CC runter).
+fn scale_7bit(value: u8, lo: i64, hi: i64) -> u8 {
+    let span = hi - lo;
+    (lo + (value as i64 * span) / 127).clamp(0, 127) as u8
+}
+
+/// Fan-out eines Dashboard-Knobs auf seine `targets` (s. `LiveControl.targets`
+/// in `shared/model.ts`): derselbe — bei Endlos-Encodern bereits aufsummierte —
+/// 0–127-Wert `value` geht als CC an **mehrere** Ziel-Devices, jedes auf seiner
+/// eigenen CC-Nummer (Cutoff ist bei jedem Synth eine andere) und optional in
+/// seinen eigenen Wertebereich `min`/`max` skaliert.
+///
+/// Liefert `(Portname, MIDI-Bytes)` je Ziel. Leere/fehlende Liste ⇒ leerer Vec;
+/// der Aufrufer nutzt dann das alte Einzel-`deviceId`-Thru. Fehlt zu einem
+/// Ziel das Device, wird es übersprungen (nicht der ganze Fan-out).
+pub fn control_target_sends(
+    proj: &Project,
+    ctrl: &serde_json::Value,
+    value: u8,
+) -> Vec<(String, Vec<u8>)> {
+    let Some(targets) = ctrl.get("targets").and_then(|t| t.as_array()) else {
+        return Vec::new();
+    };
+    // Ziel-Kanal-Default: der Kanal, auf dem der Knob gelernt wurde.
+    let default_ch = ctrl
+        .get("mapping")
+        .and_then(|m| m.get("channel"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(1) as u8;
+
+    targets
+        .iter()
+        .filter_map(|t| {
+            let device_id = t.get("deviceId").and_then(|v| v.as_str())?;
+            let dev = proj.devices.iter().find(|d| d.id == device_id)?;
+            let cc = (t.get("cc").and_then(|v| v.as_u64())? as u8) & 0x7F;
+            let ch = t
+                .get("channel")
+                .and_then(|v| v.as_u64())
+                .map(|c| c as u8)
+                .unwrap_or(default_ch)
+                .clamp(1, 16);
+            let lo = t.get("min").and_then(|v| v.as_i64()).unwrap_or(0).clamp(0, 127);
+            let hi = t.get("max").and_then(|v| v.as_i64()).unwrap_or(127).clamp(0, 127);
+            let scaled = scale_7bit(value, lo, hi);
+            Some((dev.midi_out_port.clone(), vec![0xB0 | (ch - 1), cc, scaled]))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scale_7bit_maps_full_and_inverted_ranges() {
+        assert_eq!(scale_7bit(0, 0, 127), 0);
+        assert_eq!(scale_7bit(127, 0, 127), 127);
+        assert_eq!(scale_7bit(127, 20, 110), 110);
+        assert_eq!(scale_7bit(0, 20, 110), 20);
+        // Invertierter Regelweg: Knob auf ⇒ Ziel runter.
+        assert_eq!(scale_7bit(0, 127, 0), 127);
+        assert_eq!(scale_7bit(127, 127, 0), 0);
+    }
+
+    #[test]
+    fn control_target_sends_fans_out_per_target_cc_and_range() {
+        let mut proj = Project::new("t");
+        proj.devices = vec![
+            Device::new("J-6".into(), "J-6 OUT".into()),
+            Device::new("D mini".into(), "D MINI OUT".into()),
+        ];
+        let (j6, dmini) = (proj.devices[0].id.clone(), proj.devices[1].id.clone());
+
+        let ctrl = serde_json::json!({
+            "id": "c1",
+            "mapping": { "channel": 3, "kind": "cc", "number": 20 },
+            "targets": [
+                { "id": "t1", "deviceId": j6, "cc": 74 },
+                { "id": "t2", "deviceId": dmini, "cc": 19, "channel": 1, "min": 20, "max": 110 },
+                { "id": "t3", "deviceId": "gone", "cc": 1 },
+            ],
+        });
+
+        let sends = control_target_sends(&proj, &ctrl, 127);
+        // Ziel ohne Device fällt raus, nicht der ganze Fan-out.
+        assert_eq!(sends.len(), 2);
+        // t1: Default-Kanal = Knob-Kanal 3 → Status 0xB2, volle 127.
+        assert_eq!(sends[0], ("J-6 OUT".to_string(), vec![0xB2, 74, 127]));
+        // t2: eigener Kanal 1 → 0xB0, in 20..110 skaliert.
+        assert_eq!(sends[1], ("D MINI OUT".to_string(), vec![0xB0, 19, 110]));
+    }
+
+    #[test]
+    fn control_target_sends_empty_without_targets() {
+        let proj = Project::new("t");
+        let ctrl = serde_json::json!({ "id": "c1", "mapping": { "channel": 1, "kind": "cc", "number": 1 } });
+        assert!(control_target_sends(&proj, &ctrl, 64).is_empty());
+    }
+}

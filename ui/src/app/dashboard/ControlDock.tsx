@@ -28,6 +28,13 @@ export interface ControlDockProps {
   onDevice: () => void;
   onRecord: () => void;
   onRemove: () => void;
+  /** Endlos-Encoder: nächsten Deute-Modus für den CC-Wert wählen (zyklisch). */
+  onCycleEncoder: () => void;
+  /** Fan-out-Ziele (mehrere Synths mit einem Knob fahren). */
+  onAddTarget: () => void;
+  onEditTarget: (targetId: string) => void;
+  /** Anzeigename eines Ziel-Devices. */
+  deviceLabel: (deviceId: string) => string;
   /** „Trigger" — Bindung Note → Lane-Slot wählen/lösen (öffnet den Picker). */
   onTrigger: () => void;
   /** Bindung scharf/aus schalten, ohne sie zu lösen. */
@@ -49,6 +56,10 @@ export function ControlDock({
   onDevice,
   onRecord,
   onRemove,
+  onCycleEncoder,
+  onAddTarget,
+  onEditTarget,
+  deviceLabel,
   onTrigger,
   onToggleTrigger,
   triggerLabel,
@@ -67,6 +78,17 @@ export function ControlDock({
   const isKeyboard = ctrl.kind === "keyboard";
   const isLaneButton = ctrl.kind === "laneButton";
   const isTempo = ctrl.kind === "tempo";
+
+  // Endlos-Encoder-Umschalter nur für echte CC-Regler (nicht Keyboard/Tempo/
+  // Lane-Taster, nicht Note-Controls).
+  const isCcKnob = !isKeyboard && !isLaneButton && !isTempo && ctrl.mapping?.kind === "cc";
+  const encoderLabel: Record<string, string> = {
+    absolute: "Absolute (0–127)",
+    "rel-2c": "Relative · 2's-comp",
+    "rel-offset": "Relative · offset-64",
+    "rel-signed": "Relative · signed-bit",
+  };
+  const encoderMode = ctrl.mapping?.encoder ?? "absolute";
   const mappingText = isLaneButton
     ? "Lane switch · no MIDI"
     : isTempo
@@ -113,6 +135,48 @@ export function ControlDock({
         <Button variant="alt" className="settings-dock-row" onClick={onDevice}>
           → Device …
         </Button>
+      )}
+      {isCcKnob && (
+        <Button
+          variant={encoderMode === "absolute" ? "alt" : "active"}
+          className="settings-dock-row"
+          style={{ height: 34, fontSize: 12 }}
+          title="Endless/relative encoder? Cycle until turning the knob nudges the value smoothly instead of jumping."
+          onClick={onCycleEncoder}
+        >
+          ⟳ {encoderLabel[encoderMode]}
+        </Button>
+      )}
+      {isCcKnob && (
+        <>
+          {(ctrl.targets ?? []).map((t) => (
+            <Button
+              key={t.id}
+              variant="active"
+              className="settings-dock-row"
+              style={{ height: 34, fontSize: 12 }}
+              title="Edit / remove this synth target"
+              onClick={() => onEditTarget(t.id)}
+            >
+              ⇒ {deviceLabel(t.deviceId)} · CC {t.cc}
+              {(t.min ?? 0) !== 0 || (t.max ?? 127) !== 127 ? ` · ${t.min ?? 0}–${t.max ?? 127}` : ""}
+            </Button>
+          ))}
+          <Button
+            variant="alt"
+            className="settings-dock-row"
+            style={{ height: 34, fontSize: 12 }}
+            title="Drive another synth's CC (e.g. its cutoff) from this same knob"
+            onClick={onAddTarget}
+          >
+            ＋ Steer another synth …
+          </Button>
+          {(ctrl.targets?.length ?? 0) > 0 && (
+            <div style={{ fontSize: 11, color: "var(--pal-text-dim)", padding: "2px 4px 4px" }}>
+              Fan-out active — the single “→ Device” above is bypassed for CC.
+            </div>
+          )}
+        </>
       )}
       {!isLaneButton && !isTempo && (triggerLabel ? (
         <>

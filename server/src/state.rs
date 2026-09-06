@@ -284,8 +284,15 @@ impl AppState {
         // nicht auf dem des Devices: dieselbe Überlegung wie bei
         // `control_trigger` in ws.rs (ein Keyboard sendet seine Zonen/Parts
         // auf genau den Kanälen, die das Zielgerät erwartet).
-        if let Some(port) = thru {
-            self.clock.send(ClockCommand::Midi(port, msg.to_vec()));
+        //
+        // Nur Note/Pitch-Bend/Aftertouch sofort — die sind spiel-latenzkritisch.
+        // CC läuft unten durch, NACH dem Wert-Update: bei einem Endlos-Encoder
+        // (`mapping.encoder`) wird dort der aufsummierte Absolutwert an den Synth
+        // geschickt statt des rohen ±Schritts.
+        if status != 0xB0 {
+            if let Some(port) = thru.clone() {
+                self.clock.send(ClockCommand::Midi(port, msg.to_vec()));
+            }
         }
 
         // ── Rückmeldung an die UI ───────────────────────────────────────────
@@ -362,12 +369,38 @@ impl AppState {
                 // Einen Wert führt nur ein Control mit eigenem CC-Mapping —
                 // das Keyboard-Control von oben ist für CCs reiner
                 // Durchleiter und hat keinen Regler auf dem Dashboard.
-                let (cc, value) = (msg[1], msg[2]);
-                let id = {
+                let (cc, raw) = (msg[1], msg[2]);
+                let (applied, target_sends) = {
                     let mut proj = self.project.lock().unwrap();
-                    set_control_value_by_mapping(&mut proj, channel, "cc", cc, value)
+                    let applied = set_control_value_by_mapping(&mut proj, channel, "cc", cc, raw);
+                    // Fan-out an mehrere Synths (`LiveControl.targets`): jeder
+                    // bekommt den aufsummierten Wert auf SEINER Cutoff-CC.
+                    let sends = match &applied {
+                        Some((id, value, _)) => find_control_by_id(&proj, id)
+                            .map(|c| crate::model::control_target_sends(&proj, &c, *value))
+                            .unwrap_or_default(),
+                        None => Vec::new(),
+                    };
+                    (applied, sends)
                 };
-                if let Some(id) = id {
+                if target_sends.is_empty() {
+                    // Kein Fan-out: klassisches Einzel-Thru an das eine Device.
+                    // Rohe Bytes durchreichen — außer bei einem Endlos-Encoder,
+                    // dann den aufsummierten Absolutwert, damit der Synth-Regler
+                    // mitläuft statt den ±Schritt zu „sehen".
+                    let out = match &applied {
+                        Some((_, value, true)) => vec![0xB0 | (channel - 1), cc, *value],
+                        _ => msg.to_vec(),
+                    };
+                    if let Some(port) = thru {
+                        self.clock.send(ClockCommand::Midi(port, out));
+                    }
+                } else {
+                    for (port, bytes) in target_sends {
+                        self.clock.send(ClockCommand::Midi(port, bytes));
+                    }
+                }
+                if let Some((id, value, _)) = applied {
                     let _ = self.events.send(serde_json::json!({
                         "t": "control.valueChanged",
                         "controlId": id,
@@ -676,6 +709,14 @@ fn find_control_by_mapping(proj: &Project, channel: u8, kind: &str, number: u8) 
         .cloned()
 }
 
+fn find_control_by_id(proj: &Project, id: &str) -> Option<serde_json::Value> {
+    proj.controls
+        .as_array()?
+        .iter()
+        .find(|c| c.get("id").and_then(|v| v.as_str()) == Some(id))
+        .cloned()
+}
+
 /// Findet das "keyboard"-Control (falls eines gelernt wurde) für den ganzen
 /// physischen Eingang auf `channel` — Auffang-Ziel fürs MIDI-Thru bei
 /// Nachrichten, die kein eigenes Control-Mapping haben (Pitch-Bend,
@@ -707,21 +748,49 @@ fn thru_port(proj: &Project, ctrl: serde_json::Value, source_port: &str) -> Opti
     Some(target)
 }
 
-/// Setzt `value` auf dem passenden Control und liefert dessen ID zurück.
+/// Wendet eine eingehende CC-Nachricht auf das passende Control an und liefert
+/// `(ID, resultierender Wert, war_relativ)`.
+///
+/// - **Absolut** (`mapping.encoder` fehlt / `"absolute"`): der rohe 0–127-Wert
+///   wird direkt übernommen — bisheriges Verhalten.
+/// - **Relativ** (`mapping.encoder` = `"rel-2c"` / `"rel-offset"` /
+///   `"rel-signed"`, Endlos-Encoder): der Wert wird als vorzeichenbehafteter
+///   Schritt dekodiert (`midi::relative_step`) und auf den aktuellen Wert
+///   addiert, geklemmt auf `min`/`max`. `war_relativ = true` sagt dem Aufrufer,
+///   dass er für MIDI-Thru den **resultierenden Absolutwert** an den Synth
+///   schicken soll, nicht den rohen ±Schritt.
 fn set_control_value_by_mapping(
     proj: &mut Project,
     channel: u8,
     kind: &str,
     number: u8,
     value: u8,
-) -> Option<String> {
+) -> Option<(String, u8, bool)> {
     let c = proj
         .controls
         .as_array_mut()?
         .iter_mut()
         .find(|c| mapping_matches(c, channel, kind, number))?;
-    c["value"] = serde_json::json!(value);
-    c.get("id")?.as_str().map(str::to_string)
+
+    let encoder = c
+        .get("mapping")
+        .and_then(|m| m.get("encoder"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("absolute");
+
+    let (applied, relative) = match crate::midi::relative_step(encoder, value) {
+        Some(step) => {
+            let min = c.get("min").and_then(|v| v.as_i64()).unwrap_or(0);
+            let max = c.get("max").and_then(|v| v.as_i64()).unwrap_or(127);
+            let cur = c.get("value").and_then(|v| v.as_i64()).unwrap_or(min);
+            ((cur + step as i64).clamp(min, max) as u8, true)
+        }
+        None => (value, false),
+    };
+
+    c["value"] = serde_json::json!(applied);
+    let id = c.get("id")?.as_str().map(str::to_string)?;
+    Some((id, applied, relative))
 }
 
 /// Findet eine freie Position für ein neu gelerntes Control: rastert von

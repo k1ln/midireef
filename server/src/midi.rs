@@ -411,6 +411,32 @@ pub fn parse_mapping(msg: &[u8]) -> Option<serde_json::Value> {
     }
 }
 
+/// Dekodiert den 7-Bit-Wert einer CC-Nachricht von einem **Endlos-/Relativ-
+/// Encoder** (z.B. Arturia MiniLab „Relative 1/2/3") in einen vorzeichen-
+/// behafteten Schritt. Der Aufrufer addiert den Schritt auf den aktuellen
+/// Control-Wert (auf `min`/`max` geklemmt), statt den rohen Wert als
+/// Absolutposition zu übernehmen — sonst springt ein Endlos-Poti nur zwischen
+/// zwei festen Positionen.
+///
+/// Die drei Kodierungen unterscheiden sich nur darin, wie „+1" / „−1" in die
+/// 7 Bit gepackt werden; welche der MiniLab sendet, sieht man im Roh-Log
+/// (`cargo run --example midimon`, Encoder je einmal nach rechts/links drehen):
+/// - `rel-2c` — Zweierkomplement:  rechts `1,2,3…`, links `127,126,125…`
+/// - `rel-offset` — 64 als Mitte:  rechts `65,66…`, links `63,62…`
+/// - `rel-signed` — Vorzeichen-Bit: rechts `1,2…`, links `65,66…` (Bit 6 = Richtung)
+///
+/// `None` ⇒ kein Relativ-Modus (`"absolute"`, fehlend oder unbekannt) → der
+/// Aufrufer behandelt den Wert wie bisher als Absolutposition.
+pub fn relative_step(mode: &str, value: u8) -> Option<i16> {
+    let v = value as i16;
+    match mode {
+        "rel-2c" => Some(if v < 64 { v } else { v - 128 }),
+        "rel-offset" => Some(v - 64),
+        "rel-signed" => Some(if v & 0x40 != 0 { -(v & 0x3F) } else { v & 0x3F }),
+        _ => None,
+    }
+}
+
 /// Menschenlesbare Beschreibung roher MIDI-Bytes fürs Server-Log
 /// (z.B. „Note-On ch11 note51 vel100" oder „CC ch11 cc121=127"). Ein `send()`
 /// kann mehrere zu einem Packet gebündelte Nachrichten enthalten (Akkorde,
@@ -499,6 +525,28 @@ mod tests {
         assert_eq!(strip_alsa_addr("Arturia KeyStep 32"), "Arturia KeyStep 32");
         assert_eq!(strip_alsa_addr("TR-6S MIDI 1"), "TR-6S MIDI 1");
         assert_eq!(strip_alsa_addr(""), "");
+    }
+
+    #[test]
+    fn relative_step_decodes_all_three_encodings() {
+        // Zweierkomplement: rechts 1..63, links 127..65.
+        assert_eq!(relative_step("rel-2c", 1), Some(1));
+        assert_eq!(relative_step("rel-2c", 63), Some(63));
+        assert_eq!(relative_step("rel-2c", 127), Some(-1));
+        assert_eq!(relative_step("rel-2c", 65), Some(-63));
+        // 64 als Mitte.
+        assert_eq!(relative_step("rel-offset", 65), Some(1));
+        assert_eq!(relative_step("rel-offset", 63), Some(-1));
+        assert_eq!(relative_step("rel-offset", 64), Some(0));
+        // Vorzeichen-Bit (Bit 6).
+        assert_eq!(relative_step("rel-signed", 1), Some(1));
+        assert_eq!(relative_step("rel-signed", 3), Some(3));
+        assert_eq!(relative_step("rel-signed", 0x41), Some(-1));
+        assert_eq!(relative_step("rel-signed", 0x43), Some(-3));
+        // Kein Relativ-Modus → None (Aufrufer nimmt den Wert absolut).
+        assert_eq!(relative_step("absolute", 42), None);
+        assert_eq!(relative_step("", 42), None);
+        assert_eq!(relative_step("rel-7", 42), None);
     }
 
     #[test]

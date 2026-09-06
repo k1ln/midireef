@@ -3,7 +3,7 @@
 //! Picker sind am Tap-Punkt verankert (nicht zentriert) — daher ein eigener
 //! AnchoredPopup statt des generischen zentrierten <Popup>.
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type { Block, Device, Lane } from "../../state";
 import { Button } from "../widgets/Button";
 import { Popup } from "../widgets/Popup";
@@ -264,6 +264,169 @@ export function KindPickerPopup({
       <Button variant="danger" className="popup-row" style={{ height: 44 }} onClick={onCancel}>
         Cancel
       </Button>
+    </Popup>
+  );
+}
+
+export interface SteerTarget {
+  id: string;
+  deviceId: string;
+  cc: number;
+  channel?: number;
+  min?: number;
+  max?: number;
+}
+
+/**
+ * Fan-out-Ziel eines Knobs anlegen/bearbeiten: ein Encoder fährt damit den
+ * Cutoff (o.ä.) mehrerer Synths zugleich — jedes Ziel mit eigener CC-Nummer
+ * und optional eigenem Wertebereich (0–127-Knob → [min, max], invertierbar).
+ * `profileCcsFor` liefert die benannten CCs des Geräte-Profils (leer ⇒ nur
+ * Rohnummer). Ohne `target` = Anlegen (Button „Add"), mit `target` =
+ * Bearbeiten (Änderungen wirken sofort, plus „Remove").
+ */
+export function SteerTargetPopup({
+  devices,
+  profileCcsFor,
+  target,
+  onAdd,
+  onUpdate,
+  onRemove,
+  onClose,
+}: {
+  devices: Device[];
+  profileCcsFor: (deviceId: string) => { number: number; name: string }[];
+  target?: SteerTarget;
+  onAdd: (deviceId: string, cc: number) => void;
+  onUpdate: (patch: { deviceId?: string; cc?: number; channel?: number; min?: number; max?: number }) => void;
+  onRemove: () => void;
+  onClose: () => void;
+}) {
+  const editing = !!target;
+  const [deviceId, setDeviceId] = useState(target?.deviceId ?? devices[0]?.id ?? "");
+  const [cc, setCc] = useState(target?.cc ?? 74);
+  const [min, setMin] = useState(target?.min ?? 0);
+  const [max, setMax] = useState(target?.max ?? 127);
+  const profileCcs = deviceId ? profileCcsFor(deviceId) : [];
+
+  const pickDevice = (d: string) => {
+    setDeviceId(d);
+    if (editing) onUpdate({ deviceId: d });
+  };
+  const pickCc = (n: number) => {
+    const v = Math.max(0, Math.min(127, n | 0));
+    setCc(v);
+    if (editing) onUpdate({ cc: v });
+  };
+
+  return (
+    <Popup onClose={onClose} boxStyle={{ width: 380 }}>
+      <div className="popup-title" style={{ marginBottom: 4 }}>
+        {editing ? "Edit synth target" : "Steer another synth"}
+      </div>
+      <div style={{ fontSize: 13, color: "var(--pal-text-dim)", marginBottom: 14 }}>
+        The knob's value also drives this synth's CC. Add one row per synth — each keeps its own CC number and range.
+      </div>
+
+      <div style={{ fontSize: 12, color: "var(--pal-text-dim)", marginBottom: 6 }}>Synth</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
+        {devices.length === 0 ? (
+          <div style={{ color: "var(--pal-text-dim)", fontSize: 14 }}>No devices yet — add one in the sequencer.</div>
+        ) : (
+          devices.map((d) => (
+            <Button
+              key={d.id}
+              variant={deviceId === d.id ? "active" : "default"}
+              style={{ height: 36, flex: "1 1 45%", fontSize: 13 }}
+              onClick={() => pickDevice(d.id)}
+            >
+              {d.name}
+            </Button>
+          ))
+        )}
+      </div>
+
+      <div style={{ fontSize: 12, color: "var(--pal-text-dim)", marginBottom: 6 }}>Target CC</div>
+      {profileCcs.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+          {profileCcs.map((p) => (
+            <Button
+              key={p.number}
+              variant={cc === p.number ? "active" : "default"}
+              style={{ height: 32, fontSize: 12 }}
+              onClick={() => pickCc(p.number)}
+            >
+              {p.name} · {p.number}
+            </Button>
+          ))}
+        </div>
+      )}
+      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 14 }}>
+        Raw CC
+        <input
+          type="number"
+          min={0}
+          max={127}
+          value={cc}
+          onChange={(e) => pickCc(Number(e.target.value))}
+          style={{ width: 72, height: 32, fontSize: 14, textAlign: "center" }}
+        />
+      </label>
+
+      {editing && (
+        <>
+          <div style={{ fontSize: 12, color: "var(--pal-text-dim)", marginBottom: 6 }}>
+            Range — knob 0…127 maps to {min}…{max} {min > max ? "(inverted)" : ""}
+          </div>
+          {(["min", "max"] as const).map((k) => (
+            <div key={k} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+              <span style={{ width: 30, fontSize: 12, color: "var(--pal-text-dim)" }}>{k}</span>
+              <input
+                className="dock-range"
+                type="range"
+                min={0}
+                max={127}
+                value={k === "min" ? min : max}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  if (k === "min") {
+                    setMin(v);
+                    onUpdate({ min: v });
+                  } else {
+                    setMax(v);
+                    onUpdate({ max: v });
+                  }
+                }}
+              />
+              <span style={{ width: 28, fontSize: 12, textAlign: "right" }}>{k === "min" ? min : max}</span>
+            </div>
+          ))}
+        </>
+      )}
+
+      {editing ? (
+        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+          <Button variant="danger" style={{ flex: 1, height: 44 }} onClick={onRemove}>
+            Remove
+          </Button>
+          <Button variant="alt" style={{ flex: 1, height: 44 }} onClick={onClose}>
+            Done
+          </Button>
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+          <Button
+            variant="active"
+            style={{ flex: 1, height: 44 }}
+            onClick={() => deviceId && onAdd(deviceId, cc)}
+          >
+            Add target
+          </Button>
+          <Button variant="alt" style={{ flex: 1, height: 44 }} onClick={onClose}>
+            Cancel
+          </Button>
+        </div>
+      )}
     </Popup>
   );
 }
