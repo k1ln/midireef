@@ -250,10 +250,29 @@ pub(crate) fn same_port(a: &str, b: &str) -> bool {
     a.contains(&b) || b.contains(&a)
 }
 
-/// Normalisiert einen Portnamen für toleranten Vergleich: Kleinbuchstaben,
-/// nur alphanumerische Zeichen (Leer-/Sonderzeichen entfernt).
+/// ALSA hängt an jeden Portnamen seine laufende Adresse `client:port` an
+/// („Arturia MiniLab mkII MIDI 1 40:0"). Die beiden Nummern vergibt der Kernel
+/// bei JEDEM Anstecken neu — die Reihenfolge richtet sich danach, in welcher
+/// Reihenfolge die Geräte eingeschaltet werden. Derselbe Synth heißt nach einem
+/// Reboot also plötzlich „… 32:0". Für Speichern und Vergleich muss der Suffix
+/// weg, sonst findet ein gespeicherter „Keys link" (oder eine Route) sein Gerät
+/// nach dem nächsten Neustart nicht mehr wieder. Auf macOS (CoreMIDI) gibt es
+/// den Suffix nicht — dort ist das ein No-op.
+pub(crate) fn strip_alsa_addr(name: &str) -> &str {
+    let trimmed = name.trim_end();
+    let stripped = trimmed.rsplit_once(' ').and_then(|(head, tail)| {
+        let (client, port) = tail.split_once(':')?;
+        let numeric = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+        (numeric(client) && numeric(port)).then(|| head.trim_end())
+    });
+    stripped.unwrap_or(name)
+}
+
+/// Normalisiert einen Portnamen für toleranten Vergleich: ALSA-Adresse ab,
+/// Kleinbuchstaben, nur alphanumerische Zeichen (Leer-/Sonderzeichen entfernt).
 fn normalize_port_name(name: &str) -> String {
-    name.chars()
+    strip_alsa_addr(name)
+        .chars()
         .filter(|c| c.is_alphanumeric())
         .flat_map(|c| c.to_lowercase())
         .collect()
@@ -467,5 +486,29 @@ mod tests {
         assert!(same_port("", "")); // beide virtueller Ausgang
         assert!(!same_port("", "TR-6S"));
         assert!(!same_port("TR-6S", "KeyStep"));
+    }
+
+    #[test]
+    fn strip_alsa_addr_drops_only_the_trailing_client_port() {
+        assert_eq!(
+            strip_alsa_addr("Arturia MiniLab mkII:Arturia MiniLab mkII MIDI 1 40:0"),
+            "Arturia MiniLab mkII:Arturia MiniLab mkII MIDI 1"
+        );
+        assert_eq!(strip_alsa_addr("D MINI:D MINI MIDI 1 36:0"), "D MINI:D MINI MIDI 1");
+        // Keine ALSA-Adresse → unverändert (macOS-Portnamen, Zahl ohne ':').
+        assert_eq!(strip_alsa_addr("Arturia KeyStep 32"), "Arturia KeyStep 32");
+        assert_eq!(strip_alsa_addr("TR-6S MIDI 1"), "TR-6S MIDI 1");
+        assert_eq!(strip_alsa_addr(""), "");
+    }
+
+    #[test]
+    fn same_port_survives_alsa_renumbering() {
+        // Gleiches Gerät, andere ALSA-Client-Nummer nach Reboot/Replug.
+        assert!(same_port(
+            "Arturia MiniLab mkII:Arturia MiniLab mkII MIDI 1 40:0",
+            "Arturia MiniLab mkII:Arturia MiniLab mkII MIDI 1 32:0",
+        ));
+        // Verschiedene Geräte matchen weiterhin nicht.
+        assert!(!same_port("P-6:P-6 MIDI IN 24:0", "J-6:J-6 MIDI IN 24:0"));
     }
 }

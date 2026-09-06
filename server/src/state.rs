@@ -774,7 +774,12 @@ pub fn next_free_position(proj: &Project, size: f64) -> (f64, f64) {
 /// Geräts oft leicht unterschiedlich (z.B. mit/ohne Kanal-Suffix).
 fn names_match(a: Option<&str>, b: &str) -> bool {
     let Some(a) = a else { return false };
-    let (a, b) = (a.to_lowercase(), b.to_lowercase());
+    // Erst die laufende ALSA-Adresse (" 40:0") abschneiden — die ändert sich
+    // bei jedem Anstecken, s. `midi::strip_alsa_addr`.
+    let (a, b) = (
+        crate::midi::strip_alsa_addr(a).to_lowercase(),
+        crate::midi::strip_alsa_addr(b).to_lowercase(),
+    );
     if a == b || a.contains(b.as_str()) || b.contains(a.as_str()) {
         return true;
     }
