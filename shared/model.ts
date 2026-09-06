@@ -140,14 +140,11 @@ export type LoopMode =
  * Trig-Condition: Bedingung, ob ein Step/Note in diesem Durchlauf spielt.
  *  "always"                  – immer
  *  { ratio: [a, b] }         – im a-ten von je b Durchläufen (z.B. [1,4])
- *  "fill" | "notFill"        – nur (nicht) im Fill-Modus
  *  "first" | "notFirst"      – nur (nicht) beim ersten Loop-Durchlauf
  *  { probability: 0..1 }     – Wahrscheinlichkeit
  */
 export type TrigCondition =
   | "always"
-  | "fill"
-  | "notFill"
   | "first"
   | "notFirst"
   | { ratio: [number, number] }
@@ -769,42 +766,6 @@ export interface DeviceProfile {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Scenes (mehrere Lanes/Devices mit einem Touch starten)
-// ────────────────────────────────────────────────────────────────────────────
-
-export interface SceneTarget {
-  laneId: Id;
-  action: "trigger" | "stop"; // Slot starten oder Lane stoppen
-  slotId?: Id; // welcher Slot bei "trigger" (sonst aktueller/erster)
-}
-
-export interface Scene {
-  id: Id;
-  name: string;
-  color?: string;
-  targets: SceneTarget[]; // was diese Scene über alle Devices auslöst
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// Song / Arrangement (Scenes zu einem Track verketten)
-// ────────────────────────────────────────────────────────────────────────────
-
-export interface SongStep {
-  id: Id;
-  sceneId: Id;
-  bars: number; // wie viele Takte diese Scene läuft
-  bpmOverride?: number; // optionale Tempo-Automation
-  timeSignatureOverride?: TimeSignature; // optionaler Taktartwechsel
-}
-
-export interface Song {
-  id: Id;
-  name: string;
-  steps: SongStep[];
-  loop: boolean; // am Ende wieder von vorn
-}
-
-// ────────────────────────────────────────────────────────────────────────────
 // Routing-Hub (externe Controller on-the-fly auf Devices routen)
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -841,45 +802,32 @@ export interface MidiRoute {
   transform: RouteTransform;
 }
 
-/**
- * Routing-Scene: aktiviert eine bestimmte Menge Routen auf Knopfdruck.
- * Ermöglicht "denselben Knob auf Synth A, dann auf Synth B" ohne Kabel/Re-Learn.
- */
-export interface RoutingScene {
-  id: Id;
-  name: string;
-  activeRouteIds: Id[];
-}
-
 export interface RoutingHub {
   sources: MidiInputSource[];
   routes: MidiRoute[];
-  scenes: RoutingScene[];
-  activeSceneId?: Id;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Globale Modulation (Mod-Matrix)
+// Dashboard „Keys links" (Controller → Synth, schnell umhängbar)
 // ────────────────────────────────────────────────────────────────────────────
 
-/** Globaler LFO/Modulator, auf mehrere Ziele routbar. */
-export interface GlobalModulator {
+/**
+ * Ein „Keys link" auf dem Dashboard: leitet die Spiel-Nachrichten (Noten,
+ * Pitch-Bend, Aftertouch, Mod-/Sustain-CC) eines physischen MIDI-Eingangs
+ * live an ein Ziel-Device weiter — der schnelle Weg, einen angeschlossenen
+ * Controller ohne Umstecken auf einen Synth zu spielen und „on the fly"
+ * umzuhängen. Mehrere Links dürfen gleichzeitig aktiv sein (ein Controller →
+ * mehrere Synths). Serverseitig: `AppState::forward_key_links`.
+ */
+export interface KeyLink {
   id: Id;
-  name: string;
-  waveform: LfoWaveform;
-  rateBars: number; // synchron zum Takt
-  phase: number; // 0..1
-  bipolar: boolean;
-}
-
-/** Ein Ziel, das ein Modulator ansteuert. */
-export interface ModRoute {
-  id: Id;
-  modulatorId: Id;
-  deviceId: Id;
-  ccNumber: number;
-  channel?: MidiChannel;
-  depth: number; // -1..1
+  port: string; // physischer MIDI-In-Port (toleranter Vergleich)
+  deviceId: Id; // Ziel-Device (dessen midiOutPort)
+  enabled: boolean;
+  channel?: MidiChannel; // Kanal-Remap aufs Ziel (optional)
+  transpose?: number; // Halbton-Transpose auf Noten (optional)
+  x: number; // Position auf der Dashboard-Leinwand
+  y: number;
 }
 
 export interface ControlScreenSnapshot {
@@ -922,11 +870,8 @@ export interface Project {
   controlScreens: ControlScreen[];
   controlSnapshots: ControlScreenSnapshot[];
 
-  scenes: Scene[]; // Live-Scenes
-  songs: Song[]; // Arrangements
   routing: RoutingHub; // Routing-Hub
-  modulators: GlobalModulator[]; // globale LFOs
-  modRoutes: ModRoute[]; // Mod-Matrix
+  keyLinks: KeyLink[]; // Dashboard „Keys links" (Controller → Synth)
 
   metronome: MetronomeConfig;
 
@@ -946,10 +891,6 @@ export interface TransportState {
   beat: number;
   tick: number; // 0–23 (24 PPQN)
   ppqn: 24;
-  fillActive: boolean; // Fill-Modus (für Trig-Conditions "fill")
-  songMode: boolean; // läuft ein Arrangement?
-  activeSongId?: Id;
-  activeSceneId?: Id;
 }
 
 /** Aufnahme-Einstellungen (MIDI-Input in Bausteine aufzeichnen). */
@@ -972,7 +913,6 @@ export type Command =
   | { t: "transport.tapTempo" }
   | { t: "transport.panic" } // All Notes Off / alle Devices
   | { t: "transport.setClockSource"; source: ClockSource }
-  | { t: "transport.setFill"; active: boolean }
   | { t: "transport.setMetronome"; enabled: boolean }
   // ── Aufnahme ──
   // Linkt ein gelerntes Live-Control (i.d.R. kind="keyboard", siehe oben) live
@@ -1090,18 +1030,7 @@ export type Command =
   | { t: "cc.setEnvelopePoint"; blockId: Id; layerId: Id; step: number; value: number | null } // 0..1; null löscht den Punkt
   | { t: "programChange.setEvent"; blockId: Id; step: number; program: number | null } // null löscht das Event
   | { t: "patternShift.setEvent"; blockId: Id; step: number; kind: MidiMessageKind | null; data1?: number; data2?: number } // kind=null löscht die Nachricht
-  // ── Scenes ──
-  | { t: "scene.create"; name: string }
-  | { t: "scene.trigger"; sceneId: Id }
-  | { t: "scene.update"; scene: Scene }
-  | { t: "scene.delete"; sceneId: Id }
-  // ── Song / Arrangement ──
-  | { t: "song.create"; name: string }
-  | { t: "song.update"; song: Song }
-  | { t: "song.delete"; songId: Id }
-  | { t: "song.play"; songId: Id }
-  | { t: "song.stop" }
-  // ── Routing-Hub ──
+  // ── Routing-Hub (Server-Plumbing bleibt; keine eigene UI mehr) ──
   | { t: "routing.addSource"; source: MidiInputSource }
   | { t: "routing.updateSource"; source: MidiInputSource }
   | { t: "routing.removeSource"; sourceId: Id }
@@ -1109,16 +1038,13 @@ export type Command =
   | { t: "routing.updateRoute"; route: MidiRoute }
   | { t: "routing.removeRoute"; routeId: Id }
   | { t: "routing.setRouteEnabled"; routeId: Id; enabled: boolean }
-  | { t: "routing.activateScene"; sceneId: Id } // Routing-Scene on-the-fly
-  | { t: "routing.saveScene"; name: string }
-  | { t: "routing.deleteScene"; sceneId: Id }
-  // ── Modulation ──
-  | { t: "mod.addModulator"; modulator: GlobalModulator }
-  | { t: "mod.updateModulator"; modulator: GlobalModulator }
-  | { t: "mod.removeModulator"; modulatorId: Id }
-  | { t: "mod.addRoute"; route: ModRoute }
-  | { t: "mod.updateRoute"; route: ModRoute }
-  | { t: "mod.removeRoute"; routeId: Id }
+  // ── Dashboard „Keys links" (Controller → Synth, on the fly umhängbar) ──
+  | { t: "keyLink.add"; port: string; deviceId: Id; x?: number; y?: number }
+  | { t: "keyLink.update"; link: KeyLink }
+  | { t: "keyLink.setEnabled"; linkId: Id; enabled: boolean }
+  | { t: "keyLink.setDevice"; linkId: Id; deviceId: Id }
+  | { t: "keyLink.move"; linkId: Id; x: number; y: number }
+  | { t: "keyLink.remove"; linkId: Id }
   // ── Device & Profile ──
   | { t: "device.setSendClock"; deviceId: Id; sendClock: boolean }
   | { t: "device.setMuted"; deviceId: Id; muted: boolean } // Schnell-Mute des ganzen Geräts (alle Lanes schweigen, laufen aber weiter)
@@ -1193,6 +1119,7 @@ export type ServerEvent =
   | { t: "noteInput.armed"; blockId: Id | null } // aktueller Eingabe-Zustand der Piano-Rolle (null = niemand hört zu)
   | { t: "record.armState"; controlId: Id | null; laneId: Id | null } // aktueller Record-Arm-Zustand (beide null = nichts armiert)
   | { t: "routing.activity"; routeId: Id } // Route hat gerade Daten durchgeleitet (UI-Feedback)
+  | { t: "keyLink.activity"; linkId: Id } // Keys-Link hat gerade Noten durchgeleitet (kurzes UI-Aufblitzen)
   | { t: "midi.ports"; outputs: string[]; inputs: string[] }
   | { t: "project.list"; projects: ProjectSummary[]; currentId: Id } // beim Verbinden + nach jeder Projekt-Operation
   | { t: "server.logLines"; lines: string[] } // Antwort auf "server.log": letzte ≤1000 Log-Zeilen

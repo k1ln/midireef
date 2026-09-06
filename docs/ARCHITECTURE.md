@@ -130,52 +130,66 @@ Das Datenmodell dazu: `LaneRole` (= `BlockType`, reine Typ-Lanes), `LaneControl`
 
 ---
 
-## 4b. Routing-Hub (Controller on-the-fly umrouten)
+## 4b. Controller live auf Synths spielen
 
-MidiReef ist zugleich ein **MIDI-Routing-Hub**: externe Controller werden **ohne Kabelwechsel** live auf verschiedene Synths/Devices geroutet. Ein Knob deines Keyboards steuert erst Synth A (Cutoff), per Touch dann Synth B — ohne Umstecken, ohne neues Learn.
+Ein angeschlossener Controller soll ohne Umstecken erst den einen, dann den
+anderen Synth spielen. Der schnelle Weg dafür sind die **Dashboard „Keys
+links"** (§5.2): eine Kachel = ein MIDI-Eingang → ein Ziel-Device, per Tipp
+an/aus und per Tipp umgehängt; mehrere dürfen gleichzeitig „LIVE" sein
+(ein Controller → mehrere Synths).
 
-- **`MidiInputSource`** — ein physischer MIDI-Eingang (benennbar, z.B. „Launchkey").
-- **`MidiRoute`** — leitet **gefilterte** Nachrichten (Note/CC/PB/AT/NRPN/SysEx, Noten-/CC-Bereiche) einer Quelle an ein Ziel-Device, mit **Remapping** (Kanal, CC-Umnummerierung, Transpose, Velocity-Scale).
-- **`RoutingScene`** — aktiviert on-the-fly eine ganze Menge Routen (z.B. „alle Controller → Synth B"). Das ist der Kern des kabellosen Umschaltens.
-- UI-Feedback: `routing.activity` blinkt die Route, wenn Daten durchlaufen.
+- **`KeyLink`** (`shared/model.ts`, `model::KeyLink`) — `{ port, deviceId, enabled, channel?, transpose?, x, y }`.
+- **`AppState::forward_key_links`** (`state.rs`) — hängt sich wie `forward_via_routing` in den MIDI-In-Thread (`main.rs`), toleranter Portvergleich (`midi::same_port`), leitet nur Spiel-Nachrichten (Note/PB/AT/CC) weiter.
+- UI-Feedback: `keyLink.activity` lässt die Kachel kurz aufblitzen.
+
+Darunter liegt weiterhin das **Routing-Hub-Backend** (`RoutingHub` /
+`MidiInputSource` / `MidiRoute`, `routing.*`-Commands, `forward_via_routing`)
+für gefiltertes/remapptes Routing — aktuell **ohne eigene UI** (der frühere
+„RT"-Screen samt Routing-Scenes wurde am 2026-09-06 entfernt, s. §4c) und
+wartet auf einen neuen Aufsatz.
 
 ```
-Launchkey ─┐                        ┌─► TB-3  (Route: CC74→Cutoff, Ch 2)
-           ├─ RoutingScene "Live A" ─┤
-Beatstep  ─┘                        └─► TR-8S (Route: Notes 36-51, Ch 10)
-   (per Touch → RoutingScene "Live B" routet alles auf System-1)
+MiniLab ─┬─► D mini   (KeyLink, LIVE)
+         └─► J-6      (KeyLink, per Tipp dazu-/weggeschaltet)
 ```
 
 ---
 
 ## 4c. Profi-Sequencing & MIDI-Tiefe
 
-- **Per-Step (`StepMod`):** Probability, **Trig-Conditions** (`1:4`, fill/notFill, first/notFirst), **Ratchets/Rolls**, **Micro-Timing** — auf Melodie-/Beat-/Chord-Events.
+- **Per-Step (`StepMod`):** Probability, **Trig-Conditions** (`1:4`, first/notFirst), **Ratchets/Rolls**, **Micro-Timing** — auf Melodie-/Beat-/Chord-Events.
 - **Euclidean-Generator** (`EuclidConfig`) pro Beat-Line; **Choke-Groups** (HiHat-Logik).
 - **Swing & Humanize pro Lane** (Timing/Velocity), zusätzlich zum Projekt-Swing.
-- **Scenes** (`Scene`): mehrere Lanes/Devices mit einem Touch starten/stoppen.
-- **Song-/Arrangement-Mode** (`Song` / `SongStep`): Scenes verketten, inkl. Tempo-/Taktart-Automation.
 - **MIDI-Input-Recording** (`RecordSettings`): Performance in Bausteine aufnehmen, mit Quantize/Overdub/Count-in.
 - **Clock-Source** (`ClockSource`): intern **senden**, zu externer MIDI-Clock **syncen**, oder **Ableton Link** (Netzwerk).
 - **Volle MIDI-Palette** (`MidiMessageKind`): Note, CC, PC, Pitch-Bend, Channel-/Poly-Aftertouch, **NRPN/RPN**, **SysEx**.
 - **Device-Profile** (`DeviceProfile`): benannte CC/PC/NRPN-Maps (z.B. „TR-8S" → „Cutoff" statt „CC 74") — großer Touch-Usability-Gewinn.
-- **Globale Modulatoren + Mod-Matrix** (`GlobalModulator` / `ModRoute`): ein LFO auf mehrere Ziele.
 - **Panic** (All-Notes-Off), **Undo/Redo**, **Copy/Paste** (Blocks/Lanes), **Control-Snapshots**, **Per-Device-Latenz-Offset**, **CC-Slew/Kurven**, **MPE** (optional).
+
+> **Entfernt am 2026-09-06** (kommt später sauber zurück): **Scenes**,
+> **Song/Arrangement-Mode**, **Mod-Matrix** und die **Fill**-Performance-Taste
+> samt Trig-Conditions `fill`/`notFill`. Details in [`docs/TODO.md`](./TODO.md).
 
 ---
 
 ## 5. Bildschirme (Touch-Navigation)
 
 1. **Transport-Leiste (immer oben):** Play/Stop, BPM, Clock-Status, Projekt-Name.
-2. **Startbildschirm / Live-Control:** Alle MIDI-Knobs/Buttons/Fader live bedienbar.
+2. **Startbildschirm / Live-Control (Dashboard):** Alle MIDI-Knobs/Buttons/Fader live bedienbar.
    - **Long-Press** → MIDI-Learn startet → eingehende MIDI-Nachricht drücken → Zuordnung → mit **Touch-Keyboard** benennen.
    - Controls per Drag auf einen **individuellen Screen** verschiebbar.
+   - **„＋ Keys link"** (Transport-Leiste): legt eine Kachel an, die die Tasten
+     eines angeschlossenen Controllers live an einen Ziel-Synth schickt —
+     Ziel per Tipp umhängbar, mehrere Links gleichzeitig „LIVE" möglich
+     (`KeyLink`, `AppState::forward_key_links`).
 3. **Sequencer Overview:** Tabelle aller Devices/Lanes/Bausteine.
 4. **Device-Ansicht:** Lanes an/aus, ein-/ausblenden; Baustein-Bibliothek.
 5. **Baustein-Detail:** Noten/Beats/CC-Kurven editieren (Melodie, Beat-Lines mit Mute, CC-Layer wie LFO), inkl. Per-Step Probability/Conditions/Ratchets.
-6. **Scenes & Song:** Scenes anlegen/starten, Arrangement (Song) zusammenstellen.
-7. **Routing-Hub:** Quellen/Routen verwalten, Routing-Scenes on-the-fly umschalten.
-8. **Projekt-Verwaltung:** anlegen, kopieren, wechseln.
+6. **Projekt-Verwaltung:** anlegen, kopieren, wechseln.
+
+> Die früheren Screens **Scenes & Song**, **Routing-Hub** und **Mod-Matrix**
+> sind aus der UI entfernt (s. §4c). Das Routing-Hub-**Backend** bleibt
+> bestehen und wird von den Dashboard-„Keys links" mitgenutzt.
 
 Navigation: Overview → Device → Lane → Baustein (immer tiefer, immer touch-freundlich, große Flächen).
 
@@ -206,17 +220,19 @@ Navigation: Overview → Device → Lane → Baustein (immer tiefer, immer touch
 ## 8. WebSocket-Protokoll (Übersicht)
 
 **UI → Server (Commands):**
-`transport.play/stop/setBpm/tapTempo/panic/setClockSource/setFill/setMetronome`,
+`transport.play/stop/setBpm/tapTempo/panic/setClockSource/setMetronome`,
 `record.arm/start/stop/setSettings`,
 `edit.undo/redo`, `block.copy/paste`, `lane.copy/paste`,
 `lane.*` (create/duplicate/delete/rename/reorder/setRole/setColor/setChannel/setEnabled/setVisible/setMuted/setSolo/setCollapsed/setHeight/setPlayMode/setTriggerQuantize/setSwing/setHumanize),
 `laneControl.*` (add/update/remove/reorder/press/release/setValue), `laneSlot.*`,
 `block.*` (trigger/rename/setTranspose/setSpeed/setLoop/setStepMod), `beat.setLineMuted/setEuclid`,
-`scene.*` (create/trigger/update/delete), `song.*` (create/update/delete/play/stop),
-`routing.*` (addSource/updateSource/removeSource/addRoute/updateRoute/removeRoute/setRouteEnabled/activateScene/saveScene),
-`mod.*` (addModulator/updateModulator/removeModulator/addRoute/removeRoute),
+`routing.*` (addSource/updateSource/removeSource/addRoute/updateRoute/removeRoute/setRouteEnabled — Backend-only, keine UI),
+`keyLink.*` (add/update/setEnabled/setDevice/move/remove — Dashboard „Keys links"),
 `device.setProfile/setLatency`, `profile.*`, `snapshot.save/recall/delete`,
 `control.setValue/startLearn/assignName`, `project.create/copy/load/save`.
+
+> Entfernt am 2026-09-06: `scene.*`, `song.*`, `mod.*`, `transport.setFill`
+> und `routing.activateScene/saveScene/deleteScene` (s. §4c).
 
 **Server → UI (Events):**
 `state.snapshot` (voller Zustand beim Verbinden),
@@ -224,7 +240,7 @@ Navigation: Overview → Device → Lane → Baustein (immer tiefer, immer touch
 `transport.tick` (Position, gethrottelt fürs Rendering),
 `learn.captured` (eingehende MIDI-Nachricht beim Lernen),
 `record.captured` (Aufnahme in Baustein geschrieben),
-`routing.activity` (Route hat Daten durchgeleitet — UI-Feedback),
+`routing.activity` / `keyLink.activity` (Route bzw. Keys-Link hat Daten durchgeleitet — UI-Feedback),
 `midi.ports` (verfügbare Ein-/Ausgänge).
 
 Das konkrete, typisierte Datenmodell liegt in [`shared/model.ts`](../shared/model.ts).

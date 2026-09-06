@@ -5,6 +5,31 @@ art live MIDI station. Updated the same day after a long implementation pass
 — most of the list shipped. Check items off as they land; each has enough
 pointers to start without re-surveying the codebase.
 
+## Removed 2026-09-06 (to be rebuilt properly later)
+
+- **Scenes (SC)**, **Song / Arrangement**, **Mod-Matrix (MX)** and the
+  **Fill** performance button were ripped out — half-baked, in the way. Gone
+  from server + shared + UI: `scene.*`/`song.*`/`mod.*`/`transport.setFill`
+  commands, `ClockCommand::FireSceneTarget`/`PlaySong`/`StopSong`/`SetFill`,
+  `Engine::fire_scene_target`/`eval_global_modulators`/`set_fill`, the
+  `SongPlayback` clock-thread machinery, `RoutingScene`, `GlobalModulator`,
+  `ModRoute`, `TrigCondition::Fill`/`NotFill`, and the
+  `scenes`/`songs`/`modulators`/`modRoutes` project fields +
+  `fillActive`/`songMode`/`activeSongId`/`activeSceneId`/… transport fields.
+  `Engine::stop_lane` kept (`#[allow(dead_code)]`) for the Scenes rebuild.
+- **Routing Hub UI (RT)** removed, but its **server plumbing stays** —
+  `RoutingHub`/`MidiInputSource`/`MidiRoute`, `routing.*` commands (minus the
+  scene ones), `AppState::forward_via_routing`. Dormant until re-fronted.
+- **New: Dashboard "Keys links"** — the fast replacement for playing a
+  connected controller straight into a synth. `model::KeyLink` (+ `keyLinks`
+  on `Project`), `keyLink.add/update/setEnabled/setDevice/move/remove` in
+  `ws.rs`, `AppState::forward_key_links` in `state.rs` (own path next to
+  `forward_via_routing`; tolerant port match; forwards note/PB/AT/CC play
+  messages; many links may be LIVE at once → one controller to several
+  synths). UI: `ui/src/app/dashboard/KeyLinkWidget.tsx` draggable canvas
+  tiles + "＋ Keys link" transport-bar button (dashboard only) +
+  `keyLink.activity` flash.
+
 ## Done
 
 - [x] **Scenes** — fire/stop multiple lanes across devices with one touch.

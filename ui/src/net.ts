@@ -9,14 +9,6 @@ export interface TransportState {
   beat: number;
   tick: number;
   ppqn: number;
-  fillActive: boolean;
-  songMode: boolean;
-  activeSongId?: string;
-  activeSceneId?: string;
-  /** Index in `Song.steps` des gerade laufenden Steps — nur bei `songMode`. */
-  activeSongStepIndex?: number;
-  /** Takte bis zum nächsten Step-Wechsel — zählt an jeder Taktgrenze runter. */
-  songBarsRemaining?: number;
 }
 
 export interface MidiPorts {

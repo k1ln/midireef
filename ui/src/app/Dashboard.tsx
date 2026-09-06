@@ -15,8 +15,10 @@ import { useTouchKeyboard } from "./TouchKeyboard";
 import { useViewportSize } from "./useViewportSize";
 import { Button } from "./widgets/Button";
 import { ControlWidget, type LiveControl } from "./dashboard/ControlWidget";
+import { KeyLinkWidget } from "./dashboard/KeyLinkWidget";
 import { DevicePickerPopup, KindPickerPopup, LanePickerPopup, TriggerPickerPopup } from "./dashboard/menus";
-import type { Block } from "../state";
+import { Popup } from "./widgets/Popup";
+import type { Block, KeyLink } from "../state";
 import { ControlDock, CONTROL_DOCK_W } from "./dashboard/ControlDock";
 import type { Device } from "../state";
 
@@ -33,6 +35,8 @@ const DOCK_W = CONTROL_DOCK_W;
 const EMPTY_DEVICES: Device[] = [];
 const EMPTY_CONTROLS: LiveControl[] = [];
 const EMPTY_BLOCKS: Block[] = [];
+const EMPTY_KEYLINKS: KeyLink[] = [];
+const EMPTY_INPUTS: string[] = [];
 
 interface Pt {
   x: number;
@@ -45,7 +49,15 @@ function clampZoom(z: number): number {
   return Math.min(2, Math.max(0.3, z));
 }
 
-export function Dashboard({ centerSignal, addLaneSwitchSignal }: { centerSignal?: number; addLaneSwitchSignal?: number }) {
+export function Dashboard({
+  centerSignal,
+  addLaneSwitchSignal,
+  addKeyLinkSignal,
+}: {
+  centerSignal?: number;
+  addLaneSwitchSignal?: number;
+  addKeyLinkSignal?: number;
+}) {
   const send = useSend();
   const net = useNet();
   const store = useStore();
@@ -54,6 +66,8 @@ export function Dashboard({ centerSignal, addLaneSwitchSignal }: { centerSignal?
   const devices = useStoreValue((s) => s.project?.devices ?? EMPTY_DEVICES);
   const controls = useStoreValue((s) => (s.project?.controls as LiveControl[] | undefined) ?? EMPTY_CONTROLS);
   const blocks = useStoreValue((s) => (s.project?.blocks as Block[] | undefined) ?? EMPTY_BLOCKS);
+  const keyLinks = useStoreValue((s) => (s.project?.keyLinks as KeyLink[] | undefined) ?? EMPTY_KEYLINKS);
+  const midiInputs = useStoreValue((s) => s.midiInputs ?? EMPTY_INPUTS);
   const recordArmed = useStoreValue((s) => s.recordArmed);
 
   const [armed, setArmed] = useState(false);
@@ -67,6 +81,14 @@ export function Dashboard({ centerSignal, addLaneSwitchSignal }: { centerSignal?
   const [triggerPicker, setTriggerPicker] = useState<{ ctrl: LiveControl } | null>(null);
   const [kindPicker, setKindPicker] = useState<{ controlId: string; mappingKind: "cc" | "note" } | null>(null);
   const [laneTogglePicker, setLaneTogglePicker] = useState(false);
+  // „＋ Keys link" — Schritt 1: MIDI-Eingang wählen; Schritt 2: Ziel-Device.
+  const [keyLinkPortPicker, setKeyLinkPortPicker] = useState(false);
+  const [keyLinkAddPort, setKeyLinkAddPort] = useState<string | null>(null);
+  // Ziel eines BESTEHENDEN Links on the fly umhängen.
+  const [keyLinkDevicePicker, setKeyLinkDevicePicker] = useState<{ link: KeyLink } | null>(null);
+  // Links, durch die GERADE Noten laufen (`keyLink.activity`) — nur ein kurzes
+  // Aufblitzen, kein persistenter Zustand.
+  const [keyLinkActive, setKeyLinkActive] = useState<Set<string>>(new Set());
   // Controls currently "on" because the physical device sent a matching
   // Note-On (not persisted project state — purely a live UI light-up, mirrors
   // what a hardware pad's own LED would do).
@@ -79,6 +101,7 @@ export function Dashboard({ centerSignal, addLaneSwitchSignal }: { centerSignal?
   const pressedControl = useRef<LiveControl | null>(null);
   const pressTimer = useRef<number | undefined>(undefined);
   const toastTimer = useRef<number | undefined>(undefined);
+  const keyLinkActiveTimers = useRef(new Map<string, number>());
 
   const cancelPress = () => {
     if (pressTimer.current) {
@@ -139,6 +162,34 @@ export function Dashboard({ centerSignal, addLaneSwitchSignal }: { centerSignal?
               else next.delete(evt.controlId);
               return next;
             });
+          }
+          break;
+        // Noten laufen durch einen Keys-Link — kurz aufblitzen lassen. Der
+        // Server schickt kein „aus"-Event, also selbst nach einem Moment
+        // zurücknehmen (letztes Event gewinnt, Timer wird neu gesetzt).
+        case "keyLink.activity":
+          if (evt.linkId) {
+            const id = evt.linkId as string;
+            setKeyLinkActive((prev) => {
+              if (prev.has(id)) return prev;
+              const next = new Set(prev);
+              next.add(id);
+              return next;
+            });
+            const timers = keyLinkActiveTimers.current;
+            const existing = timers.get(id);
+            if (existing) window.clearTimeout(existing);
+            timers.set(
+              id,
+              window.setTimeout(() => {
+                setKeyLinkActive((prev) => {
+                  const next = new Set(prev);
+                  next.delete(id);
+                  return next;
+                });
+                timers.delete(id);
+              }, 180),
+            );
           }
           break;
       }
@@ -250,6 +301,15 @@ export function Dashboard({ centerSignal, addLaneSwitchSignal }: { centerSignal?
     setLaneTogglePicker(true);
   }, [addLaneSwitchSignal]);
 
+  // „＋ Keys link" in der Transport-Leiste — öffnet hier den MIDI-Eingangs-Picker.
+  const addKeyLinkSeen = useRef(addKeyLinkSignal);
+  useEffect(() => {
+    if (addKeyLinkSignal === addKeyLinkSeen.current) return;
+    addKeyLinkSeen.current = addKeyLinkSignal;
+    setKeyLinkAddPort(null);
+    setKeyLinkPortPicker(true);
+  }, [addKeyLinkSignal]);
+
   const cx = w / 2;
   const cy = (TOP + h) / 2;
 
@@ -345,6 +405,19 @@ export function Dashboard({ centerSignal, addLaneSwitchSignal }: { centerSignal?
               }}
             />
           ))}
+
+          {keyLinks.map((link) => (
+            <KeyLinkWidget
+              key={link.id}
+              link={link}
+              deviceName={deviceName(link.deviceId)}
+              editMode={editMode}
+              zoom={zoom}
+              active={keyLinkActive.has(link.id)}
+              onPickDevice={() => setKeyLinkDevicePicker({ link })}
+              onRemove={() => send({ t: "keyLink.remove", linkId: link.id })}
+            />
+          ))}
         </div>
       </div>
 
@@ -369,6 +442,75 @@ export function Dashboard({ centerSignal, addLaneSwitchSignal }: { centerSignal?
           onPick={(lane) => {
             send({ t: "control.addLaneToggle", laneId: lane.id });
             setLaneTogglePicker(false);
+          }}
+        />
+      )}
+
+      {/* „＋ Keys link" Schritt 1 — MIDI-Eingang wählen. */}
+      {keyLinkPortPicker && (
+        <Popup onClose={() => setKeyLinkPortPicker(false)}>
+          <div className="popup-title">Keys link — pick the controller</div>
+          {midiInputs.length === 0 ? (
+            <div style={{ color: "var(--pal-text-dim)", fontSize: 15 }}>
+              No MIDI inputs — plug in a controller.
+            </div>
+          ) : (
+            midiInputs.map((port) => (
+              <Button
+                key={port}
+                className="popup-row"
+                onClick={() => {
+                  setKeyLinkPortPicker(false);
+                  if (devices.length === 1) {
+                    send({ t: "keyLink.add", port, deviceId: devices[0].id });
+                  } else {
+                    setKeyLinkAddPort(port);
+                  }
+                }}
+              >
+                {port}
+              </Button>
+            ))
+          )}
+        </Popup>
+      )}
+
+      {/* Schritt 2 — Ziel-Device wählen (nur wenn es mehr als eins gibt). */}
+      {keyLinkAddPort && (
+        <Popup onClose={() => setKeyLinkAddPort(null)}>
+          <div className="popup-title">Send “{keyLinkAddPort}” to …</div>
+          {devices.length === 0 ? (
+            <div style={{ color: "var(--pal-text-dim)", fontSize: 15 }}>
+              No devices yet — add one in the sequencer.
+            </div>
+          ) : (
+            devices.map((d) => (
+              <Button
+                key={d.id}
+                className="popup-row"
+                onClick={() => {
+                  send({ t: "keyLink.add", port: keyLinkAddPort, deviceId: d.id });
+                  setKeyLinkAddPort(null);
+                }}
+              >
+                {d.name}
+              </Button>
+            ))
+          )}
+        </Popup>
+      )}
+
+      {/* Ziel eines bestehenden Links on the fly umhängen. */}
+      {keyLinkDevicePicker && (
+        <DevicePickerPopup
+          x={window.innerWidth / 2 - 110}
+          y={TOP + 16}
+          devices={devices}
+          activeDeviceId={keyLinkDevicePicker.link.deviceId}
+          onClose={() => setKeyLinkDevicePicker(null)}
+          onPick={(deviceId) => {
+            send({ t: "keyLink.setDevice", linkId: keyLinkDevicePicker.link.id, deviceId });
+            setKeyLinkDevicePicker(null);
           }}
         />
       )}

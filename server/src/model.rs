@@ -143,19 +143,6 @@ fn all_messages() -> serde_json::Value {
     serde_json::json!("all")
 }
 
-/// Aktiviert eine bestimmte Menge Routen auf Knopfdruck (z.B. "alle
-/// Controller → Synth B") — Kern des kabellosen Umschaltens. Aktivieren
-/// heißt: GENAU diese Routen an, alle anderen aus (s. `routing.activateScene`
-/// in ws.rs) — keine separate "welche Scene ist aktiv"-Logik beim Forwarden
-/// nötig, nur `MidiRoute.enabled` zählt zur Laufzeit.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RoutingScene {
-    pub id: Id,
-    pub name: String,
-    pub active_route_ids: Vec<Id>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct RoutingHub {
@@ -163,44 +150,34 @@ pub struct RoutingHub {
     pub sources: Vec<MidiInputSource>,
     #[serde(default)]
     pub routes: Vec<MidiRoute>,
-    #[serde(default)]
-    pub scenes: Vec<RoutingScene>,
-    /// Nur fürs UI-Feedback ("zuletzt aktivierte Scene") — spätere manuelle
-    /// Änderungen an einzelnen Routen machen das rückblickend "veraltet",
-    /// wie bei `TransportState.activeSceneId` auch schon.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_scene_id: Option<Id>,
 }
 
-// ── Globale Modulation (Mod-Matrix) ─────────────────────────────────────────
-
-/// Globaler LFO, auf mehrere Ziele routbar (`ModRoute`) — anders als eine
-/// `CcLayer` an einem Baustein läuft er unabhängig von jeder Lane/Slot immer
-/// mit, taktsynchron. S. `engine::CModulator`.
+/// Ein „Keys link" auf dem Dashboard: leitet die Noten (und Pitch-Bend/
+/// Aftertouch/Mod-Wheel) eines physischen MIDI-Eingangs live an ein Ziel-
+/// Device weiter — der schnelle Weg, einen angeschlossenen Controller ohne
+/// Umstecken auf einen Synth zu spielen und „on the fly" umzuhängen. Mehrere
+/// Links dürfen gleichzeitig aktiv sein (ein Controller → mehrere Synths).
+/// S. `AppState::forward_key_links` in state.rs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GlobalModulator {
+pub struct KeyLink {
     pub id: Id,
-    pub name: String,
-    /// "sine" | "triangle" | "sawUp" | "sawDown" | "square"
-    pub waveform: String,
-    pub rate_bars: f64,
-    pub phase: f64,
-    pub bipolar: bool,
-}
-
-/// Ein Ziel, das ein globaler Modulator ansteuert.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ModRoute {
-    pub id: Id,
-    pub modulator_id: Id,
+    /// Portname des MIDI-Eingangs (toleranter Vergleich, s. `midi::same_port`).
+    pub port: String,
+    /// Ziel-Device (dessen `midi_out_port`).
     pub device_id: Id,
-    pub cc_number: u8,
+    pub enabled: bool,
+    /// Kanal-Remap aufs Zielgerät — `None` = Kanal der Quelle unverändert lassen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<u8>,
-    /// -1..1
-    pub depth: f64,
+    /// Halbton-Transpose auf durchgeleitete Noten.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transpose: Option<i32>,
+    /// Position auf der Dashboard-Leinwand.
+    #[serde(default)]
+    pub x: f64,
+    #[serde(default)]
+    pub y: f64,
 }
 
 /// Lane innerhalb eines Devices. Slots/Controls bleiben vorerst als freies JSON.
@@ -407,15 +384,10 @@ pub struct Project {
     #[serde(default)]
     pub control_snapshots: serde_json::Value,
     #[serde(default)]
-    pub scenes: serde_json::Value,
-    #[serde(default)]
-    pub songs: serde_json::Value,
-    #[serde(default)]
     pub routing: RoutingHub,
+    /// Dashboard „Keys links" — schnelle Controller→Synth-Durchleitung.
     #[serde(default)]
-    pub modulators: Vec<GlobalModulator>,
-    #[serde(default)]
-    pub mod_routes: Vec<ModRoute>,
+    pub key_links: Vec<KeyLink>,
 
     #[serde(default)]
     pub metronome: MetronomeConfig,
@@ -443,11 +415,8 @@ impl Project {
             controls: serde_json::json!([]),
             control_screens: serde_json::json!([]),
             control_snapshots: serde_json::json!([]),
-            scenes: serde_json::json!([]),
-            songs: serde_json::json!([]),
             routing: RoutingHub::default(),
-            modulators: Vec::new(),
-            mod_routes: Vec::new(),
+            key_links: Vec::new(),
             metronome: MetronomeConfig::default(),
             created_at: now.clone(),
             updated_at: now,
@@ -478,20 +447,6 @@ pub struct TransportState {
     pub beat: u32,
     pub tick: u32,
     pub ppqn: u32,
-    pub fill_active: bool,
-    pub song_mode: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub active_song_id: Option<Id>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub active_scene_id: Option<Id>,
-    /// Index (in `Song.steps`) des gerade laufenden Steps — nur bei
-    /// `song_mode == true`. Treibt die Fortschrittsanzeige im Song-Screen.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub active_song_step_index: Option<u32>,
-    /// Takte bis zum nächsten Step-Wechsel — zählt bei jeder Taktgrenze
-    /// runter, s. `clock.rs`s Song-Auto-Advance.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub song_bars_remaining: Option<u32>,
 }
 
 impl Default for TransportState {
@@ -506,12 +461,6 @@ impl Default for TransportState {
             beat: 1,
             tick: 0,
             ppqn: 24,
-            fill_active: false,
-            song_mode: false,
-            active_song_id: None,
-            active_scene_id: None,
-            active_song_step_index: None,
-            song_bars_remaining: None,
         }
     }
 }

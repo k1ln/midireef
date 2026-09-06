@@ -254,6 +254,9 @@ fn spawn_midi_learn(state: &AppState) {
                         // Routing-Hub: ebenfalls unabhängig — eigene
                         // Quellen-Zuordnung über den benannten Eingang.
                         state.forward_via_routing(&source_port, &msg);
+                        // Dashboard „Keys links" — schnelle Controller→Synth-
+                        // Durchleitung, mehrere gleichzeitig möglich.
+                        state.forward_key_links(&source_port, &msg);
                         if !state.learn_armed.load(Ordering::Relaxed) {
                             // Nicht im Lern-Modus: trotzdem prüfen, ob die Nachricht zu
                             // einem bereits gelernten Control passt (physisch bedienter

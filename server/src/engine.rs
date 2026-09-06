@@ -48,12 +48,9 @@ struct BeatHit {
 /// Trig-Condition (`shared/model.ts`s `TrigCondition`): zusätzliches Gate
 /// neben `StepMod.probability` — ein Hit braucht BEIDE (falls gesetzt), um zu
 /// klingen. `First`/`NotFirst`/`Ratio` zählen an `Playback::loops_done` (wie
-/// oft der laufende Block schon durchgelaufen ist), `Fill`/`NotFill` an
-/// `Engine::fill_active` (Performance-Taste, `transport.setFill`).
+/// oft der laufende Block schon durchgelaufen ist).
 #[derive(Debug, Clone, Copy)]
 enum TrigCondition {
-    Fill,
-    NotFill,
     First,
     NotFirst,
     /// Feuert im a-ten von je b Durchläufen — `(a, b)`, 1-basiert.
@@ -411,32 +408,6 @@ struct CcSendState {
     last_sent: Instant,
 }
 
-/// Kompilierter globaler Modulator (`GlobalModulator` in `shared/model.ts`,
-/// Mod-Matrix) — ein taktsynchroner LFO, unabhängig von jeder Lane, der über
-/// `CModRoute`s mehrere CC-Ziele gleichzeitig ansteuern kann.
-struct CModulator {
-    id: String,
-    waveform: String,
-    rate_bars: f64,
-    phase: f64,
-    bipolar: bool,
-}
-
-/// Kompiliertes Mod-Matrix-Ziel: (Port, Kanal, CC-Nummer) schon aus
-/// `ModRoute.deviceId` aufgelöst, wie bei `CcTarget`.
-struct CModRoute {
-    id: String,
-    modulator_id: String,
-    port: String,
-    channel: u8,
-    cc_number: u8,
-    /// -1..1 — der Modulatorwert (0..1 oder -1..1, je `bipolar`) wird damit
-    /// skaliert und um CC 64 zentriert gesendet (Standard-Mod-Matrix-
-    /// Konvention: Tiefe 0 = immer 64, das Ziel braucht seinen eigenen
-    /// Basiswert von woanders).
-    depth: f64,
-}
-
 /// Eigenständige „▶ Play" im Baustein-Detail: spielt GENAU einen Baustein
 /// einmal oder in Schleife ab — unabhängig vom Transport (läuft auch bei
 /// Stillstand) und ohne dass er in einer Lane stecken muss. Bewusst NICHT
@@ -688,18 +659,9 @@ pub struct Engine {
     /// Projekt-Default-Swing (0..1) — Lanes ohne eigenen `Lane.swing`-Override
     /// übernehmen ihn. S. `on_pulse`s Step-Boundary-Berechnung.
     project_swing: f64,
-    /// Performance-Taste „Fill" (`transport.setFill`) — treibt
-    /// `TrigCondition::Fill`/`NotFill`.
-    fill_active: bool,
     /// Aktive Rolls (`press_roll`/`release_roll`, LaneControl "roll") — pro
     /// Control-Id höchstens einer, unabhängig vom Sequencer-Playhead der Lane.
     rolls: Vec<ActiveRoll>,
-    /// Mod-Matrix: globale Modulatoren + ihre Ziele, kompiliert bei `rebuild`.
-    modulators: Vec<CModulator>,
-    mod_routes: Vec<CModRoute>,
-    /// Letzter gesendeter CC-Wert je `ModRoute.id` — Sende-Rate-Limit wie bei
-    /// `cc_send_state`.
-    mod_send_state: HashMap<String, CcSendState>,
     /// Eigenständige Baustein-Vorschau des Baustein-Details (s. `PreviewPlayback`).
     /// `None` = kein Editor mit aktiver „▶ Play" gerade offen.
     preview: Option<PreviewPlayback>,
@@ -730,11 +692,7 @@ impl Engine {
             playing: false,
             bar_pulses: pulses_per_bar("4/4"),
             project_swing: 0.0,
-            fill_active: false,
             rolls: Vec::new(),
-            modulators: Vec::new(),
-            mod_routes: Vec::new(),
-            mod_send_state: HashMap::new(),
             preview: None,
             pending_gate_releases: Vec::new(),
             keytrack_gate_count: HashMap::new(),
@@ -998,11 +956,11 @@ impl Engine {
         self.flush_lane_note_offs(idx);
     }
 
-    /// Stoppt eine Lane sofort, UNABHÄNGIG vom Play-Mode — Gegenstück zu
-    /// `press_slot`/`trigger_slot` für Scene-Targets mit `action: "stop"`.
-    /// Anders als `release_slot` (nur Touch-Up-Semantik für "hold") wirkt das
-    /// auf jeden Play-Mode: eine Scene muss auch eine laufende
-    /// sequential/oneShot-Lane zum Schweigen bringen können.
+    /// Stoppt eine Lane sofort, UNABHÄNGIG vom Play-Mode. Anders als
+    /// `release_slot` (nur Touch-Up-Semantik für "hold") wirkt das auf jeden
+    /// Play-Mode. Aktuell ungenutzt (war das Ziel von Scene-„stop"-Targets) —
+    /// bleibt für den geplanten Wiederaufbau der Scenes stehen.
+    #[allow(dead_code)]
     pub fn stop_lane(&mut self, lane_id: &str) {
         let Some(idx) = self.lanes.iter().position(|l| l.id == lane_id) else {
             return;
@@ -1013,31 +971,6 @@ impl Engine {
         self.playback[idx].pos = 0;
         self.playback[idx].loops_done = 0;
         self.flush_lane_note_offs(idx);
-    }
-
-    /// Löst EIN Scene-Target aus (s. `Scene`/`SceneTarget` in `shared/model.ts`).
-    /// `"trigger"` ohne `slot_id` nimmt den gerade aktiven Slot der Lane, sonst
-    /// den ersten — genau die in `SceneTarget.slotId`s Doc beschriebene Regel.
-    pub fn fire_scene_target(&mut self, lane_id: &str, action: &str, slot_id: Option<&str>) {
-        match action {
-            "stop" => self.stop_lane(lane_id),
-            "trigger" => {
-                let Some(idx) = self.lanes.iter().position(|l| l.id == lane_id) else {
-                    return;
-                };
-                let resolved = slot_id.map(str::to_string).or_else(|| {
-                    self.lanes[idx]
-                        .blocks
-                        .get(self.playback[idx].slot)
-                        .or_else(|| self.lanes[idx].blocks.first())
-                        .map(|b| b.slot_id.clone())
-                });
-                if let Some(sid) = resolved {
-                    self.trigger_slot(lane_id, &sid, None);
-                }
-            }
-            _ => {}
-        }
     }
 
     /// Offene Note-Offs EINER Lane herauslösen und pro Port in einem Packet
@@ -1114,51 +1047,6 @@ impl Engine {
         if let Some(idx) = self.lanes.iter().position(|l| l.id == lane_id) {
             self.playback[idx].scatter = false;
         }
-    }
-
-    /// Mod-Matrix: wertet jeden globalen Modulator EINMAL pro Puls aus
-    /// (taktsynchron über `Engine::bar_pulses`, unabhängig von jeder Lane) und
-    /// sendet für jede Route ein CC — zentriert um 64, skaliert mit `depth`
-    /// (s. `CModRoute`s Doc-Kommentar). Rate-limitiert wie CC-Bausteine
-    /// (`MIN_CC_SEND_INTERVAL`, gleicher Wert-und-Zeit-Vergleich).
-    fn eval_global_modulators(&mut self, global_pulse: u64) {
-        if self.modulators.is_empty() || self.mod_routes.is_empty() {
-            return;
-        }
-        let ppb = self.bar_pulses.max(1) as f64;
-        let mut values: HashMap<&str, f64> = HashMap::new();
-        for m in &self.modulators {
-            let raw_phase = (global_pulse as f64 / ppb) / m.rate_bars + m.phase;
-            let v01 = eval_waveform(&m.waveform, raw_phase);
-            values.insert(m.id.as_str(), if m.bipolar { v01 * 2.0 - 1.0 } else { v01 });
-        }
-        let now = Instant::now();
-        let mut sends: Vec<(String, Vec<u8>)> = Vec::new();
-        for route in &self.mod_routes {
-            let Some(&v) = values.get(route.modulator_id.as_str()) else {
-                continue;
-            };
-            let cc_val = (64.0 + v * route.depth * 63.0).round().clamp(0.0, 127.0) as u8;
-            let state = self
-                .mod_send_state
-                .entry(route.id.clone())
-                .or_insert_with(|| CcSendState { last_val: None, last_sent: now - MIN_CC_SEND_INTERVAL });
-            if state.last_val == Some(cc_val) || now.duration_since(state.last_sent) < MIN_CC_SEND_INTERVAL {
-                continue;
-            }
-            state.last_val = Some(cc_val);
-            state.last_sent = now;
-            sends.push((route.port.clone(), vec![0xB0 | (route.channel - 1), route.cc_number, cc_val]));
-        }
-        for (port, bytes) in sends {
-            self.midi.send(&port, &bytes);
-        }
-    }
-
-    /// Performance-Taste „Fill" (`transport.setFill`) — treibt
-    /// `TrigCondition::Fill`/`NotFill` in `fire_step`.
-    pub fn set_fill(&mut self, active: bool) {
-        self.fill_active = active;
     }
 
     /// Touch-Down auf einen "roll"-LaneControl: startet sofort einen Hit und
@@ -1358,41 +1246,6 @@ impl Engine {
         self.cc_send_state.retain(|k, _| active_slot_ids.contains(k.as_str()));
 
         self.lanes = lanes;
-
-        // Mod-Matrix: globale Modulatoren + ihre Ziele neu kompilieren — Ziel
-        // ist hier direkt (Port, Kanal, CC), nicht über eine Lane aufgelöst.
-        self.modulators = project
-            .modulators
-            .iter()
-            .map(|m| CModulator {
-                id: m.id.clone(),
-                waveform: m.waveform.clone(),
-                rate_bars: m.rate_bars.max(0.0001),
-                phase: m.phase,
-                bipolar: m.bipolar,
-            })
-            .collect();
-        self.mod_routes = project
-            .mod_routes
-            .iter()
-            .filter_map(|r| {
-                let dev = project.devices.iter().find(|d| d.id == r.device_id)?;
-                if dev.midi_out_port.is_empty() {
-                    return None;
-                }
-                Some(CModRoute {
-                    id: r.id.clone(),
-                    modulator_id: r.modulator_id.clone(),
-                    port: dev.midi_out_port.clone(),
-                    channel: r.channel.unwrap_or(1).clamp(1, 16),
-                    cc_number: r.cc_number.min(127),
-                    depth: r.depth.clamp(-1.0, 1.0),
-                })
-            })
-            .collect();
-        let active_route_ids: std::collections::HashSet<&str> =
-            self.mod_routes.iter().map(|r| r.id.as_str()).collect();
-        self.mod_send_state.retain(|k, _| active_route_ids.contains(k.as_str()));
     }
 
     /// Ein Puls Vorlauf: fällige Note-Offs senden, dann pro Lane Steps auslösen.
@@ -1400,7 +1253,6 @@ impl Engine {
     /// treibt `elapsed_secs`, die Zeitbasis frei laufender (Hz-)LFOs.
     pub fn on_pulse(&mut self, global_pulse: u64, dt_secs: f64) {
         self.elapsed_secs += dt_secs;
-        self.eval_global_modulators(global_pulse);
 
         // Fällige Note-Offs: pro Ziel-Port zu EINEM Puffer zusammenfassen und in
         // einem einzigen `send()` (= ein CoreMIDI-Packet) rausschicken, statt pro
@@ -1705,7 +1557,6 @@ impl Engine {
         // letzten Slot-Wechsel schon durchgelaufen ist — Basis für
         // First/NotFirst/Ratio.
         let loops_done = self.playback[lane_idx].loops_done;
-        let fill_active = self.fill_active;
         let hits: Vec<Hit> = raw
             .into_iter()
             .enumerate()
@@ -1721,8 +1572,6 @@ impl Engine {
                 };
                 let cond_ok = match h.m.condition {
                     None => true,
-                    Some(TrigCondition::Fill) => fill_active,
-                    Some(TrigCondition::NotFill) => !fill_active,
                     Some(TrigCondition::First) => loops_done == 0,
                     Some(TrigCondition::NotFirst) => loops_done != 0,
                     Some(TrigCondition::Ratio(a, b)) => loops_done % b == (a.saturating_sub(1)),
@@ -2277,8 +2126,6 @@ fn parse_trig_condition(v: &Option<serde_json::Value>) -> Option<TrigCondition> 
     let v = v.as_ref()?;
     if let Some(s) = v.as_str() {
         return match s {
-            "fill" => Some(TrigCondition::Fill),
-            "notFill" => Some(TrigCondition::NotFill),
             "first" => Some(TrigCondition::First),
             "notFirst" => Some(TrigCondition::NotFirst),
             _ => None,
@@ -3090,8 +2937,6 @@ mod groove_tests {
     #[test]
     fn trig_condition_parses_every_shape() {
         let of = |s: &str| parse_trig_condition(&Some(serde_json::json!(s)));
-        assert!(matches!(of("fill"), Some(TrigCondition::Fill)));
-        assert!(matches!(of("notFill"), Some(TrigCondition::NotFill)));
         assert!(matches!(of("first"), Some(TrigCondition::First)));
         assert!(matches!(of("notFirst"), Some(TrigCondition::NotFirst)));
         assert!(of("always").is_none());

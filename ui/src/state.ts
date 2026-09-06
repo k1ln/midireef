@@ -261,40 +261,6 @@ export interface Device {
   lanes: Lane[];
 }
 
-/** Ein Scene-Ziel: auf einer Lane entweder einen Slot triggern (ohne `slotId`
- *  greift der gerade aktive/erste Slot) oder die Lane stoppen. */
-export interface SceneTarget {
-  laneId: string;
-  action: "trigger" | "stop";
-  slotId?: string;
-}
-
-/** Mehrere Lanes/Devices mit einem Touch starten/stoppen (Screen: Scenes). */
-export interface Scene {
-  id: string;
-  name: string;
-  color?: string;
-  targets: SceneTarget[];
-}
-
-/** Ein Step in einem `Song`: spielt `sceneId` für `bars` Takte, mit optionaler
- *  Tempo-/Taktart-Automation. Fortschaltung passiert serverseitig. */
-export interface SongStep {
-  id: string;
-  sceneId: string;
-  bars: number;
-  bpmOverride?: number;
-  timeSignatureOverride?: string;
-}
-
-/** Scenes zu einem Track verketten (Screen: Song, Tab neben Scenes). */
-export interface Song {
-  id: string;
-  name: string;
-  steps: SongStep[];
-  loop: boolean;
-}
-
 /** Ein physischer MIDI-Eingang (externer Controller), benennbar. */
 export interface MidiInputSource {
   id: string;
@@ -331,43 +297,25 @@ export interface MidiRoute {
   transform: RouteTransform;
 }
 
-/** Aktiviert eine bestimmte Menge Routen auf Knopfdruck (z.B. "alle
- *  Controller → Synth B") ohne Kabel/Re-Learn. */
-export interface RoutingScene {
-  id: string;
-  name: string;
-  activeRouteIds: string[];
-}
-
 export interface RoutingHub {
   sources: MidiInputSource[];
   routes: MidiRoute[];
-  scenes: RoutingScene[];
-  activeSceneId?: string;
 }
 
-export type LfoWaveform = "sine" | "triangle" | "sawUp" | "sawDown" | "square";
-
-/** Globaler LFO, auf mehrere Ziele routbar — anders als eine CC-Baustein-Layer
- *  läuft er unabhängig von jeder Lane immer mit, taktsynchron. */
-export interface GlobalModulator {
+/** Ein „Keys link" auf dem Dashboard: leitet die Spiel-Nachrichten (Noten,
+ *  Pitch-Bend, Aftertouch, Mod-/Sustain-CC) eines physischen MIDI-Eingangs
+ *  live an ein Ziel-Device weiter — der schnelle Weg, einen angeschlossenen
+ *  Controller ohne Umstecken auf einen Synth zu spielen und „on the fly"
+ *  umzuhängen. Mehrere Links dürfen gleichzeitig aktiv sein. */
+export interface KeyLink {
   id: string;
-  name: string;
-  waveform: LfoWaveform;
-  rateBars: number;
-  phase: number;
-  bipolar: boolean;
-}
-
-/** Ein Ziel, das ein globaler Modulator ansteuert — mehrere Routes derselben
- *  Modulator-Id sind der "Multi-Parameter-Macro-Knob". */
-export interface ModRoute {
-  id: string;
-  modulatorId: string;
+  port: string;
   deviceId: string;
-  ccNumber: number;
+  enabled: boolean;
   channel?: number;
-  depth: number; // -1..1
+  transpose?: number;
+  x: number;
+  y: number;
 }
 
 export interface Project {

@@ -476,7 +476,17 @@ impl AppState {
 
         let (targets, fired_route_ids): (Vec<(String, Vec<u8>)>, Vec<String>) = {
             let proj = self.project.lock().unwrap();
-            let Some(source) = proj.routing.sources.iter().find(|s| s.port == source_port) else {
+            // Toleranter Port-Vergleich wie überall sonst (s. `same_port` /
+            // `find_port` in midi.rs): das OS benennt denselben Eingang oft
+            // leicht anders als beim Anlegen der Quelle gespeichert. Exakter
+            // `==` liess eine Route nach Replug/Systemschlaf still ins Leere
+            // laufen, obwohl der Ausgabepfad denselben Namen noch auflöst.
+            let Some(source) = proj
+                .routing
+                .sources
+                .iter()
+                .find(|s| crate::midi::same_port(&s.port, source_port))
+            else {
                 return;
             };
             if let Some(chf) = source.channel_filter {
@@ -523,6 +533,63 @@ impl AppState {
             let _ = self
                 .events
                 .send(serde_json::json!({ "t": "routing.activity", "routeId": route_id }));
+        }
+    }
+
+    /// Dashboard „Keys links": leitet Spiel-Nachrichten (Note, Pitch-Bend,
+    /// Aftertouch, Mod-/Sustain-CC) eines physischen Eingangs live an jedes
+    /// aktivierte Ziel-Device weiter. Mehrere Links derselben Quelle feuern
+    /// gleichzeitig (ein Controller → mehrere Synths). Ganz eigener Pfad neben
+    /// `forward_via_routing` — Quellen-Zuordnung über den Portnamen (tolerant,
+    /// s. `midi::same_port`), keine Filter, kein Learn.
+    pub fn forward_key_links(&self, source_port: &str, msg: &[u8]) {
+        if msg.len() < 2 || crate::midi::is_own_port(source_port) {
+            return;
+        }
+        let status = msg[0] & 0xF0;
+        // Nur Spiel-Nachrichten durchreichen; Clock/Transport/SysEx/Program
+        // Change bleiben außen vor.
+        let is_play = matches!(status, 0x90 | 0x80 | 0xE0 | 0xD0 | 0xA0) || (status == 0xB0 && msg.len() >= 3);
+        if !is_play {
+            return;
+        }
+        let in_channel = msg[0] & 0x0F;
+
+        let (targets, fired_ids): (Vec<(String, Vec<u8>)>, Vec<String>) = {
+            let proj = self.project.lock().unwrap();
+            let mut out = Vec::new();
+            let mut fired = Vec::new();
+            for link in proj.key_links.iter().filter(|l| l.enabled) {
+                if !crate::midi::same_port(&link.port, source_port) {
+                    continue;
+                }
+                let Some(dev) = proj.devices.iter().find(|d| d.id == link.device_id) else {
+                    continue;
+                };
+                if dev.midi_out_port.is_empty() {
+                    continue;
+                }
+                let mut bytes = msg.to_vec();
+                let ch = link.channel.map(|c| c.clamp(1, 16) - 1).unwrap_or(in_channel);
+                bytes[0] = status | ch;
+                if matches!(status, 0x90 | 0x80) && bytes.len() >= 3 {
+                    if let Some(semi) = link.transpose {
+                        bytes[1] = (bytes[1] as i32 + semi).clamp(0, 127) as u8;
+                    }
+                }
+                out.push((dev.midi_out_port.clone(), bytes));
+                fired.push(link.id.clone());
+            }
+            (out, fired)
+        };
+
+        for (port, bytes) in targets {
+            self.clock.send(ClockCommand::Midi(port, bytes));
+        }
+        for id in fired_ids {
+            let _ = self
+                .events
+                .send(serde_json::json!({ "t": "keyLink.activity", "linkId": id }));
         }
     }
 }

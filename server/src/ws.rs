@@ -156,12 +156,6 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
         "transport.stop" => state.clock.send(ClockCommand::Stop),
         "transport.tapTempo" => state.clock.send(ClockCommand::TapTempo),
         "transport.panic" => state.clock.send(ClockCommand::Panic),
-        // Performance-Taste „Fill" — treibt `StepMod.condition`s "fill"/"notFill".
-        "transport.setFill" => {
-            if let Some(active) = cmd.get("active").and_then(|v| v.as_bool()) {
-                state.clock.send(ClockCommand::SetFill(active));
-            }
-        }
         "transport.setBpm" => {
             if let Some(bpm) = cmd.get("bpm").and_then(|v| v.as_f64()) {
                 state.project.lock().unwrap().bpm = bpm;
@@ -1952,124 +1946,6 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 }
             }
         }
-        // ── Scenes (mehrere Lanes/Devices mit einem Touch starten) ──────────
-        // Bewusst als rohes JSON wie `blocks`/`controls` — `Scene`/`SceneTarget`
-        // sind nur in `shared/model.ts` typisiert (s. TODO.md), der Server
-        // reicht sie unverändert durch und feuert sie über den Clock-Thread.
-        "scene.create" => {
-            if let Some(name) = str_field(&cmd, "name") {
-                let mut proj = state.project.lock().unwrap();
-                if !proj.scenes.is_array() {
-                    proj.scenes = serde_json::json!([]);
-                }
-                proj.scenes.as_array_mut().unwrap().push(serde_json::json!({
-                    "id": uuid::Uuid::new_v4().to_string(),
-                    "name": name,
-                    "targets": [],
-                }));
-                drop(proj);
-                broadcast_snapshot(state);
-            }
-        }
-        "scene.update" => {
-            if let Some(scene) = cmd.get("scene").cloned() {
-                if let Some(id) = scene.get("id").and_then(|v| v.as_str()).map(str::to_string) {
-                    let mut proj = state.project.lock().unwrap();
-                    if let Some(s) = find_scene_mut(&mut proj, &id) {
-                        *s = scene;
-                    }
-                    drop(proj);
-                    broadcast_snapshot(state);
-                }
-            }
-        }
-        "scene.delete" => {
-            if let Some(id) = str_field(&cmd, "sceneId") {
-                let mut proj = state.project.lock().unwrap();
-                if let Some(arr) = proj.scenes.as_array_mut() {
-                    arr.retain(|s| s.get("id").and_then(|v| v.as_str()) != Some(id.as_str()));
-                }
-                drop(proj);
-                broadcast_snapshot(state);
-            }
-        }
-        "scene.trigger" => {
-            if let Some(id) = str_field(&cmd, "sceneId") {
-                let targets = {
-                    let proj = state.project.lock().unwrap();
-                    proj.scenes
-                        .as_array()
-                        .and_then(|arr| arr.iter().find(|s| s.get("id").and_then(|v| v.as_str()) == Some(id.as_str())))
-                        .and_then(|s| s.get("targets"))
-                        .and_then(|t| t.as_array())
-                        .cloned()
-                        .unwrap_or_default()
-                };
-                for target in &targets {
-                    let (Some(lane_id), Some(action)) = (
-                        target.get("laneId").and_then(|v| v.as_str()),
-                        target.get("action").and_then(|v| v.as_str()),
-                    ) else {
-                        continue;
-                    };
-                    let slot_id = target.get("slotId").and_then(|v| v.as_str()).map(str::to_string);
-                    state.clock.send(ClockCommand::FireSceneTarget(
-                        lane_id.to_string(),
-                        action.to_string(),
-                        slot_id,
-                    ));
-                }
-                state.transport.lock().unwrap().active_scene_id = Some(id);
-            }
-        }
-        // ── Song / Arrangement (Scenes zu einem Track verketten) ────────────
-        // Auch hier rohes JSON wie bei Scenes. Die Wiedergabe (Auto-Advance an
-        // Taktgrenzen, Tempo-/Taktart-Automation) lebt komplett im Clock-Thread
-        // (`clock.rs`, `SongPlayback`) — der kennt als einziger den Puls-Zähler.
-        "song.create" => {
-            if let Some(name) = str_field(&cmd, "name") {
-                let mut proj = state.project.lock().unwrap();
-                if !proj.songs.is_array() {
-                    proj.songs = serde_json::json!([]);
-                }
-                proj.songs.as_array_mut().unwrap().push(serde_json::json!({
-                    "id": uuid::Uuid::new_v4().to_string(),
-                    "name": name,
-                    "steps": [],
-                    "loop": false,
-                }));
-                drop(proj);
-                broadcast_snapshot(state);
-            }
-        }
-        "song.update" => {
-            if let Some(song) = cmd.get("song").cloned() {
-                if let Some(id) = song.get("id").and_then(|v| v.as_str()).map(str::to_string) {
-                    let mut proj = state.project.lock().unwrap();
-                    if let Some(s) = find_song_mut(&mut proj, &id) {
-                        *s = song;
-                    }
-                    drop(proj);
-                    broadcast_snapshot(state);
-                }
-            }
-        }
-        "song.delete" => {
-            if let Some(id) = str_field(&cmd, "songId") {
-                let mut proj = state.project.lock().unwrap();
-                if let Some(arr) = proj.songs.as_array_mut() {
-                    arr.retain(|s| s.get("id").and_then(|v| v.as_str()) != Some(id.as_str()));
-                }
-                drop(proj);
-                broadcast_snapshot(state);
-            }
-        }
-        "song.play" => {
-            if let Some(id) = str_field(&cmd, "songId") {
-                state.clock.send(ClockCommand::PlaySong(id));
-            }
-        }
-        "song.stop" => state.clock.send(ClockCommand::StopSong),
         // ── Routing-Hub (externe Controller on-the-fly auf Devices routen) ──
         // `project.routing` ist getippter Rust (s. model.rs), nicht rohes
         // JSON wie blocks/scenes/songs — die eingehende MIDI-Weiterleitung
@@ -2148,112 +2024,82 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 broadcast_snapshot(state);
             }
         }
-        // Aktivieren heißt: GENAU die Routen dieser Scene an, alle anderen
-        // aus — s. `RoutingScene`s Doc-Kommentar in model.rs. Keine separate
-        // "welche Scene ist aktiv"-Prüfung beim Forwarden nötig.
-        "routing.activateScene" => {
-            if let Some(scene_id) = str_field(&cmd, "sceneId") {
+        // ── Dashboard „Keys links" (Controller → Synth, schnell umhängbar) ──
+        // Eigenes, schlankes Modell (`model::KeyLink`) — die eingehende
+        // Note-Weiterleitung (`AppState::forward_key_links`) läuft bei JEDER
+        // MIDI-Nachricht, das lohnt getippten Rust statt rohem JSON.
+        "keyLink.add" => {
+            let port = str_field(&cmd, "port").unwrap_or_default();
+            let device_id = str_field(&cmd, "deviceId").unwrap_or_default();
+            if !port.is_empty() && !device_id.is_empty() {
                 let mut proj = state.project.lock().unwrap();
-                let active_ids = proj
-                    .routing
-                    .scenes
-                    .iter()
-                    .find(|s| s.id == scene_id)
-                    .map(|s| s.active_route_ids.clone());
-                if let Some(active_ids) = active_ids {
-                    for r in proj.routing.routes.iter_mut() {
-                        r.enabled = active_ids.contains(&r.id);
-                    }
-                    proj.routing.active_scene_id = Some(scene_id);
-                }
-                drop(proj);
-                broadcast_snapshot(state);
-            }
-        }
-        // Merkt sich den GERADE aktiven Routen-Zustand als neue Scene.
-        "routing.saveScene" => {
-            if let Some(name) = str_field(&cmd, "name") {
-                let mut proj = state.project.lock().unwrap();
-                let active_route_ids: Vec<String> =
-                    proj.routing.routes.iter().filter(|r| r.enabled).map(|r| r.id.clone()).collect();
-                let id = uuid::Uuid::new_v4().to_string();
-                proj.routing.scenes.push(crate::model::RoutingScene {
-                    id: id.clone(),
-                    name,
-                    active_route_ids,
+                proj.key_links.push(crate::model::KeyLink {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    port,
+                    device_id,
+                    enabled: true,
+                    channel: None,
+                    transpose: None,
+                    x: cmd.get("x").and_then(|v| v.as_f64()).unwrap_or(24.0),
+                    y: cmd.get("y").and_then(|v| v.as_f64()).unwrap_or(24.0),
                 });
-                proj.routing.active_scene_id = Some(id);
                 drop(proj);
                 broadcast_snapshot(state);
             }
         }
-        "routing.deleteScene" => {
-            if let Some(id) = str_field(&cmd, "sceneId") {
+        "keyLink.update" => {
+            if let Some(link) =
+                cmd.get("link").and_then(|v| serde_json::from_value::<crate::model::KeyLink>(v.clone()).ok())
+            {
                 let mut proj = state.project.lock().unwrap();
-                proj.routing.scenes.retain(|s| s.id != id);
-                if proj.routing.active_scene_id.as_deref() == Some(id.as_str()) {
-                    proj.routing.active_scene_id = None;
+                if let Some(l) = proj.key_links.iter_mut().find(|l| l.id == link.id) {
+                    *l = link;
                 }
                 drop(proj);
                 broadcast_snapshot(state);
             }
         }
-        // ── Mod-Matrix (globale Modulatoren, unabhängig von jeder Lane) ─────
-        "mod.addModulator" => {
-            if let Some(mut m) =
-                cmd.get("modulator").and_then(|v| serde_json::from_value::<crate::model::GlobalModulator>(v.clone()).ok())
-            {
-                m.id = uuid::Uuid::new_v4().to_string();
-                state.project.lock().unwrap().modulators.push(m);
-                broadcast_snapshot(state);
-            }
-        }
-        "mod.updateModulator" => {
-            if let Some(m) =
-                cmd.get("modulator").and_then(|v| serde_json::from_value::<crate::model::GlobalModulator>(v.clone()).ok())
+        "keyLink.setEnabled" => {
+            if let (Some(id), Some(enabled)) =
+                (str_field(&cmd, "linkId"), cmd.get("enabled").and_then(|v| v.as_bool()))
             {
                 let mut proj = state.project.lock().unwrap();
-                if let Some(existing) = proj.modulators.iter_mut().find(|x| x.id == m.id) {
-                    *existing = m;
+                if let Some(l) = proj.key_links.iter_mut().find(|l| l.id == id) {
+                    l.enabled = enabled;
                 }
                 drop(proj);
                 broadcast_snapshot(state);
             }
         }
-        "mod.removeModulator" => {
-            if let Some(id) = str_field(&cmd, "modulatorId") {
+        "keyLink.setDevice" => {
+            if let (Some(id), Some(device_id)) = (str_field(&cmd, "linkId"), str_field(&cmd, "deviceId")) {
                 let mut proj = state.project.lock().unwrap();
-                proj.modulators.retain(|m| m.id != id);
-                // Verwaiste Routen (Modulator gelöscht) gleich mit aufräumen.
-                proj.mod_routes.retain(|r| r.modulator_id != id);
-                drop(proj);
-                broadcast_snapshot(state);
-            }
-        }
-        "mod.addRoute" => {
-            if let Some(mut r) =
-                cmd.get("route").and_then(|v| serde_json::from_value::<crate::model::ModRoute>(v.clone()).ok())
-            {
-                r.id = uuid::Uuid::new_v4().to_string();
-                state.project.lock().unwrap().mod_routes.push(r);
-                broadcast_snapshot(state);
-            }
-        }
-        "mod.updateRoute" => {
-            if let Some(r) = cmd.get("route").and_then(|v| serde_json::from_value::<crate::model::ModRoute>(v.clone()).ok())
-            {
-                let mut proj = state.project.lock().unwrap();
-                if let Some(existing) = proj.mod_routes.iter_mut().find(|x| x.id == r.id) {
-                    *existing = r;
+                if let Some(l) = proj.key_links.iter_mut().find(|l| l.id == id) {
+                    l.device_id = device_id;
                 }
                 drop(proj);
                 broadcast_snapshot(state);
             }
         }
-        "mod.removeRoute" => {
-            if let Some(id) = str_field(&cmd, "routeId") {
+        "keyLink.move" => {
+            if let (Some(id), Some(x), Some(y)) = (
+                str_field(&cmd, "linkId"),
+                cmd.get("x").and_then(|v| v.as_f64()),
+                cmd.get("y").and_then(|v| v.as_f64()),
+            ) {
                 let mut proj = state.project.lock().unwrap();
-                proj.mod_routes.retain(|r| r.id != id);
+                if let Some(l) = proj.key_links.iter_mut().find(|l| l.id == id) {
+                    l.x = x;
+                    l.y = y;
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        "keyLink.remove" => {
+            if let Some(id) = str_field(&cmd, "linkId") {
+                let mut proj = state.project.lock().unwrap();
+                proj.key_links.retain(|l| l.id != id);
                 drop(proj);
                 broadcast_snapshot(state);
             }
@@ -2609,22 +2455,6 @@ fn find_block_mut<'a>(proj: &'a mut Project, block_id: &str) -> Option<&'a mut s
         .as_array_mut()?
         .iter_mut()
         .find(|b| b.get("id").and_then(|v| v.as_str()) == Some(block_id))
-}
-
-/// Sucht eine Scene anhand ihrer ID in `project.scenes` — s. `find_block_mut`.
-fn find_scene_mut<'a>(proj: &'a mut Project, scene_id: &str) -> Option<&'a mut serde_json::Value> {
-    proj.scenes
-        .as_array_mut()?
-        .iter_mut()
-        .find(|s| s.get("id").and_then(|v| v.as_str()) == Some(scene_id))
-}
-
-/// Sucht einen Song anhand seiner ID in `project.songs` — s. `find_block_mut`.
-fn find_song_mut<'a>(proj: &'a mut Project, song_id: &str) -> Option<&'a mut serde_json::Value> {
-    proj.songs
-        .as_array_mut()?
-        .iter_mut()
-        .find(|s| s.get("id").and_then(|v| v.as_str()) == Some(song_id))
 }
 
 /// Grenzen für `block.setLength`. Die Auflösung bleibt bewusst grob geklemmt:

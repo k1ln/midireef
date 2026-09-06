@@ -16,9 +16,6 @@ import { Overview } from "./overview/Overview";
 import { PortPickerPopup } from "./overview/popups";
 import { BlockDetail } from "./BlockDetail";
 import { BlockLibrary } from "./BlockLibrary";
-import { Scenes } from "./Scenes";
-import { Routing } from "./Routing";
-import { ModMatrix } from "./ModMatrix";
 import { LaneControls } from "./LaneControls";
 import { Dashboard } from "./Dashboard";
 import { ProjectSettings } from "./ProjectSettings";
@@ -30,7 +27,7 @@ import { applyAllSizes } from "./uiSizes";
  *  modal. Dashboard, Sequencer, Block library and Project settings are peers;
  *  `blockDetail` / `laneControls` are the only real drill-ins (they overlay
  *  whichever page opened them). */
-type View = "start" | "seq" | "library" | "scenes" | "routing" | "mod" | "settings";
+type View = "start" | "seq" | "library" | "settings";
 
 type SubScreen =
   | { kind: "blockDetail"; blockId: string }
@@ -58,6 +55,9 @@ export function App() {
    *  Dashboard hört darauf und öffnet dort seinen Lane-Picker (kein eigener
    *  Knopf mehr über dem Canvas, der die Controls zuklebt). */
   const [addLaneSwitchSignal, setAddLaneSwitchSignal] = useState(0);
+  /** Zähler für „＋ Keys link" in der Transport-Leiste — das Dashboard öffnet
+   *  daraufhin seinen Controller→Synth-Picker. */
+  const [addKeyLinkSignal, setAddKeyLinkSignal] = useState(0);
 
   const navigate = (next: View) => {
     setSub(null);
@@ -129,9 +129,16 @@ export function App() {
             onAddDevice={() => setAddDeviceOpen(true)}
             onCenter={() => setCenterSignal((n) => n + 1)}
             onAddLaneSwitch={() => setAddLaneSwitchSignal((n) => n + 1)}
+            onAddKeyLink={() => setAddKeyLinkSignal((n) => n + 1)}
           />
 
-          {view === "start" && <Dashboard centerSignal={centerSignal} addLaneSwitchSignal={addLaneSwitchSignal} />}
+          {view === "start" && (
+            <Dashboard
+              centerSignal={centerSignal}
+              addLaneSwitchSignal={addLaneSwitchSignal}
+              addKeyLinkSignal={addKeyLinkSignal}
+            />
+          )}
 
           {view === "seq" && (
             <Overview onOpenBlock={(blockId) => setSub({ kind: "blockDetail", blockId })} />
@@ -149,12 +156,6 @@ export function App() {
               onOpenBlock={(blockId) => setSub({ kind: "blockDetail", blockId })}
             />
           )}
-
-          {view === "scenes" && <Scenes />}
-
-          {view === "routing" && <Routing />}
-
-          {view === "mod" && <ModMatrix />}
 
           {view === "settings" && <ProjectSettings onClose={() => navigate("seq")} />}
 

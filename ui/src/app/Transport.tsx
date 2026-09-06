@@ -32,7 +32,7 @@ const NAV_H = 46;
 /** BPM-Wippe: kleiner als die Transport-Tasten, aber noch fingerbreit. */
 const NUDGE = 46;
 
-export type TransportView = "start" | "seq" | "library" | "scenes" | "routing" | "mod" | "settings";
+export type TransportView = "start" | "seq" | "library" | "settings";
 
 export interface TransportProps {
   /** Which top-level page is showing — every one of them is reached from
@@ -50,9 +50,12 @@ export interface TransportProps {
    *  einen MIDI-losen Start/Stop-Taster aufs Dashboard legt. Steht hier statt
    *  frei über dem Canvas, damit er die Controls nicht zuklebt. */
   onAddLaneSwitch?: () => void;
+  /** „＋ Keys link" — nur im Dashboard: verbindet einen angeschlossenen
+   *  Controller schnell mit einem Ziel-Synth (on-the-fly umhängbar). */
+  onAddKeyLink?: () => void;
 }
 
-export function Transport({ view, onNav, onAddDevice, onCenter, onAddLaneSwitch }: TransportProps) {
+export function Transport({ view, onNav, onAddDevice, onCenter, onAddLaneSwitch, onAddKeyLink }: TransportProps) {
   const net = useNet();
   const send = useSend();
   const wheel = useWheelPicker();
@@ -134,15 +137,6 @@ export function Transport({ view, onNav, onAddDevice, onCenter, onAddLaneSwitch 
       >
         {t?.playing ? "■" : "▶"}
       </Button>
-      <Button
-        className={t?.fillActive ? "transport-nav on" : "transport-nav"}
-        style={{ height: BTN, padding: "0 12px", fontSize: 14, fontWeight: 700, marginRight: 8 }}
-        title="Fill — steps with a 'fill' trig-condition only play while this is on"
-        onClick={() => send({ t: "transport.setFill", active: !t?.fillActive })}
-      >
-        FILL
-      </Button>
-
       {/* Navigations-Tabs: eine Gruppe, eng gesetzt (gap 3) auf einer eigenen
           Fläche, damit sie nicht die halbe Leiste frisst. */}
       <div
@@ -178,30 +172,6 @@ export function Transport({ view, onNav, onAddDevice, onCenter, onAddLaneSwitch 
           onClick={() => onNav("library")}
         >
           ▤
-        </Button>
-        <Button
-          className={view === "scenes" ? "transport-nav on" : "transport-nav"}
-          style={{ width: NAV, height: NAV_H, fontSize: 15 }}
-          title="Scenes"
-          onClick={() => onNav("scenes")}
-        >
-          SC
-        </Button>
-        <Button
-          className={view === "routing" ? "transport-nav on" : "transport-nav"}
-          style={{ width: NAV, height: NAV_H, fontSize: 14 }}
-          title="Routing Hub"
-          onClick={() => onNav("routing")}
-        >
-          RT
-        </Button>
-        <Button
-          className={view === "mod" ? "transport-nav on" : "transport-nav"}
-          style={{ width: NAV, height: NAV_H, fontSize: 14 }}
-          title="Mod-Matrix"
-          onClick={() => onNav("mod")}
-        >
-          MX
         </Button>
         <Button
           className={view === "settings" ? "transport-nav on" : "transport-nav"}
@@ -243,6 +213,17 @@ export function Transport({ view, onNav, onAddDevice, onCenter, onAddLaneSwitch 
           onClick={onAddLaneSwitch}
         >
           ＋ Lane switch
+        </Button>
+      )}
+
+      {view === "start" && onAddKeyLink && (
+        <Button
+          className="transport-nav"
+          style={{ height: NAV_H, padding: "0 10px", fontSize: 11, fontWeight: 700, marginRight: 4 }}
+          title="Send a connected controller's keys straight to a synth — switch targets on the fly"
+          onClick={onAddKeyLink}
+        >
+          ＋ Keys link
         </Button>
       )}
 
