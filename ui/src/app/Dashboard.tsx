@@ -12,6 +12,7 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { useNet, useSend, useStore, useStoreValue } from "./store";
 import { useTouchKeyboard } from "./TouchKeyboard";
+import { useNumberEditor } from "./useNumberEditor";
 import { useViewportSize } from "./useViewportSize";
 import { Button } from "./widgets/Button";
 import { ControlWidget, type LiveControl } from "./dashboard/ControlWidget";
@@ -62,6 +63,7 @@ export function Dashboard({
   const net = useNet();
   const store = useStore();
   const openKeyboard = useTouchKeyboard();
+  const numberEdit = useNumberEditor();
   const { w, h } = useViewportSize();
   const devices = useStoreValue((s) => s.project?.devices ?? EMPTY_DEVICES);
   const controls = useStoreValue((s) => (s.project?.controls as LiveControl[] | undefined) ?? EMPTY_CONTROLS);
@@ -84,8 +86,10 @@ export function Dashboard({
   // „＋ Keys link" — Schritt 1: MIDI-Eingang wählen; Schritt 2: Ziel-Device.
   const [keyLinkPortPicker, setKeyLinkPortPicker] = useState(false);
   const [keyLinkAddPort, setKeyLinkAddPort] = useState<string | null>(null);
-  // Ziel eines BESTEHENDEN Links on the fly umhängen.
-  const [keyLinkDevicePicker, setKeyLinkDevicePicker] = useState<{ link: KeyLink } | null>(null);
+  // Menü eines BESTEHENDEN Links (Tipp auf die Kachel): Ziel/Kanal/Transpose/…
+  const [keyLinkMenu, setKeyLinkMenu] = useState<{ linkId: string } | null>(null);
+  // Ziel-Device-Picker, aus dem Menü heraus geöffnet.
+  const [keyLinkDevicePicker, setKeyLinkDevicePicker] = useState<{ linkId: string } | null>(null);
   // Links, durch die GERADE Noten laufen (`keyLink.activity`) — nur ein kurzes
   // Aufblitzen, kein persistenter Zustand.
   const [keyLinkActive, setKeyLinkActive] = useState<Set<string>>(new Set());
@@ -314,6 +318,8 @@ export function Dashboard({
   const cy = (TOP + h) / 2;
 
   const selectedCtrl = selectedId ? controls.find((c) => c.id === selectedId) : undefined;
+  const menuLink = keyLinkMenu ? keyLinks.find((l) => l.id === keyLinkMenu.linkId) : undefined;
+  const pickerLink = keyLinkDevicePicker ? keyLinks.find((l) => l.id === keyLinkDevicePicker.linkId) : undefined;
   const triggerLabelFor = (ctrl: LiveControl): string | undefined => {
     if (!ctrl.trigger) return undefined;
     for (const d of devices) {
@@ -326,6 +332,11 @@ export function Dashboard({
   useEffect(() => {
     if (selectedId && !controls.some((c) => c.id === selectedId)) setSelectedId(null);
   }, [selectedId, controls]);
+  // Keys-Link-Menü/Picker zeigen ins Leere (Link entfernt) → schließen.
+  useEffect(() => {
+    if (keyLinkMenu && !keyLinks.some((l) => l.id === keyLinkMenu.linkId)) setKeyLinkMenu(null);
+    if (keyLinkDevicePicker && !keyLinks.some((l) => l.id === keyLinkDevicePicker.linkId)) setKeyLinkDevicePicker(null);
+  }, [keyLinkMenu, keyLinkDevicePicker, keyLinks]);
 
   const deviceName = (deviceId?: string | null) => devices.find((d) => d.id === deviceId)?.name;
 
@@ -411,11 +422,10 @@ export function Dashboard({
               key={link.id}
               link={link}
               deviceName={deviceName(link.deviceId)}
-              editMode={editMode}
+              deviceHasPort={!!devices.find((d) => d.id === link.deviceId)?.midiOutPort}
               zoom={zoom}
               active={keyLinkActive.has(link.id)}
-              onPickDevice={() => setKeyLinkDevicePicker({ link })}
-              onRemove={() => send({ t: "keyLink.remove", linkId: link.id })}
+              onOpenMenu={() => setKeyLinkMenu({ linkId: link.id })}
             />
           ))}
         </div>
@@ -500,16 +510,95 @@ export function Dashboard({
         </Popup>
       )}
 
-      {/* Ziel eines bestehenden Links on the fly umhängen. */}
-      {keyLinkDevicePicker && (
+      {/* Menü eines bestehenden Keys-Links (Tipp auf die Kachel). */}
+      {menuLink && (
+        <Popup onClose={() => setKeyLinkMenu(null)}>
+          <div className="popup-title">Keys link</div>
+          <div style={{ fontSize: 13, color: "var(--pal-text-dim)", marginBottom: 10 }}>♪ {menuLink.port}</div>
+
+          <Button
+            variant={menuLink.enabled ? "active" : "default"}
+            style={{ width: "100%", height: 46, fontSize: 15, fontWeight: 700, marginBottom: 12 }}
+            onClick={() => send({ t: "keyLink.setEnabled", linkId: menuLink.id, enabled: !menuLink.enabled })}
+          >
+            {menuLink.enabled ? "● LIVE — tap to mute" : "○ OFF — tap to go live"}
+          </Button>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <div style={{ flex: 1, fontSize: 13 }}>Target synth</div>
+            <Button
+              style={{ height: 38, padding: "0 12px", fontSize: 13, maxWidth: 200 }}
+              onClick={() => setKeyLinkDevicePicker({ linkId: menuLink.id })}
+            >
+              {deviceName(menuLink.deviceId) ?? "Pick a synth"}
+            </Button>
+          </div>
+          {menuLink.deviceId && !devices.find((d) => d.id === menuLink.deviceId)?.midiOutPort && (
+            <div style={{ fontSize: 12, color: "rgb(255, 140, 110)", marginBottom: 10 }}>
+              That device has no MIDI output port — nothing will reach the synth. Set its port in the sequencer
+              (＋ Device / the device's settings).
+            </div>
+          )}
+
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <div style={{ flex: 1, fontSize: 13 }}>Send on channel</div>
+            <Button
+              style={{ height: 38, padding: "0 12px", fontSize: 13, minWidth: 64 }}
+              onClick={() =>
+                numberEdit(menuLink.channel ?? 1, 1, 16, (v) =>
+                  send({ t: "keyLink.update", link: { ...menuLink, channel: v } }),
+                )
+              }
+            >
+              {menuLink.channel ?? "Source"}
+            </Button>
+            {menuLink.channel != null && (
+              <Button
+                style={{ height: 38, padding: "0 10px", fontSize: 12 }}
+                onClick={() => send({ t: "keyLink.update", link: { ...menuLink, channel: undefined } })}
+              >
+                ↺
+              </Button>
+            )}
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+            <div style={{ flex: 1, fontSize: 13 }}>Transpose</div>
+            <Button
+              style={{ height: 38, padding: "0 12px", fontSize: 13, minWidth: 64 }}
+              onClick={() =>
+                numberEdit(menuLink.transpose ?? 0, -48, 48, (v) =>
+                  send({ t: "keyLink.update", link: { ...menuLink, transpose: v || undefined } }),
+                )
+              }
+            >
+              {menuLink.transpose ? `${menuLink.transpose > 0 ? "+" : ""}${menuLink.transpose}` : "0"}
+            </Button>
+          </div>
+
+          <Button
+            variant="danger"
+            style={{ width: "100%", height: 42 }}
+            onClick={() => {
+              send({ t: "keyLink.remove", linkId: menuLink.id });
+              setKeyLinkMenu(null);
+            }}
+          >
+            Remove link
+          </Button>
+        </Popup>
+      )}
+
+      {/* Ziel-Device aus dem Menü heraus wählen. */}
+      {pickerLink && (
         <DevicePickerPopup
           x={window.innerWidth / 2 - 110}
           y={TOP + 16}
           devices={devices}
-          activeDeviceId={keyLinkDevicePicker.link.deviceId}
+          activeDeviceId={pickerLink.deviceId}
           onClose={() => setKeyLinkDevicePicker(null)}
           onPick={(deviceId) => {
-            send({ t: "keyLink.setDevice", linkId: keyLinkDevicePicker.link.id, deviceId });
+            send({ t: "keyLink.setDevice", linkId: pickerLink.id, deviceId });
             setKeyLinkDevicePicker(null);
           }}
         />
