@@ -98,6 +98,99 @@ function Toggle({ on, onLabel, offLabel, onToggle }: { on: boolean; onLabel: str
   );
 }
 
+/** 0..1-Wert in 10%-Schritten, für Swing/Humanize. `value === null` heißt
+ *  "Projekt-Default" (nur Swing) — die ↺-Taste kehrt dahin zurück. Auch von
+ *  ProjectSettings.tsx genutzt (Projekt-Default-Swing). */
+export function GrooveRow({
+  label,
+  value,
+  onChange,
+  allowInherit,
+}: {
+  label: string;
+  value: number | null;
+  onChange: (v: number | null) => void;
+  allowInherit?: boolean;
+}) {
+  const pct = value == null ? null : Math.round(value * 100);
+  const step = (delta: number) => onChange(Math.min(100, Math.max(0, (pct ?? 0) + delta)) / 100);
+  const btn: React.CSSProperties = {
+    width: 28,
+    height: 28,
+    border: "none",
+    borderRadius: "50%",
+    background: "var(--pal-btn-alt)",
+    color: "var(--pal-text)",
+    fontSize: 15,
+    fontWeight: 700,
+    cursor: "pointer",
+  };
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <div style={{ flex: 1, fontSize: 13 }}>{label}</div>
+      <button type="button" aria-label={`${label} down`} style={btn} onClick={() => step(-10)}>
+        −
+      </button>
+      <span style={{ minWidth: 40, textAlign: "center", fontSize: 13, fontWeight: 700 }}>
+        {pct == null ? "—" : `${pct}%`}
+      </span>
+      <button type="button" aria-label={`${label} up`} style={btn} onClick={() => step(10)}>
+        +
+      </button>
+      {allowInherit && pct != null && (
+        <button
+          type="button"
+          aria-label={`${label} use project default`}
+          title="Use project default"
+          style={{ ...btn, fontSize: 13 }}
+          onClick={() => onChange(null)}
+        >
+          ↺
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Ganzzahl-Stepper (kein Prozent) — z.B. Echo-Wiederholungen. */
+function IntStepperRow({
+  label,
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (v: number) => void;
+}) {
+  const btn: React.CSSProperties = {
+    width: 28,
+    height: 28,
+    border: "none",
+    borderRadius: "50%",
+    background: "var(--pal-btn-alt)",
+    color: "var(--pal-text)",
+    fontSize: 15,
+    fontWeight: 700,
+    cursor: "pointer",
+  };
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <div style={{ flex: 1, fontSize: 13 }}>{label}</div>
+      <button type="button" aria-label={`${label} down`} style={btn} onClick={() => onChange(Math.max(min, value - 1))}>
+        −
+      </button>
+      <span style={{ minWidth: 40, textAlign: "center", fontSize: 13, fontWeight: 700 }}>{value}</span>
+      <button type="button" aria-label={`${label} up`} style={btn} onClick={() => onChange(Math.min(max, value + 1))}>
+        +
+      </button>
+    </div>
+  );
+}
+
 export interface LaneSettingsDockProps {
   lane: Lane;
   onOpenCcTarget: () => void;
@@ -229,6 +322,103 @@ export function LaneSettingsDock({ lane, onOpenCcTarget, onOpenChain, onOpenKeyt
           />
         </div>
       </Field>
+
+      <Field label="Groove">
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <GrooveRow
+            label="Swing"
+            value={lane.swing ?? null}
+            onChange={(v) => send({ t: "lane.setSwing", laneId: lane.id, swing: v ?? undefined })}
+            allowInherit
+          />
+          <GrooveRow
+            label="Humanize timing"
+            value={lane.humanizeTiming ?? 0}
+            onChange={(v) =>
+              send({ t: "lane.setHumanize", laneId: lane.id, timing: v || undefined, velocity: lane.humanizeVelocity })
+            }
+          />
+          <GrooveRow
+            label="Humanize velocity"
+            value={lane.humanizeVelocity ?? 0}
+            onChange={(v) =>
+              send({ t: "lane.setHumanize", laneId: lane.id, timing: lane.humanizeTiming, velocity: v || undefined })
+            }
+          />
+        </div>
+      </Field>
+
+      <Field label="Echo">
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            <Button
+              variant={lane.echo ? "active" : "alt"}
+              className="settings-dock-row"
+              style={{ flex: 1 }}
+              onClick={() =>
+                send({
+                  t: "lane.setEcho",
+                  laneId: lane.id,
+                  echo: lane.echo ? null : { repeats: 3, rateDiv: 8, decay: 0.6 },
+                })
+              }
+            >
+              {lane.echo ? "On" : "Off"}
+            </Button>
+          </div>
+          {lane.echo && (
+            <>
+              <IntStepperRow
+                label="Repeats"
+                value={lane.echo.repeats}
+                min={1}
+                max={8}
+                onChange={(v) => send({ t: "lane.setEcho", laneId: lane.id, echo: { ...lane.echo!, repeats: v } })}
+              />
+              <GrooveRow
+                label="Decay"
+                value={lane.echo.decay}
+                onChange={(v) => send({ t: "lane.setEcho", laneId: lane.id, echo: { ...lane.echo!, decay: v ?? 0 } })}
+              />
+            </>
+          )}
+        </div>
+      </Field>
+
+      {(lane.role === "melody" || lane.role === "chord" || lane.role === "arp") && (
+        <Field label="Glide">
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div style={{ fontSize: 11, color: "var(--pal-text-dim)", marginTop: -2 }}>
+              Sends CC65/CC5 to the synth — it glides legato notes itself.
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <Button
+                variant={lane.glide?.enabled ? "active" : "alt"}
+                className="settings-dock-row"
+                style={{ flex: 1 }}
+                onClick={() =>
+                  send({
+                    t: "lane.setGlide",
+                    laneId: lane.id,
+                    glide: lane.glide?.enabled ? { enabled: false, timeCc: lane.glide.timeCc } : { enabled: true, timeCc: lane.glide?.timeCc ?? 40 },
+                  })
+                }
+              >
+                {lane.glide?.enabled ? "On" : "Off"}
+              </Button>
+            </div>
+            {lane.glide?.enabled && (
+              <IntStepperRow
+                label="Time"
+                value={lane.glide.timeCc}
+                min={0}
+                max={127}
+                onChange={(v) => send({ t: "lane.setGlide", laneId: lane.id, glide: { enabled: true, timeCc: v } })}
+              />
+            )}
+          </div>
+        </Field>
+      )}
 
       {confirmDelete ? (
         <div className="settings-dock-confirm">

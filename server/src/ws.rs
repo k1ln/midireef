@@ -156,10 +156,26 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
         "transport.stop" => state.clock.send(ClockCommand::Stop),
         "transport.tapTempo" => state.clock.send(ClockCommand::TapTempo),
         "transport.panic" => state.clock.send(ClockCommand::Panic),
+        // Performance-Taste „Fill" — treibt `StepMod.condition`s "fill"/"notFill".
+        "transport.setFill" => {
+            if let Some(active) = cmd.get("active").and_then(|v| v.as_bool()) {
+                state.clock.send(ClockCommand::SetFill(active));
+            }
+        }
         "transport.setBpm" => {
             if let Some(bpm) = cmd.get("bpm").and_then(|v| v.as_f64()) {
                 state.project.lock().unwrap().bpm = bpm;
                 state.clock.send(ClockCommand::SetBpm(bpm));
+            }
+        }
+        // Projekt-Default-Swing (0..1) — Lanes ohne eigenen `Lane.swing`
+        // übernehmen ihn, s. `Engine::on_pulse`s Step-Boundary-Berechnung.
+        // Wirkt erst nach dem nächsten Rebuild (Generation-Bump via
+        // `broadcast_snapshot`), also spürbar, aber nicht spürbar verzögert.
+        "project.setSwing" => {
+            if let Some(swing) = cmd.get("swing").and_then(|v| v.as_f64()) {
+                state.project.lock().unwrap().swing = swing.clamp(0.0, 1.0);
+                broadcast_snapshot(state);
             }
         }
         "transport.setClockSource" => {
@@ -417,6 +433,65 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                         _ => None,
                     };
                 });
+            }
+        }
+        // Swing NUR für diese Lane setzen — fehlt `swing` im Kommando, löst es
+        // den Override wieder (Projekt-Default gilt wieder). S. `Engine::on_pulse`s
+        // Step-Boundary-Berechnung.
+        "lane.setSwing" => {
+            if let Some(lane_id) = str_field(&cmd, "laneId") {
+                let swing = cmd.get("swing").and_then(|v| v.as_f64());
+                with_lane(state, &lane_id, |l| l.swing = swing);
+            }
+        }
+        // Humanize (Timing/Velocity, je 0..1, unabhängig setzbar) — fehlendes
+        // Feld löst dessen Override (aus). S. `Engine::fire_step`.
+        "lane.setHumanize" => {
+            if let Some(lane_id) = str_field(&cmd, "laneId") {
+                let timing = cmd.get("timing").and_then(|v| v.as_f64());
+                let velocity = cmd.get("velocity").and_then(|v| v.as_f64());
+                with_lane(state, &lane_id, |l| {
+                    l.humanize_timing = timing;
+                    l.humanize_velocity = velocity;
+                });
+            }
+        }
+        // Note-Echo/Delay setzen/lösen (fehlendes/`null` `echo` löst es) —
+        // abklingende Wiederholungen jeder gespielten Note dieser Lane.
+        "lane.setEcho" => {
+            if let Some(lane_id) = str_field(&cmd, "laneId") {
+                let echo = cmd.get("echo").filter(|v| !v.is_null()).and_then(|v| {
+                    serde_json::from_value::<crate::model::LaneEcho>(v.clone()).ok()
+                });
+                with_lane(state, &lane_id, |l| l.echo = echo.clone());
+            }
+        }
+        // Glide/Portamento setzen — sendet CC65 (an/aus) + bei "an" CC5 (Zeit)
+        // EINMALIG auf Port/Kanal der Lane. Kein Engine-Timing: der Synth
+        // gleitet danach jede legato gespielte Note selbst (s. `LaneGlide`).
+        "lane.setGlide" => {
+            if let Some(lane_id) = str_field(&cmd, "laneId") {
+                let glide = cmd.get("glide").filter(|v| !v.is_null()).and_then(|v| {
+                    serde_json::from_value::<crate::model::LaneGlide>(v.clone()).ok()
+                });
+                let port_ch = {
+                    let proj = state.project.lock().unwrap();
+                    find_lane(&proj, &lane_id).map(|(dev, lane)| lane_port_channel(dev, lane))
+                };
+                if let Some((port, ch)) = port_ch {
+                    if !port.is_empty() {
+                        let on = glide.as_ref().is_some_and(|g| g.enabled);
+                        state
+                            .clock
+                            .send(ClockCommand::Midi(port.clone(), vec![0xB0 | (ch - 1), 65, if on { 127 } else { 0 }]));
+                        if let Some(g) = &glide {
+                            if g.enabled {
+                                state.clock.send(ClockCommand::Midi(port, vec![0xB0 | (ch - 1), 5, g.time_cc.min(127)]));
+                            }
+                        }
+                    }
+                }
+                with_lane(state, &lane_id, |l| l.glide = glide.clone());
             }
         }
         // Keytrack-Quelle einer CC-Lane setzen/lösen (sourceLaneId null → lösen):
@@ -679,6 +754,39 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 }
             }
         }
+        // Dashboard-Regler OHNE MIDI: ein großer Knob, den man mit dem
+        // Finger "scratcht" (vertikal ziehen wie jeder andere Regler), der
+        // aber `transport.setBpm` treibt statt einer CC — komplett clientseitig
+        // in ControlWidget.tsx behandelt (kein `control.setValue`, keine
+        // Mapping-Auflösung). Höchstens einer gleichzeitig: ein zweiter Tipp
+        // wählt nur den schon vorhandenen aus, statt Klone anzuhäufen.
+        "control.addTempoKnob" => {
+            let mut proj = state.project.lock().unwrap();
+            let already_exists = proj
+                .controls
+                .as_array()
+                .is_some_and(|arr| arr.iter().any(|c| c.get("kind").and_then(|v| v.as_str()) == Some("tempo")));
+            if !already_exists {
+                const SIZE: f64 = 150.0;
+                let (x, y) = crate::state::next_free_position(&proj, SIZE);
+                let ctrl = serde_json::json!({
+                    "id": uuid::Uuid::new_v4().to_string(),
+                    "name": "Tempo",
+                    "kind": "tempo",
+                    "screenId": "main",
+                    "x": x,
+                    "y": y,
+                    "w": SIZE,
+                    "h": SIZE,
+                });
+                if !proj.controls.is_array() {
+                    proj.controls = serde_json::json!([]);
+                }
+                proj.controls.as_array_mut().unwrap().push(ctrl);
+            }
+            drop(proj);
+            broadcast_snapshot(state);
+        }
         "control.press" => {
             if let Some(id) = str_field(&cmd, "controlId") {
                 let proj = state.project.lock().unwrap();
@@ -829,6 +937,31 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 (str_field(&cmd, "laneId"), str_field(&cmd, "controlId"))
             {
                 lane_control_trigger(state, &lane_id, &control_id, false);
+            }
+        }
+        // Live-FX-Direktzugriff (Sequencer-Übersicht → 🎛 → "Live FX"-Zeile):
+        // dieselben Effekte wie die `beatRepeat`/`scatter`-LaneControl-Kinds,
+        // aber OHNE erst einen Control anlegen zu müssen — für "sofort auf
+        // jede Lane anwendbar" statt "vorher einrichten".
+        "lane.pressBeatRepeat" => {
+            if let Some(lane_id) = str_field(&cmd, "laneId") {
+                let steps = cmd.get("steps").and_then(|v| v.as_u64()).unwrap_or(2) as u32;
+                state.clock.send(ClockCommand::PressBeatRepeat(lane_id, steps));
+            }
+        }
+        "lane.releaseBeatRepeat" => {
+            if let Some(lane_id) = str_field(&cmd, "laneId") {
+                state.clock.send(ClockCommand::ReleaseBeatRepeat(lane_id));
+            }
+        }
+        "lane.pressScatter" => {
+            if let Some(lane_id) = str_field(&cmd, "laneId") {
+                state.clock.send(ClockCommand::PressScatter(lane_id));
+            }
+        }
+        "lane.releaseScatter" => {
+            if let Some(lane_id) = str_field(&cmd, "laneId") {
+                state.clock.send(ClockCommand::ReleaseScatter(lane_id));
             }
         }
         "laneControl.setValue" => {
@@ -1276,6 +1409,48 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 if let Some(b) = find_block_mut(&mut proj, &id) {
                     if let Some(line) = find_beat_line_mut(b, &line_id) {
                         line["note"] = serde_json::json!(note.min(127));
+                    }
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        // Euklidischen Rhythmus-Generator einer Beat-Line setzen (ersetzt die
+        // manuellen Step-An/Aus, solange `enabled` — Velocities bleiben aber
+        // Quelle für die Lautstärke, s. `compile_block`s "beat"-Zweig).
+        "beat.setEuclid" => {
+            if let (Some(id), Some(line_id), Some(euclid)) = (
+                str_field(&cmd, "blockId"),
+                str_field(&cmd, "lineId"),
+                cmd.get("euclid").cloned(),
+            ) {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(b) = find_block_mut(&mut proj, &id) {
+                    if let Some(line) = find_beat_line_mut(b, &line_id) {
+                        line["euclid"] = euclid;
+                    }
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        // Choke-Gruppe einer Beat-Line setzen/lösen (`chokeGroup: null` löst
+        // sie) — Lines derselben Gruppe schneiden sich beim Auslösen
+        // gegenseitig ab (Hihat open/closed), s. `Engine::choke`.
+        "beat.setChokeGroup" => {
+            if let (Some(id), Some(line_id)) = (str_field(&cmd, "blockId"), str_field(&cmd, "lineId")) {
+                let choke_group = cmd.get("chokeGroup").and_then(|v| v.as_u64());
+                let mut proj = state.project.lock().unwrap();
+                if let Some(b) = find_block_mut(&mut proj, &id) {
+                    if let Some(line) = find_beat_line_mut(b, &line_id) {
+                        match choke_group {
+                            Some(g) => line["chokeGroup"] = serde_json::json!(g),
+                            None => {
+                                if let Some(obj) = line.as_object_mut() {
+                                    obj.remove("chokeGroup");
+                                }
+                            }
+                        }
                     }
                 }
                 drop(proj);
@@ -1777,6 +1952,312 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 }
             }
         }
+        // ── Scenes (mehrere Lanes/Devices mit einem Touch starten) ──────────
+        // Bewusst als rohes JSON wie `blocks`/`controls` — `Scene`/`SceneTarget`
+        // sind nur in `shared/model.ts` typisiert (s. TODO.md), der Server
+        // reicht sie unverändert durch und feuert sie über den Clock-Thread.
+        "scene.create" => {
+            if let Some(name) = str_field(&cmd, "name") {
+                let mut proj = state.project.lock().unwrap();
+                if !proj.scenes.is_array() {
+                    proj.scenes = serde_json::json!([]);
+                }
+                proj.scenes.as_array_mut().unwrap().push(serde_json::json!({
+                    "id": uuid::Uuid::new_v4().to_string(),
+                    "name": name,
+                    "targets": [],
+                }));
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        "scene.update" => {
+            if let Some(scene) = cmd.get("scene").cloned() {
+                if let Some(id) = scene.get("id").and_then(|v| v.as_str()).map(str::to_string) {
+                    let mut proj = state.project.lock().unwrap();
+                    if let Some(s) = find_scene_mut(&mut proj, &id) {
+                        *s = scene;
+                    }
+                    drop(proj);
+                    broadcast_snapshot(state);
+                }
+            }
+        }
+        "scene.delete" => {
+            if let Some(id) = str_field(&cmd, "sceneId") {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(arr) = proj.scenes.as_array_mut() {
+                    arr.retain(|s| s.get("id").and_then(|v| v.as_str()) != Some(id.as_str()));
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        "scene.trigger" => {
+            if let Some(id) = str_field(&cmd, "sceneId") {
+                let targets = {
+                    let proj = state.project.lock().unwrap();
+                    proj.scenes
+                        .as_array()
+                        .and_then(|arr| arr.iter().find(|s| s.get("id").and_then(|v| v.as_str()) == Some(id.as_str())))
+                        .and_then(|s| s.get("targets"))
+                        .and_then(|t| t.as_array())
+                        .cloned()
+                        .unwrap_or_default()
+                };
+                for target in &targets {
+                    let (Some(lane_id), Some(action)) = (
+                        target.get("laneId").and_then(|v| v.as_str()),
+                        target.get("action").and_then(|v| v.as_str()),
+                    ) else {
+                        continue;
+                    };
+                    let slot_id = target.get("slotId").and_then(|v| v.as_str()).map(str::to_string);
+                    state.clock.send(ClockCommand::FireSceneTarget(
+                        lane_id.to_string(),
+                        action.to_string(),
+                        slot_id,
+                    ));
+                }
+                state.transport.lock().unwrap().active_scene_id = Some(id);
+            }
+        }
+        // ── Song / Arrangement (Scenes zu einem Track verketten) ────────────
+        // Auch hier rohes JSON wie bei Scenes. Die Wiedergabe (Auto-Advance an
+        // Taktgrenzen, Tempo-/Taktart-Automation) lebt komplett im Clock-Thread
+        // (`clock.rs`, `SongPlayback`) — der kennt als einziger den Puls-Zähler.
+        "song.create" => {
+            if let Some(name) = str_field(&cmd, "name") {
+                let mut proj = state.project.lock().unwrap();
+                if !proj.songs.is_array() {
+                    proj.songs = serde_json::json!([]);
+                }
+                proj.songs.as_array_mut().unwrap().push(serde_json::json!({
+                    "id": uuid::Uuid::new_v4().to_string(),
+                    "name": name,
+                    "steps": [],
+                    "loop": false,
+                }));
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        "song.update" => {
+            if let Some(song) = cmd.get("song").cloned() {
+                if let Some(id) = song.get("id").and_then(|v| v.as_str()).map(str::to_string) {
+                    let mut proj = state.project.lock().unwrap();
+                    if let Some(s) = find_song_mut(&mut proj, &id) {
+                        *s = song;
+                    }
+                    drop(proj);
+                    broadcast_snapshot(state);
+                }
+            }
+        }
+        "song.delete" => {
+            if let Some(id) = str_field(&cmd, "songId") {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(arr) = proj.songs.as_array_mut() {
+                    arr.retain(|s| s.get("id").and_then(|v| v.as_str()) != Some(id.as_str()));
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        "song.play" => {
+            if let Some(id) = str_field(&cmd, "songId") {
+                state.clock.send(ClockCommand::PlaySong(id));
+            }
+        }
+        "song.stop" => state.clock.send(ClockCommand::StopSong),
+        // ── Routing-Hub (externe Controller on-the-fly auf Devices routen) ──
+        // `project.routing` ist getippter Rust (s. model.rs), nicht rohes
+        // JSON wie blocks/scenes/songs — die eingehende MIDI-Weiterleitung
+        // (`AppState::forward_via_routing`) braucht echte Feld-für-Feld-Logik
+        // bei JEDER Nachricht, das lohnt den Umweg von Anfang an.
+        "routing.addSource" => {
+            if let Some(mut source) =
+                cmd.get("source").and_then(|v| serde_json::from_value::<crate::model::MidiInputSource>(v.clone()).ok())
+            {
+                source.id = uuid::Uuid::new_v4().to_string();
+                state.project.lock().unwrap().routing.sources.push(source);
+                broadcast_snapshot(state);
+            }
+        }
+        "routing.updateSource" => {
+            if let Some(source) =
+                cmd.get("source").and_then(|v| serde_json::from_value::<crate::model::MidiInputSource>(v.clone()).ok())
+            {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(s) = proj.routing.sources.iter_mut().find(|s| s.id == source.id) {
+                    *s = source;
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        "routing.removeSource" => {
+            if let Some(id) = str_field(&cmd, "sourceId") {
+                let mut proj = state.project.lock().unwrap();
+                proj.routing.sources.retain(|s| s.id != id);
+                // Verwaiste Routen (Quelle gelöscht) gleich mit aufräumen —
+                // sonst zeigen sie auf nichts mehr und blieben als Geister stehen.
+                proj.routing.routes.retain(|r| r.source_id != id);
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        "routing.addRoute" => {
+            if let Some(mut route) =
+                cmd.get("route").and_then(|v| serde_json::from_value::<crate::model::MidiRoute>(v.clone()).ok())
+            {
+                route.id = uuid::Uuid::new_v4().to_string();
+                state.project.lock().unwrap().routing.routes.push(route);
+                broadcast_snapshot(state);
+            }
+        }
+        "routing.updateRoute" => {
+            if let Some(route) =
+                cmd.get("route").and_then(|v| serde_json::from_value::<crate::model::MidiRoute>(v.clone()).ok())
+            {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(r) = proj.routing.routes.iter_mut().find(|r| r.id == route.id) {
+                    *r = route;
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        "routing.removeRoute" => {
+            if let Some(id) = str_field(&cmd, "routeId") {
+                let mut proj = state.project.lock().unwrap();
+                proj.routing.routes.retain(|r| r.id != id);
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        "routing.setRouteEnabled" => {
+            if let (Some(id), Some(enabled)) =
+                (str_field(&cmd, "routeId"), cmd.get("enabled").and_then(|v| v.as_bool()))
+            {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(r) = proj.routing.routes.iter_mut().find(|r| r.id == id) {
+                    r.enabled = enabled;
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        // Aktivieren heißt: GENAU die Routen dieser Scene an, alle anderen
+        // aus — s. `RoutingScene`s Doc-Kommentar in model.rs. Keine separate
+        // "welche Scene ist aktiv"-Prüfung beim Forwarden nötig.
+        "routing.activateScene" => {
+            if let Some(scene_id) = str_field(&cmd, "sceneId") {
+                let mut proj = state.project.lock().unwrap();
+                let active_ids = proj
+                    .routing
+                    .scenes
+                    .iter()
+                    .find(|s| s.id == scene_id)
+                    .map(|s| s.active_route_ids.clone());
+                if let Some(active_ids) = active_ids {
+                    for r in proj.routing.routes.iter_mut() {
+                        r.enabled = active_ids.contains(&r.id);
+                    }
+                    proj.routing.active_scene_id = Some(scene_id);
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        // Merkt sich den GERADE aktiven Routen-Zustand als neue Scene.
+        "routing.saveScene" => {
+            if let Some(name) = str_field(&cmd, "name") {
+                let mut proj = state.project.lock().unwrap();
+                let active_route_ids: Vec<String> =
+                    proj.routing.routes.iter().filter(|r| r.enabled).map(|r| r.id.clone()).collect();
+                let id = uuid::Uuid::new_v4().to_string();
+                proj.routing.scenes.push(crate::model::RoutingScene {
+                    id: id.clone(),
+                    name,
+                    active_route_ids,
+                });
+                proj.routing.active_scene_id = Some(id);
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        "routing.deleteScene" => {
+            if let Some(id) = str_field(&cmd, "sceneId") {
+                let mut proj = state.project.lock().unwrap();
+                proj.routing.scenes.retain(|s| s.id != id);
+                if proj.routing.active_scene_id.as_deref() == Some(id.as_str()) {
+                    proj.routing.active_scene_id = None;
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        // ── Mod-Matrix (globale Modulatoren, unabhängig von jeder Lane) ─────
+        "mod.addModulator" => {
+            if let Some(mut m) =
+                cmd.get("modulator").and_then(|v| serde_json::from_value::<crate::model::GlobalModulator>(v.clone()).ok())
+            {
+                m.id = uuid::Uuid::new_v4().to_string();
+                state.project.lock().unwrap().modulators.push(m);
+                broadcast_snapshot(state);
+            }
+        }
+        "mod.updateModulator" => {
+            if let Some(m) =
+                cmd.get("modulator").and_then(|v| serde_json::from_value::<crate::model::GlobalModulator>(v.clone()).ok())
+            {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(existing) = proj.modulators.iter_mut().find(|x| x.id == m.id) {
+                    *existing = m;
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        "mod.removeModulator" => {
+            if let Some(id) = str_field(&cmd, "modulatorId") {
+                let mut proj = state.project.lock().unwrap();
+                proj.modulators.retain(|m| m.id != id);
+                // Verwaiste Routen (Modulator gelöscht) gleich mit aufräumen.
+                proj.mod_routes.retain(|r| r.modulator_id != id);
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        "mod.addRoute" => {
+            if let Some(mut r) =
+                cmd.get("route").and_then(|v| serde_json::from_value::<crate::model::ModRoute>(v.clone()).ok())
+            {
+                r.id = uuid::Uuid::new_v4().to_string();
+                state.project.lock().unwrap().mod_routes.push(r);
+                broadcast_snapshot(state);
+            }
+        }
+        "mod.updateRoute" => {
+            if let Some(r) = cmd.get("route").and_then(|v| serde_json::from_value::<crate::model::ModRoute>(v.clone()).ok())
+            {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(existing) = proj.mod_routes.iter_mut().find(|x| x.id == r.id) {
+                    *existing = r;
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        "mod.removeRoute" => {
+            if let Some(id) = str_field(&cmd, "routeId") {
+                let mut proj = state.project.lock().unwrap();
+                proj.mod_routes.retain(|r| r.id != id);
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
         // ── WLAN-Access-Point ──────────────────────────────────────────────
         "network.getState" => broadcast_network_state(state),
         "network.setAp" => {
@@ -2130,6 +2611,22 @@ fn find_block_mut<'a>(proj: &'a mut Project, block_id: &str) -> Option<&'a mut s
         .find(|b| b.get("id").and_then(|v| v.as_str()) == Some(block_id))
 }
 
+/// Sucht eine Scene anhand ihrer ID in `project.scenes` — s. `find_block_mut`.
+fn find_scene_mut<'a>(proj: &'a mut Project, scene_id: &str) -> Option<&'a mut serde_json::Value> {
+    proj.scenes
+        .as_array_mut()?
+        .iter_mut()
+        .find(|s| s.get("id").and_then(|v| v.as_str()) == Some(scene_id))
+}
+
+/// Sucht einen Song anhand seiner ID in `project.songs` — s. `find_block_mut`.
+fn find_song_mut<'a>(proj: &'a mut Project, song_id: &str) -> Option<&'a mut serde_json::Value> {
+    proj.songs
+        .as_array_mut()?
+        .iter_mut()
+        .find(|s| s.get("id").and_then(|v| v.as_str()) == Some(song_id))
+}
+
 /// Grenzen für `block.setLength`. Die Auflösung bleibt bewusst grob geklemmt:
 /// die Engine rechnet `pulsesPerBar / stepsPerBar` und rundet — jenseits von 64
 /// Substeps pro Takt wird daraus bei 4/4 (96 Pulses) ohnehin nur noch Jitter.
@@ -2476,7 +2973,7 @@ fn set_note_input(state: &AppState, block_id: Option<&str>) {
 /// Noten-Control oder MIDI-Signal-Button. Läuft am Playback-Engine vorbei,
 /// direkt wie die Live-Controls im Dashboard.
 fn lane_control_trigger(state: &AppState, lane_id: &str, control_id: &str, pressed: bool) {
-    let (port, ch, kind, action, note, vel, target_block, target_line, message) = {
+    let (port, ch, kind, action, note, vel, target_block, target_line, message, repeat_steps, rate_div) = {
         let proj = state.project.lock().unwrap();
         let Some((dev, lane)) = find_lane(&proj, lane_id) else { return };
         let Some(ctrl) = find_lane_control(lane, control_id) else { return };
@@ -2488,10 +2985,42 @@ fn lane_control_trigger(state: &AppState, lane_id: &str, control_id: &str, press
         let target_block = ctrl.get("targetBlockId").and_then(|v| v.as_str()).map(str::to_string);
         let target_line = ctrl.get("targetLineId").and_then(|v| v.as_str()).map(str::to_string);
         let message = ctrl.get("message").cloned();
-        (port, ch, kind, action, note, vel, target_block, target_line, message)
+        let repeat_steps = ctrl.get("steps").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+        // "roll": Hits pro Viertelnote (4 = Sechzehntel, 8 = 32tel, …).
+        let rate_div = ctrl.get("rateDiv").and_then(|v| v.as_u64()).unwrap_or(4) as u32;
+        (port, ch, kind, action, note, vel, target_block, target_line, message, repeat_steps, rate_div)
     };
 
     match kind.as_str() {
+        "beatRepeat" => {
+            if pressed {
+                state.clock.send(ClockCommand::PressBeatRepeat(lane_id.to_string(), repeat_steps));
+            } else {
+                state.clock.send(ClockCommand::ReleaseBeatRepeat(lane_id.to_string()));
+            }
+        }
+        "roll" => {
+            if pressed {
+                // PPQN = 24 (protokollweite Konstante, s. server/src/clock.rs).
+                let rate_pulses = (24u32 / rate_div.max(1)).max(1);
+                state.clock.send(ClockCommand::PressRoll(
+                    control_id.to_string(),
+                    lane_id.to_string(),
+                    note,
+                    vel,
+                    rate_pulses,
+                ));
+            } else {
+                state.clock.send(ClockCommand::ReleaseRoll(control_id.to_string()));
+            }
+        }
+        "scatter" => {
+            if pressed {
+                state.clock.send(ClockCommand::PressScatter(lane_id.to_string()));
+            } else {
+                state.clock.send(ClockCommand::ReleaseScatter(lane_id.to_string()));
+            }
+        }
         "drumButton" if action == "trigger" => {
             let bytes = if pressed {
                 vec![0x90 | (ch - 1), note, vel]

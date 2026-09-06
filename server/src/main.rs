@@ -251,6 +251,9 @@ fn spawn_midi_learn(state: &AppState) {
                         // Einspielen in die offene Piano-Rolle — ebenfalls
                         // unabhängig vom Lern-Modus (s. `forward_note_input`).
                         state.forward_note_input(&msg);
+                        // Routing-Hub: ebenfalls unabhängig — eigene
+                        // Quellen-Zuordnung über den benannten Eingang.
+                        state.forward_via_routing(&source_port, &msg);
                         if !state.learn_armed.load(Ordering::Relaxed) {
                             // Nicht im Lern-Modus: trotzdem prüfen, ob die Nachricht zu
                             // einem bereits gelernten Control passt (physisch bedienter

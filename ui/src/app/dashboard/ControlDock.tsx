@@ -66,9 +66,12 @@ export function ControlDock({
 
   const isKeyboard = ctrl.kind === "keyboard";
   const isLaneButton = ctrl.kind === "laneButton";
+  const isTempo = ctrl.kind === "tempo";
   const mappingText = isLaneButton
     ? "Lane switch · no MIDI"
-    : ctrl.mapping
+    : isTempo
+      ? "Tempo knob · no MIDI"
+      : ctrl.mapping
       ? isKeyboard
         ? `KEYBOARD · Ch${ctrl.mapping.channel}`
         : `${ctrl.mapping.kind.toUpperCase()}${
@@ -106,12 +109,12 @@ export function ControlDock({
       <Button variant="alt" className="settings-dock-row" onClick={onMove}>
         ✥ Move
       </Button>
-      {!isLaneButton && (
+      {!isLaneButton && !isTempo && (
         <Button variant="alt" className="settings-dock-row" onClick={onDevice}>
           → Device …
         </Button>
       )}
-      {!isLaneButton && (triggerLabel ? (
+      {!isLaneButton && !isTempo && (triggerLabel ? (
         <>
           <Button
             variant={triggerEnabled ? "active" : "alt"}

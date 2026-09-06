@@ -35,6 +35,29 @@ pub enum ClockCommand {
     PressSlot(String, String, Option<u8>),
     /// Touch-Up auf eine "hold"-Lane: (laneId).
     ReleaseSlot(String),
+    /// Ein `SceneTarget` auslösen: (laneId, action "trigger"|"stop", ggf.
+    /// slotId — bei "trigger" ohne slotId gilt der aktive/erste Slot).
+    FireSceneTarget(String, String, Option<String>),
+    /// Song abspielen: (songId). Feuert Step 0 sofort und rückt danach an
+    /// jeder Taktgrenze weiter — s. `SongPlayback` unten.
+    PlaySong(String),
+    /// Song-Wiedergabe abbrechen, ohne den Transport selbst zu stoppen.
+    StopSong,
+    /// Beat-Repeat/Stutter: (laneId, steps) — Touch-Down auf einen
+    /// Beat-Repeat-Lane-Control. `steps` in Bausteinsteps, s. `Engine::press_repeat`.
+    PressBeatRepeat(String, u32),
+    /// Touch-Up: Beat-Repeat auf dieser Lane beenden.
+    ReleaseBeatRepeat(String),
+    /// Performance-Taste „Fill" — treibt `TrigCondition::Fill`/`NotFill`.
+    SetFill(bool),
+    /// Manueller Roll (LaneControl "roll"): (controlKey, laneId, note,
+    /// velocity, ratePulses). Retriggert `note` im festen Puls-Abstand, bis
+    /// `ReleaseRoll` mit derselben `controlKey` kommt.
+    PressRoll(String, String, u8, u8, u32),
+    ReleaseRoll(String),
+    /// Scatter/Glitch (LaneControl "scatter"): (laneId).
+    PressScatter(String),
+    ReleaseScatter(String),
     /// Setzt NUR die auslösende Note fürs LFO-Key-Tracking einer Lane, ohne
     /// sie zu starten/stoppen — Gegenstück zu `PressSlot`/`ReleaseSlot`, wenn
     /// eine externe MIDI-Note nur die Rate treiben soll (`setsKeytrack` bei
@@ -95,6 +118,121 @@ fn pulse_interval(bpm: f64) -> Duration {
     Duration::from_secs_f64(secs.max(0.0001))
 }
 
+/// EIN `SongStep` (`shared/model.ts`), aus dem rohen `project.songs`-JSON
+/// aufgelöst, sobald ein Song gestartet wird — ändert sich der Song selbst
+/// während der Wiedergabe, spielt trotzdem der Stand von `song.play` zu Ende
+/// (kein Mid-Song-Reload).
+#[derive(Debug, Clone)]
+struct SongStepResolved {
+    scene_id: String,
+    bars: u32,
+    bpm_override: Option<f64>,
+    time_signature_override: Option<String>,
+}
+
+fn resolve_song_steps(song: &serde_json::Value) -> Vec<SongStepResolved> {
+    song.get("steps")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|s| {
+                    let scene_id = s.get("sceneId").and_then(|v| v.as_str())?.to_string();
+                    let bars = s.get("bars").and_then(|v| v.as_u64()).unwrap_or(1).max(1) as u32;
+                    Some(SongStepResolved {
+                        scene_id,
+                        bars,
+                        bpm_override: s.get("bpmOverride").and_then(|v| v.as_f64()),
+                        time_signature_override: s
+                            .get("timeSignatureOverride")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Laufender Zustand EINER Song-Wiedergabe — lebt nur im Clock-Thread
+/// (`clock_loop`s lokale Variablen), nicht in `TransportState`: nur der
+/// Thread mit dem Puls-Zähler kann Taktgrenzen erkennen.
+struct SongPlayback {
+    steps: Vec<SongStepResolved>,
+    loop_enabled: bool,
+    step_idx: usize,
+    /// Pulse pro Takt DIESES Steps — aus `timeSignatureOverride`, sonst der
+    /// Projekt-Taktart. Unabhängig von `Engine::bar_pulses` (projektweit,
+    /// nur für "nextBar"-Slot-Quantisierung).
+    bar_pulses: u32,
+    bars_elapsed: u32,
+    /// Puls-Zählerstand, an dem der aktuelle Step begann — Taktgrenzen sind
+    /// `(pulses - step_started_at_pulse) % bar_pulses == 0`.
+    step_started_at_pulse: u64,
+}
+
+/// Feuert alle Targets EINER Scene direkt (der Clock-Thread besitzt `engine`
+/// exklusiv, also ohne den Kommando-Kanal — anders als `ws.rs`s
+/// `scene.trigger`, das aus einem anderen Thread kommt).
+fn fire_scene(engine: &mut Engine, project: &Arc<Mutex<Project>>, scene_id: &str) {
+    let targets = {
+        let proj = project.lock().unwrap();
+        proj.scenes
+            .as_array()
+            .and_then(|arr| arr.iter().find(|s| s.get("id").and_then(|v| v.as_str()) == Some(scene_id)))
+            .and_then(|s| s.get("targets"))
+            .and_then(|t| t.as_array())
+            .cloned()
+            .unwrap_or_default()
+    };
+    for target in &targets {
+        let (Some(lane_id), Some(action)) = (
+            target.get("laneId").and_then(|v| v.as_str()),
+            target.get("action").and_then(|v| v.as_str()),
+        ) else {
+            continue;
+        };
+        let slot_id = target.get("slotId").and_then(|v| v.as_str());
+        engine.fire_scene_target(lane_id, action, slot_id);
+    }
+}
+
+/// Startet den Step `sp.step_idx`: feuert dessen Scene, übernimmt ggf.
+/// Tempo-/Taktart-Automation und meldet den neuen Stand an die UI.
+#[allow(clippy::too_many_arguments)]
+fn start_song_step(
+    engine: &mut Engine,
+    project: &Arc<Mutex<Project>>,
+    transport: &Arc<Mutex<TransportState>>,
+    events: &broadcast::Sender<serde_json::Value>,
+    bpm: &mut f64,
+    interval: &mut Duration,
+    pulses: u64,
+    sp: &mut SongPlayback,
+) {
+    let step = sp.steps[sp.step_idx].clone();
+
+    if let Some(v) = step.bpm_override {
+        *bpm = v.clamp(20.0, 300.0);
+        *interval = pulse_interval(*bpm);
+    }
+    let ts_for_bars = step
+        .time_signature_override
+        .clone()
+        .unwrap_or_else(|| project.lock().unwrap().time_signature.clone());
+    sp.bar_pulses = crate::engine::pulses_per_bar(&ts_for_bars).max(1);
+    sp.bars_elapsed = 0;
+    sp.step_started_at_pulse = pulses;
+
+    fire_scene(engine, project, &step.scene_id);
+
+    let mut t = transport.lock().unwrap();
+    t.bpm = *bpm;
+    t.active_scene_id = Some(step.scene_id);
+    t.active_song_step_index = Some(sp.step_idx as u32);
+    t.song_bars_remaining = Some(step.bars);
+    broadcast_tick(events, &t);
+}
+
 fn clock_loop(
     rx: Receiver<ClockCommand>,
     transport: Arc<Mutex<TransportState>>,
@@ -116,6 +254,9 @@ fn clock_loop(
     let mut preview_next_pulse = Instant::now();
     let mut pulses: u64 = 0;
     let mut taps: Vec<Instant> = Vec::new();
+    // Laufende Song-Wiedergabe (`song.play`) — `None` heißt: kein Song aktiv,
+    // die Transport-Uhr läuft ganz normal ohne Auto-Advance.
+    let mut song_state: Option<SongPlayback> = None;
     // Live-Aufnahme (record.arm): pro (laneId, Note) der Step, an dem die
     // Note per Note-On begonnen hat — Note-Off berechnet daraus `lengthSteps`.
     let mut recording_holds: HashMap<(String, u8), u32> = HashMap::new();
@@ -154,6 +295,13 @@ fn clock_loop(
                     playing = true;
                     pulses = 0;
                     next_pulse = Instant::now();
+                    // `pulses` springt zurück auf 0 — ein laufender Song muss
+                    // seinen Takt-Anker mitnehmen, sonst bliebe er für immer
+                    // "in der Vergangenheit" hängen (saturating_sub kappt bei
+                    // 0, Taktgrenzen würden nie mehr erkannt).
+                    if let Some(sp) = song_state.as_mut() {
+                        sp.step_started_at_pulse = 0;
+                    }
                     engine.transport_start();
                     let mut t = transport.lock().unwrap();
                     t.playing = true;
@@ -220,6 +368,76 @@ fn clock_loop(
                 }
                 ClockCommand::ReleaseSlot(lane_id) => {
                     engine.release_slot(&lane_id);
+                }
+                ClockCommand::FireSceneTarget(lane_id, action, slot_id) => {
+                    engine.fire_scene_target(&lane_id, &action, slot_id.as_deref());
+                }
+                ClockCommand::PlaySong(song_id) => {
+                    let song_json = {
+                        let proj = project.lock().unwrap();
+                        proj.songs
+                            .as_array()
+                            .and_then(|arr| {
+                                arr.iter().find(|s| s.get("id").and_then(|v| v.as_str()) == Some(song_id.as_str()))
+                            })
+                            .cloned()
+                    };
+                    if let Some(song_json) = song_json {
+                        let steps = resolve_song_steps(&song_json);
+                        let loop_enabled = song_json.get("loop").and_then(|v| v.as_bool()).unwrap_or(false);
+                        if !steps.is_empty() {
+                            let mut sp = SongPlayback {
+                                steps,
+                                loop_enabled,
+                                step_idx: 0,
+                                bar_pulses: 1,
+                                bars_elapsed: 0,
+                                step_started_at_pulse: pulses,
+                            };
+                            start_song_step(
+                                &mut engine, &project, &transport, &events, &mut bpm, &mut interval, pulses, &mut sp,
+                            );
+                            song_state = Some(sp);
+                            let mut t = transport.lock().unwrap();
+                            t.song_mode = true;
+                            t.active_song_id = Some(song_id);
+                            broadcast_tick(&events, &t);
+                        }
+                    }
+                }
+                ClockCommand::PressBeatRepeat(lane_id, steps) => {
+                    engine.press_repeat(&lane_id, steps);
+                }
+                ClockCommand::ReleaseBeatRepeat(lane_id) => {
+                    engine.release_repeat(&lane_id);
+                }
+                ClockCommand::PressRoll(control_key, lane_id, note, vel, rate_pulses) => {
+                    engine.press_roll(&control_key, &lane_id, note, vel, rate_pulses, pulses);
+                }
+                ClockCommand::ReleaseRoll(control_key) => {
+                    engine.release_roll(&control_key);
+                }
+                ClockCommand::PressScatter(lane_id) => {
+                    engine.press_scatter(&lane_id);
+                }
+                ClockCommand::ReleaseScatter(lane_id) => {
+                    engine.release_scatter(&lane_id);
+                }
+                ClockCommand::SetFill(active) => {
+                    engine.set_fill(active);
+                    let mut t = transport.lock().unwrap();
+                    t.fill_active = active;
+                    broadcast_tick(&events, &t);
+                }
+                ClockCommand::StopSong => {
+                    song_state = None;
+                    let mut t = transport.lock().unwrap();
+                    t.song_mode = false;
+                    t.active_song_id = None;
+                    t.active_scene_id = None;
+                    t.active_song_step_index = None;
+                    t.song_bars_remaining = None;
+                    broadcast_tick(&events, &t);
                 }
                 ClockCommand::SetTriggerNote(lane_id, note) => {
                     engine.set_trigger_note(&lane_id, note);
@@ -296,6 +514,46 @@ fn clock_loop(
                 flush_cc_restores(&mut engine, &project, &events);
                 pulses += 1;
                 next_pulse += interval;
+
+                // Song-Auto-Advance: an jeder Taktgrenze DIESES Steps einen
+                // Takt abbuchen; am Step-Ende den nächsten Step feuern (oder
+                // bei `loop` zurück auf Step 0, sonst Song beenden).
+                let mut song_ended = false;
+                if let Some(sp) = song_state.as_mut() {
+                    let elapsed = pulses.saturating_sub(sp.step_started_at_pulse);
+                    if elapsed > 0 && elapsed % sp.bar_pulses.max(1) as u64 == 0 {
+                        sp.bars_elapsed += 1;
+                        if sp.bars_elapsed >= sp.steps[sp.step_idx].bars {
+                            if sp.step_idx + 1 < sp.steps.len() {
+                                sp.step_idx += 1;
+                                start_song_step(
+                                    &mut engine, &project, &transport, &events, &mut bpm, &mut interval, pulses, sp,
+                                );
+                            } else if sp.loop_enabled {
+                                sp.step_idx = 0;
+                                start_song_step(
+                                    &mut engine, &project, &transport, &events, &mut bpm, &mut interval, pulses, sp,
+                                );
+                            } else {
+                                song_ended = true;
+                            }
+                        } else {
+                            let mut t = transport.lock().unwrap();
+                            t.song_bars_remaining = Some(sp.steps[sp.step_idx].bars - sp.bars_elapsed);
+                            broadcast_tick(&events, &t);
+                        }
+                    }
+                }
+                if song_ended {
+                    song_state = None;
+                    let mut t = transport.lock().unwrap();
+                    t.song_mode = false;
+                    t.active_song_id = None;
+                    t.active_scene_id = None;
+                    t.active_song_step_index = None;
+                    t.song_bars_remaining = None;
+                    broadcast_tick(&events, &t);
+                }
 
                 let tick = (pulses % PPQN as u64) as u32;
                 let total_beats = pulses / PPQN as u64;

@@ -159,7 +159,53 @@ export interface MacroKnobControl {
   controlId: string;
 }
 
-export type LaneControl = NoteControl | DrumButtonControl | MidiSignalControl | MacroKnobControl;
+/** Beat-Repeat/Stutter: hold down to freeze the lane on a loop of its last
+ *  `steps` steps, release to continue exactly where it was (see
+ *  `Engine::press_repeat` / `release_repeat` in server/src/engine.rs). */
+export interface BeatRepeatControl {
+  id: string;
+  kind: "beatRepeat";
+  label: string;
+  color?: string;
+  order: number;
+  /** In steps of the block's OWN resolution, not absolute pulses — "1" is
+   *  always "the most recent step," whatever grid the running block uses. */
+  steps: number;
+}
+
+/** Manual roll: hold down to retrigger `note` at a fixed rate (independent
+ *  of the pattern's own steps), release to stop — a finger-drumming roll. */
+export interface RollControl {
+  id: string;
+  kind: "roll";
+  label: string;
+  color?: string;
+  order: number;
+  note: number;
+  velocity: number;
+  /** Hits per quarter note — 4 = sixteenths, 8 = thirty-seconds, … */
+  rateDiv: number;
+}
+
+/** Scatter/Glitch: hold down to make every step-trigger on this lane read a
+ *  RANDOM step's content instead of its own — timing stays exactly on the
+ *  grid, only the content glitches. Release returns to normal. */
+export interface ScatterControl {
+  id: string;
+  kind: "scatter";
+  label: string;
+  color?: string;
+  order: number;
+}
+
+export type LaneControl =
+  | NoteControl
+  | DrumButtonControl
+  | MidiSignalControl
+  | MacroKnobControl
+  | BeatRepeatControl
+  | RollControl
+  | ScatterControl;
 
 export interface Lane {
   id: string;
@@ -187,6 +233,20 @@ export interface Lane {
    *  MIDI-Trigger, nur ohne MIDI-In. Unabhängig von `keytrackSourceLaneId`
    *  schaltbar. */
   keytrackSourceStarts?: boolean;
+  /** Swing 0..1 nur für diese Lane — überschreibt den Projekt-Default.
+   *  `undefined` = Projekt-Default gilt. */
+  swing?: number;
+  /** Humanize: leichte Zufallsstreuung von Timing/Velocity (0..1), je
+   *  unabhängig schaltbar. `undefined` = aus. */
+  humanizeTiming?: number;
+  humanizeVelocity?: number;
+  /** Note-Echo/Delay: abklingende Wiederholungen jeder gespielten Note.
+   *  `undefined` = aus. */
+  echo?: { repeats: number; rateDiv: number; decay: number };
+  /** Glide/Portamento — sends CC65 (on/off) + CC5 (time) to the synth once
+   *  when toggled; the synth glides legato notes itself. `undefined` = never
+   *  set (synth default applies). */
+  glide?: { enabled: boolean; timeCc: number };
   slots: Slot[];
   controls: LaneControl[];
 }
@@ -199,6 +259,115 @@ export interface Device {
   muted?: boolean;
   latencyOffsetMs: number;
   lanes: Lane[];
+}
+
+/** Ein Scene-Ziel: auf einer Lane entweder einen Slot triggern (ohne `slotId`
+ *  greift der gerade aktive/erste Slot) oder die Lane stoppen. */
+export interface SceneTarget {
+  laneId: string;
+  action: "trigger" | "stop";
+  slotId?: string;
+}
+
+/** Mehrere Lanes/Devices mit einem Touch starten/stoppen (Screen: Scenes). */
+export interface Scene {
+  id: string;
+  name: string;
+  color?: string;
+  targets: SceneTarget[];
+}
+
+/** Ein Step in einem `Song`: spielt `sceneId` für `bars` Takte, mit optionaler
+ *  Tempo-/Taktart-Automation. Fortschaltung passiert serverseitig. */
+export interface SongStep {
+  id: string;
+  sceneId: string;
+  bars: number;
+  bpmOverride?: number;
+  timeSignatureOverride?: string;
+}
+
+/** Scenes zu einem Track verketten (Screen: Song, Tab neben Scenes). */
+export interface Song {
+  id: string;
+  name: string;
+  steps: SongStep[];
+  loop: boolean;
+}
+
+/** Ein physischer MIDI-Eingang (externer Controller), benennbar. */
+export interface MidiInputSource {
+  id: string;
+  name: string;
+  port: string;
+  channelFilter?: number;
+}
+
+export interface CcRemapEntry {
+  from: number;
+  to: number;
+}
+
+export interface RouteTransform {
+  deviceId: string;
+  channel?: number;
+  noteTranspose?: number;
+  velocityScale?: number;
+  ccRemap?: CcRemapEntry[];
+}
+
+export type MidiMessageKind = "note" | "cc" | "pitchBend" | "aftertouch" | "programChange";
+
+/** Leitet gefilterte MIDI-Nachrichten einer Quelle live an ein Device — der
+ *  Kern des Routing-Hubs (Controller ohne Kabelwechsel umschalten). */
+export interface MidiRoute {
+  id: string;
+  name: string;
+  enabled: boolean;
+  sourceId: string;
+  messageFilter: MidiMessageKind[] | "all";
+  ccFilter?: number[];
+  noteRange?: { low: number; high: number };
+  transform: RouteTransform;
+}
+
+/** Aktiviert eine bestimmte Menge Routen auf Knopfdruck (z.B. "alle
+ *  Controller → Synth B") ohne Kabel/Re-Learn. */
+export interface RoutingScene {
+  id: string;
+  name: string;
+  activeRouteIds: string[];
+}
+
+export interface RoutingHub {
+  sources: MidiInputSource[];
+  routes: MidiRoute[];
+  scenes: RoutingScene[];
+  activeSceneId?: string;
+}
+
+export type LfoWaveform = "sine" | "triangle" | "sawUp" | "sawDown" | "square";
+
+/** Globaler LFO, auf mehrere Ziele routbar — anders als eine CC-Baustein-Layer
+ *  läuft er unabhängig von jeder Lane immer mit, taktsynchron. */
+export interface GlobalModulator {
+  id: string;
+  name: string;
+  waveform: LfoWaveform;
+  rateBars: number;
+  phase: number;
+  bipolar: boolean;
+}
+
+/** Ein Ziel, das ein globaler Modulator ansteuert — mehrere Routes derselben
+ *  Modulator-Id sind der "Multi-Parameter-Macro-Knob". */
+export interface ModRoute {
+  id: string;
+  modulatorId: string;
+  deviceId: string;
+  ccNumber: number;
+  channel?: number;
+  depth: number; // -1..1
 }
 
 export interface Project {
@@ -254,6 +423,7 @@ export class Store {
   project?: Project;
   transport?: TransportState;
   midiOutputs: string[] = [];
+  midiInputs: string[] = [];
   /** Which keyboard control is currently linked to which melody lane for
    *  live recording (`record.arm`) — null when nothing is armed. */
   recordArmed: RecordArm | null = null;
@@ -288,8 +458,9 @@ export class Store {
     this.transport = t;
   }
 
-  setPorts(outputs: string[]) {
+  setPorts(outputs: string[], inputs?: string[]) {
     this.midiOutputs = outputs;
+    if (inputs) this.midiInputs = inputs;
     this.emit();
   }
 

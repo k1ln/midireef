@@ -1,8 +1,21 @@
 #!/usr/bin/env bash
-# Dreht das Kiosk-Display live um 180° (oder zurück auf normal) — ohne
-# Chromium neu zu starten. Braucht anders als midireef-net kein sudo: das
-# Drehen eines eigenen Wayland-/X11-Outputs ist eine normale Aktion der
-# Desktop-Sitzung, keine System-Änderung.
+# Dreht das Kiosk-Display um 180° RELATIV zu seiner Grundausrichtung (oder
+# zurück auf die Grundausrichtung) — ohne Chromium neu zu starten. Braucht
+# anders als midireef-net kein sudo: das Drehen eines eigenen Wayland-/
+# X11-Outputs ist eine normale Aktion der Desktop-Sitzung, keine
+# System-Änderung.
+#
+# „Grundausrichtung" ist die Drehung, die der Compositor für dieses Panel
+# schon einstellt, bevor dieses Skript je gelaufen ist — z.B. ein
+# Touchdisplay mit portraitem Panel (hier: DSI, 720×1280), das nur über eine
+# fest verdrahtete 90°-Drehung Querformat zeigt (`wlr-randr` meldet dafür
+# `Transform: 90`, nicht `normal`). Ein blankes `--transform 180` würde diese
+# Grundausrichtung überschreiben statt sie zu ergänzen — das Display landet
+# dann irgendwo zwischen Hoch- und Querformat statt „quer, nur umgedreht".
+# Deshalb merkt sich dieses Skript beim allerersten Lauf pro Output die
+# damalige Drehung in $HOME/.config/midireef/kiosk-rotation-base und rechnet
+# „180" immer als Grundausrichtung + 180° (mod 360), „0" als reine
+# Grundausrichtung.
 #
 # Aufruf: midireef-display 0|180
 #
@@ -30,11 +43,40 @@ if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
   done
 fi
 
+# Numerische Basis-Rotation (0/90/180/270) eines wlr-randr-Transform-Werts.
+# Gespiegelte Varianten (`flipped*`) kommen bei einem einzelnen Kiosk-Panel
+# praktisch nicht vor — Fallback 0.
+angle_of() {
+  case "$1" in
+    normal) echo 0 ;;
+    90|180|270) echo "$1" ;;
+    *) echo 0 ;;
+  esac
+}
+
 if [[ -n "${WAYLAND_DISPLAY:-}" ]] && command -v wlr-randr >/dev/null 2>&1; then
+  BASE_FILE="$HOME/.config/midireef/kiosk-rotation-base"
+  mkdir -p "$(dirname "$BASE_FILE")"
+  LIST="$(wlr-randr 2>/dev/null)"
   ok=0
   while IFS= read -r output; do
-    wlr-randr --output "$output" --transform "$ROTATION" 2>/dev/null && ok=1
-  done < <(wlr-randr 2>/dev/null | awk '/^[^ ]/{print $1}')
+    [[ -n "$output" ]] || continue
+    # Grundausrichtung dieses Outputs einmalig merken — VOR jeder eigenen
+    # Drehung, sonst würde ein späterer Lauf die eigene vorige Drehung
+    # fälschlich als „Grundausrichtung" übernehmen.
+    if ! grep -q "^$output " "$BASE_FILE" 2>/dev/null; then
+      current="$(awk -v o="$output" '
+        /^[^ ]/ { found = ($0 ~ "^"o" ") }
+        found && /Transform:/ { print $2; exit }
+      ' <<<"$LIST")"
+      echo "$output ${current:-normal}" >> "$BASE_FILE"
+    fi
+    base="$(awk -v o="$output" '$1==o{print $2}' "$BASE_FILE")"
+    base_deg="$(angle_of "${base:-normal}")"
+    target_deg=$(( (base_deg + ROTATION) % 360 ))
+    target="normal"; [[ "$target_deg" != "0" ]] && target="$target_deg"
+    wlr-randr --output "$output" --transform "$target" 2>/dev/null && ok=1
+  done < <(awk '/^[^ ]/{print $1}' <<<"$LIST")
   [[ "$ok" == "1" ]] || { echo "midireef-display: wlr-randr fehlgeschlagen" >&2; exit 1; }
 elif [[ -n "${DISPLAY:-}" || -e /tmp/.X11-unix/X0 ]] && command -v xrandr >/dev/null 2>&1; then
   export DISPLAY="${DISPLAY:-:0}"

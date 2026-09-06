@@ -18,8 +18,8 @@ export async function mountBackground(host: HTMLElement) {
     // Interne Auflösung bewusst UNTER der Anzeige halten: jeder (füllraten-
     // schwere) Shader-Pass verarbeitet dann deutlich weniger Fragmente. Der
     // Pixelate-Look kaschiert das Hochskalieren, daher praktisch kostenlos.
-    // 0.75 ≈ 44 % weniger Fragmente pro Pass als natives 1.0.
-    resolution: Math.min(window.devicePixelRatio || 1, 0.75),
+    // 0.6 ≈ 64 % weniger Fragmente pro Pass als natives 1.0.
+    resolution: Math.min(window.devicePixelRatio || 1, 0.6),
     autoDensity: true,
   });
   app.canvas.style.pointerEvents = "none";

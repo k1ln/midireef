@@ -11,11 +11,7 @@ import {
   Texture,
   Ticker,
 } from "pixi.js";
-import {
-  AdvancedBloomFilter,
-  GodrayFilter,
-  PixelateFilter,
-} from "pixi-filters";
+import { GodrayFilter, PixelateFilter } from "pixi-filters";
 import { PAL } from "../theme";
 import type { BgConfig } from "../app/bgConfig";
 
@@ -252,9 +248,7 @@ export class UnderwaterScene {
   private caustics = new Container();
   private lightPools = new Container();
   private dispSprite: Sprite;
-  private dispSprite2: Sprite;
   private dispFilter: DisplacementFilter;
-  private dispFilter2: DisplacementFilter;
   private godray: GodrayFilter;
   private vignette: Sprite;
   private pools: { s: Sprite; baseX: number; baseY: number; phase: number; r: number }[] = [];
@@ -278,6 +272,8 @@ export class UnderwaterScene {
   private w = 0;
   private h = 0;
   private time = 0;
+  /** Sekunden seit dem letzten Kaustik-Neuaufbau (s. update: gedrosselt). */
+  private causticsAccum = 0;
   /** Nutzer-Konfiguration (Preset + Kreaturenzahl + Reaktivität). */
   private cfg: BgConfig;
   /** Strömungs-/Bewegungs-Faktor: 1 = normal, folgt bei laufender Wiedergabe
@@ -300,8 +296,11 @@ export class UnderwaterScene {
     this.scene.addChild(this.lightPools);
     this.scene.addChild(this.caustics);
 
-    // Zwei Displacement-Ebenen mit unterschiedlicher Skalierung/Geschwindigkeit
-    // → mehrlagige, organische Wasser-Turbulenz statt einer festen Frequenz.
+    // EINE Displacement-Ebene für die Wasser-Turbulenz. Früher zwei mit
+    // unterschiedlicher Skalierung — der zweite Full-Screen-Shader-Pass
+    // kostete auf dem Pi mehr, als die feinere Turbulenz optisch brachte;
+    // zwei Frequenzen im Scale-Wobble (s. update) halten die Bewegung
+    // trotzdem organisch.
     this.dispSprite = new Sprite(displacementTexture(256));
     this.dispSprite.renderable = false;
     this.dispSprite.scale.set(2.4);
@@ -309,15 +308,6 @@ export class UnderwaterScene {
     this.dispFilter = new DisplacementFilter({
       sprite: this.dispSprite,
       scale: 16,
-    });
-
-    this.dispSprite2 = new Sprite(displacementTexture(256));
-    this.dispSprite2.renderable = false;
-    this.dispSprite2.scale.set(0.9);
-    this.scene.addChild(this.dispSprite2);
-    this.dispFilter2 = new DisplacementFilter({
-      sprite: this.dispSprite2,
-      scale: 6,
     });
 
     // Volumetrische Lichtstrahlen von der Oberfläche (God Rays).
@@ -328,25 +318,11 @@ export class UnderwaterScene {
       alpha: 0.5,
     });
 
-    // Dezentes Nachleuchten heller Elemente (Streulicht im Wasser) — weich,
-    // nicht flächig ausbrennend. Niedrige Qualität/Blur = weniger Blur-Pässe.
-    const bloom = new AdvancedBloomFilter({
-      threshold: 0.55,
-      bloomScale: 0.45,
-      brightness: 1.0,
-      blur: 3,
-      quality: 4,
-    });
-
-    // Filterkette: Wasser-Verzerrung (2 Lagen) → Lichtstrahlen → Bloom →
-    // harter Pixel-Look über die gesamte Szene.
-    this.scene.filters = [
-      this.dispFilter,
-      this.dispFilter2,
-      this.godray,
-      bloom,
-      new PixelateFilter(2),
-    ];
+    // Filterkette: Wasser-Verzerrung → Lichtstrahlen → harter Pixel-Look über
+    // die gesamte Szene. Der Bloom-Pass (Threshold-Extrakt + mehrere
+    // Blur-Pässe + Composite) war der mit Abstand teuerste Posten der Kette
+    // und ist für den Pi entfernt.
+    this.scene.filters = [this.dispFilter, this.godray, new PixelateFilter(2)];
 
     // Tiefen-Vignette liegt ÜBER der gefilterten Szene (kein Bloom/Displacement),
     // damit die Ränder sauber ins Schwarz abtauchen.
@@ -362,8 +338,6 @@ export class UnderwaterScene {
     this.bg.height = h;
     this.dispSprite.width = w;
     this.dispSprite.height = h;
-    this.dispSprite2.width = w;
-    this.dispSprite2.height = h;
     this.vignette.texture = vignetteTexture(Math.max(2, w), Math.max(2, h));
     this.vignette.width = w;
     this.vignette.height = h;
@@ -502,7 +476,9 @@ export class UnderwaterScene {
   }
 
   private ensurePlankton() {
-    const target = Math.max(60, Math.floor((this.w * this.h) / 7000));
+    // Dichte gesenkt (war /7000 ⇒ ~300 Knoten bei 1080p): jedes Plankton ist
+    // ein eigenes Graphics-Objekt, das der Filter-Stack jeden Frame mitzieht.
+    const target = Math.max(40, Math.floor((this.w * this.h) / 16000));
     while (this.plankton.length < target)
       this.plankton.push(this.makePlankton());
   }
@@ -997,17 +973,15 @@ export class UnderwaterScene {
     this.noteFlash = Math.max(0, this.noteFlash - dt * 2.2);
     const flow = this.tempo;
 
-    // Wasser-Verzerrung animieren: zwei Displacement-Ebenen gegenläufig driften
-    // lassen → sich überlagernde Wellenfronten wie an einer echten Oberfläche.
+    // Wasser-Verzerrung animieren: eine Displacement-Ebene driftet, ihr
+    // Scale-Wobble überlagert zwei Frequenzen → wechselnde Wellenfronten wie
+    // an einer echten Oberfläche, aber nur ein Shader-Pass.
     this.dispSprite.x = Math.sin(this.time * 0.3) * 40;
     this.dispSprite.y = this.time * 12;
-    this.dispFilter.scale.x = 14 + Math.sin(this.time * 0.7) * 5;
-    this.dispFilter.scale.y = 14 + Math.cos(this.time * 0.5) * 5;
-
-    this.dispSprite2.x = -this.time * 22;
-    this.dispSprite2.y = -Math.cos(this.time * 0.4) * 30 - this.time * 6;
-    this.dispFilter2.scale.x = 6 + Math.cos(this.time * 1.1) * 3;
-    this.dispFilter2.scale.y = 6 + Math.sin(this.time * 0.9) * 3;
+    this.dispFilter.scale.x =
+      14 + Math.sin(this.time * 0.7) * 5 + Math.cos(this.time * 1.1) * 3;
+    this.dispFilter.scale.y =
+      14 + Math.cos(this.time * 0.5) * 5 + Math.sin(this.time * 0.9) * 3;
 
     // Volumetrische Lichtstrahlen: lebendiger wandernder Einfallswinkel +
     // schwankende Intensität → das Licht flackert wie an einer bewegten Oberfläche.
@@ -1025,17 +999,25 @@ export class UnderwaterScene {
       p.s.alpha = 0.05 + (Math.sin(p.phase * 1.3) * 0.5 + 0.5) * 0.06;
     }
 
-    // Kaustik-Bänder wandern (feine Lichtadern an der Oberfläche).
-    for (const child of this.caustics.children) {
-      const g = child as Graphics;
-      const baseY = (g as any).__baseY as number;
-      g.clear();
-      const y = baseY + Math.sin(this.time * 0.8 + baseY * 0.02) * 18;
-      g.moveTo(0, y);
-      for (let x = 0; x <= this.w; x += 40) {
-        g.lineTo(x, y + Math.sin(this.time * 1.4 + x * 0.02) * 6);
+    // Kaustik-Bänder wandern (feine Lichtadern an der Oberfläche). Voller
+    // Neuaufbau (clear + Pfad + Tessellation + Buffer-Upload für alle Bänder)
+    // nur ~12×/s statt jeden Frame — im Pixel-Look nicht zu unterscheiden,
+    // spart auf dem Pi spürbar. Gröberer x-Schritt (war 40) halbiert zudem
+    // die Punktzahl je Band.
+    this.causticsAccum += dt;
+    if (this.causticsAccum >= 1 / 12) {
+      this.causticsAccum = 0;
+      for (const child of this.caustics.children) {
+        const g = child as Graphics;
+        const baseY = (g as any).__baseY as number;
+        g.clear();
+        const y = baseY + Math.sin(this.time * 0.8 + baseY * 0.02) * 18;
+        g.moveTo(0, y);
+        for (let x = 0; x <= this.w; x += 80) {
+          g.lineTo(x, y + Math.sin(this.time * 1.4 + x * 0.02) * 6);
+        }
+        g.stroke({ color: PAL.white, width: 2, alpha: 0.05 + this.noteFlash * 0.15 });
       }
-      g.stroke({ color: PAL.white, width: 2, alpha: 0.05 + this.noteFlash * 0.15 });
     }
 
     // Blasen aufsteigen + wackeln. Rückwärts laufen, damit das Entfernen

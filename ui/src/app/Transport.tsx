@@ -27,7 +27,7 @@ const BTN = 50;
 /** BPM-Wippe: kleiner als die Transport-Tasten, aber noch fingerbreit. */
 const NUDGE = 46;
 
-export type TransportView = "start" | "seq" | "library" | "settings";
+export type TransportView = "start" | "seq" | "library" | "scenes" | "routing" | "mod" | "settings";
 
 export interface TransportProps {
   /** Which top-level page is showing — every one of them is reached from
@@ -130,6 +130,14 @@ export function Transport({ view, onNav, onAddDevice, onCenter, onAddLaneSwitch 
         {t?.playing ? "■" : "▶"}
       </Button>
       <Button
+        className={t?.fillActive ? "transport-nav on" : "transport-nav"}
+        style={{ height: BTN, padding: "0 14px", fontSize: 14, fontWeight: 700, marginRight: 6 }}
+        title="Fill — steps with a 'fill' trig-condition only play while this is on"
+        onClick={() => send({ t: "transport.setFill", active: !t?.fillActive })}
+      >
+        FILL
+      </Button>
+      <Button
         className={view === "seq" ? "transport-nav on" : "transport-nav"}
         style={{ width: BTN, height: BTN, fontSize: 20 }}
         onClick={() => onNav("seq")}
@@ -151,6 +159,30 @@ export function Transport({ view, onNav, onAddDevice, onCenter, onAddLaneSwitch 
         onClick={() => onNav("library")}
       >
         ▤
+      </Button>
+      <Button
+        className={view === "scenes" ? "transport-nav on" : "transport-nav"}
+        style={{ width: BTN, height: BTN, fontSize: 18 }}
+        title="Scenes"
+        onClick={() => onNav("scenes")}
+      >
+        SC
+      </Button>
+      <Button
+        className={view === "routing" ? "transport-nav on" : "transport-nav"}
+        style={{ width: BTN, height: BTN, fontSize: 16 }}
+        title="Routing Hub"
+        onClick={() => onNav("routing")}
+      >
+        RT
+      </Button>
+      <Button
+        className={view === "mod" ? "transport-nav on" : "transport-nav"}
+        style={{ width: BTN, height: BTN, fontSize: 16 }}
+        title="Mod-Matrix"
+        onClick={() => onNav("mod")}
+      >
+        MX
       </Button>
       <Button
         className={view === "settings" ? "transport-nav on" : "transport-nav"}
@@ -192,11 +224,22 @@ export function Transport({ view, onNav, onAddDevice, onCenter, onAddLaneSwitch 
       {view === "start" && onAddLaneSwitch && (
         <Button
           className="transport-nav"
-          style={{ height: BTN, padding: "0 16px", fontSize: 18, fontWeight: 700, marginRight: 16 }}
+          style={{ height: BTN, padding: "0 16px", fontSize: 18, fontWeight: 700, marginRight: 6 }}
           title="Add a button that starts / stops a lane — no MIDI needed"
           onClick={onAddLaneSwitch}
         >
           ＋ Lane switch
+        </Button>
+      )}
+
+      {view === "start" && (
+        <Button
+          className="transport-nav"
+          style={{ height: BTN, padding: "0 16px", fontSize: 18, fontWeight: 700, marginRight: 16 }}
+          title="Add a big knob on the dashboard you can scratch to change the tempo — no MIDI needed"
+          onClick={() => send({ t: "control.addTempoKnob" })}
+        >
+          ＋ Tempo knob
         </Button>
       )}
 

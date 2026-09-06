@@ -16,6 +16,9 @@ import { Overview } from "./overview/Overview";
 import { PortPickerPopup } from "./overview/popups";
 import { BlockDetail } from "./BlockDetail";
 import { BlockLibrary } from "./BlockLibrary";
+import { Scenes } from "./Scenes";
+import { Routing } from "./Routing";
+import { ModMatrix } from "./ModMatrix";
 import { LaneControls } from "./LaneControls";
 import { Dashboard } from "./Dashboard";
 import { ProjectSettings } from "./ProjectSettings";
@@ -27,7 +30,7 @@ import { applyAllSizes } from "./uiSizes";
  *  modal. Dashboard, Sequencer, Block library and Project settings are peers;
  *  `blockDetail` / `laneControls` are the only real drill-ins (they overlay
  *  whichever page opened them). */
-type View = "start" | "seq" | "library" | "settings";
+type View = "start" | "seq" | "library" | "scenes" | "routing" | "mod" | "settings";
 
 type SubScreen =
   | { kind: "blockDetail"; blockId: string }
@@ -84,7 +87,7 @@ export function App() {
           }
           break;
         case "midi.ports":
-          store.setPorts(evt.outputs ?? []);
+          store.setPorts(evt.outputs ?? [], evt.inputs ?? []);
           break;
         case "network.state":
           store.setNetwork(evt);
@@ -146,6 +149,12 @@ export function App() {
               onOpenBlock={(blockId) => setSub({ kind: "blockDetail", blockId })}
             />
           )}
+
+          {view === "scenes" && <Scenes />}
+
+          {view === "routing" && <Routing />}
+
+          {view === "mod" && <ModMatrix />}
 
           {view === "settings" && <ProjectSettings onClose={() => navigate("seq")} />}
 

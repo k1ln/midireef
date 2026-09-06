@@ -223,6 +223,21 @@ export interface EuclidConfig {
   rotation: number; // Rotation des Musters
 }
 
+/** Note-Echo/Delay einer Lane — s. `Lane.echo`, `lane.setEcho`. */
+export interface LaneEcho {
+  repeats: number;
+  rateDiv: number; // Hits pro Viertelnote, wie `RollControl.rateDiv`
+  decay: number; // 0..1 — Velocity-Multiplikator PRO Wiederholung
+}
+
+/** Glide/Portamento einer Lane — sendet CC65 (an/aus) + CC5 (Zeit) EINMALIG
+ *  beim Setzen; der Synth gleitet legato-Noten danach selbst. Kein
+ *  Pitch-Bend-Timing in der Engine, s. `Lane.glide`, `lane.setGlide`. */
+export interface LaneGlide {
+  enabled: boolean;
+  timeCc: number; // 0-127, roher CC5-Wert
+}
+
 export interface BeatLine {
   id: Id;
   name: string; // z.B. "Kick", "Snare"
@@ -501,12 +516,39 @@ export interface SlotTriggerControl extends LaneControlBase {
   slotId: Id;
 }
 
+/** Beat-Repeat/Stutter: halten friert die Lane auf ein Fenster ihrer letzten
+ *  `steps` Steps ein und loopt es, Loslassen setzt exakt dort fort, wo sie
+ *  stand (keine verlorene Zeit) — s. `Engine::press_repeat` in engine.rs. */
+export interface BeatRepeatControl extends LaneControlBase {
+  kind: "beatRepeat";
+  steps: number; // in Bausteinsteps der laufenden Auflösung, nicht absolute Pulse
+}
+
+/** Manueller Roll: halten retriggert `note` im festen Raster, unabhängig vom
+ *  Sequencer-Playhead der Lane — Finger-Drumming-Roll/Wirbel. */
+export interface RollControl extends LaneControlBase {
+  kind: "roll";
+  note: MidiNote;
+  velocity: Midi7Bit;
+  rateDiv: number; // Hits pro Viertelnote — 4 = Sechzehntel, 8 = 32tel, …
+}
+
+/** Scatter/Glitch: halten macht jeden Step-Trigger dieser Lane einen
+ *  ZUFÄLLIGEN Step desselben Blocks lesen statt des eigenen — Timing bleibt
+ *  exakt im Raster, nur der Inhalt glitcht. Loslassen = normal. */
+export interface ScatterControl extends LaneControlBase {
+  kind: "scatter";
+}
+
 export type LaneControl =
   | NoteControl
   | DrumButtonControl
   | MidiSignalControl
   | MacroKnobControl
-  | SlotTriggerControl;
+  | SlotTriggerControl
+  | BeatRepeatControl
+  | RollControl
+  | ScatterControl;
 
 /**
  * Lane. Mehrere aktive Lanes eines Devices klingen gleichzeitig (parallel/polyphon).
@@ -575,6 +617,10 @@ export interface Lane {
   /** Humanize: leichte Zufallsstreuung von Timing/Velocity (0..1). */
   humanizeTiming?: number;
   humanizeVelocity?: number;
+  /** Note-Echo/Delay: abklingende Wiederholungen jeder gespielten Note. */
+  echo?: LaneEcho;
+  /** Glide/Portamento — sendet CC65/CC5, kein Engine-Timing. */
+  glide?: LaneGlide;
 
   slots: LaneSlot[]; // Baustein-Kette
   controls: LaneControl[]; // Schnell-Controls (rollenabhängig)
@@ -966,6 +1012,8 @@ export type Command =
   | { t: "lane.setTriggerQuantize"; laneId: Id; quantize: TriggerQuantize }
   | { t: "lane.setSwing"; laneId: Id; swing?: number }
   | { t: "lane.setHumanize"; laneId: Id; timing?: number; velocity?: number }
+  | { t: "lane.setEcho"; laneId: Id; echo: LaneEcho | null } // null löst es
+  | { t: "lane.setGlide"; laneId: Id; glide: LaneGlide | null } // sendet CC65/CC5, kein Engine-Timing
   | { t: "lane.setKeytrackStarts"; laneId: Id; starts: boolean } // s. Lane.keytrackSourceStarts
   // ── Lane-Controls (Schnellbedienung) ──
   // `add` schickt ein Control ohne `id`/`order` — der Server vergibt beides
@@ -1011,6 +1059,7 @@ export type Command =
   | { t: "beat.setLineMuted"; blockId: Id; lineId: Id; muted: boolean }
   | { t: "beat.setLineNote"; blockId: Id; lineId: Id; note: MidiNote } // welche MIDI-Note diese Drum-Line auslöst (z.B. 36 = Kick am TR-6S)
   | { t: "beat.setEuclid"; blockId: Id; lineId: Id; euclid: EuclidConfig }
+  | { t: "beat.setChokeGroup"; blockId: Id; lineId: Id; chokeGroup?: number } // fehlt/undefined löst die Gruppe
   // Neue Note an Step hinzufügen — Steps können mehrere gleichzeitige Noten
   // tragen (Akkord-Stack). Gibt es die Tonhöhe an diesem Step schon, entsteht
   // KEIN zweiter Eintrag: mitgeschickte velocity/lengthSteps schreiben die
@@ -1062,11 +1111,13 @@ export type Command =
   | { t: "routing.setRouteEnabled"; routeId: Id; enabled: boolean }
   | { t: "routing.activateScene"; sceneId: Id } // Routing-Scene on-the-fly
   | { t: "routing.saveScene"; name: string }
+  | { t: "routing.deleteScene"; sceneId: Id }
   // ── Modulation ──
   | { t: "mod.addModulator"; modulator: GlobalModulator }
   | { t: "mod.updateModulator"; modulator: GlobalModulator }
   | { t: "mod.removeModulator"; modulatorId: Id }
   | { t: "mod.addRoute"; route: ModRoute }
+  | { t: "mod.updateRoute"; route: ModRoute }
   | { t: "mod.removeRoute"; routeId: Id }
   // ── Device & Profile ──
   | { t: "device.setSendClock"; deviceId: Id; sendClock: boolean }

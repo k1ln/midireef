@@ -29,6 +29,51 @@ struct CNote {
     len_steps: u32,
     note: u8,
     vel: u8,
+    m: StepMod,
+}
+
+/// EIN Beat-Hit an einem Step (mehrere pro Step möglich — z.B. Kick+Hat
+/// gleichzeitig). Ersetzt das frühere reine `(note, vel)`-Tupel, um
+/// Choke-Gruppe und Step-Modulation mitzuführen.
+#[derive(Clone, Copy)]
+struct BeatHit {
+    note: u8,
+    vel: u8,
+    m: StepMod,
+    /// `BeatLine.chokeGroup` — Hits derselben Gruppe schneiden sich beim
+    /// Auslösen gegenseitig ab (Hihat open/closed), s. `Engine::choke`.
+    choke_group: Option<u32>,
+}
+
+/// Trig-Condition (`shared/model.ts`s `TrigCondition`): zusätzliches Gate
+/// neben `StepMod.probability` — ein Hit braucht BEIDE (falls gesetzt), um zu
+/// klingen. `First`/`NotFirst`/`Ratio` zählen an `Playback::loops_done` (wie
+/// oft der laufende Block schon durchgelaufen ist), `Fill`/`NotFill` an
+/// `Engine::fill_active` (Performance-Taste, `transport.setFill`).
+#[derive(Debug, Clone, Copy)]
+enum TrigCondition {
+    Fill,
+    NotFill,
+    First,
+    NotFirst,
+    /// Feuert im a-ten von je b Durchläufen — `(a, b)`, 1-basiert.
+    Ratio(u32, u32),
+    /// Eigene Bedingungs-Wahrscheinlichkeit — unabhängig von `StepMod.probability`.
+    Probability(f32),
+}
+
+/// Per-Step-/Per-Note-Modulation (`StepMod` in `shared/model.ts`). Fehlende
+/// Felder in der Baustein-JSON parsen als "neutral": immer spielen (keine
+/// Wahrscheinlichkeit), kein Ratchet (1×), kein Nudge, keine Bedingung.
+#[derive(Clone, Copy, Default)]
+struct StepMod {
+    /// 0..1 — `None` heißt IMMER (100%), s. `shared/model.ts`s `StepMod.probability`.
+    probability: Option<f32>,
+    /// Retrigger-Anzahl innerhalb des Steps — 1 = kein Ratchet.
+    ratchet: u32,
+    /// -1..1, Bruchteil eines Steps früher/später (Nudge).
+    micro_timing: f32,
+    condition: Option<TrigCondition>,
 }
 
 /// Ziel einer CC-*Lane*: (Port, Kanal, CC-Nummer), aufgelöst aus dem
@@ -331,8 +376,8 @@ struct CcAutomation {
 
 enum CKind {
     Melody(Vec<CNote>),
-    /// pro Step eine Liste aus (Note, Velocity)
-    Beat(Vec<Vec<(u8, u8)>>),
+    /// pro Step eine Liste aus Hits (mehrere Lines können denselben Step treffen)
+    Beat(Vec<Vec<BeatHit>>),
     Cc(CcAutomation),
     /// Akkord: mehrere Noten pro Step. Spielt exakt wie `Melody` — der eigene
     /// Zweig existiert nur, damit der Runtime-Snapshot den Typ korrekt meldet.
@@ -364,6 +409,32 @@ struct CBlock {
 struct CcSendState {
     last_val: Option<u8>,
     last_sent: Instant,
+}
+
+/// Kompilierter globaler Modulator (`GlobalModulator` in `shared/model.ts`,
+/// Mod-Matrix) — ein taktsynchroner LFO, unabhängig von jeder Lane, der über
+/// `CModRoute`s mehrere CC-Ziele gleichzeitig ansteuern kann.
+struct CModulator {
+    id: String,
+    waveform: String,
+    rate_bars: f64,
+    phase: f64,
+    bipolar: bool,
+}
+
+/// Kompiliertes Mod-Matrix-Ziel: (Port, Kanal, CC-Nummer) schon aus
+/// `ModRoute.deviceId` aufgelöst, wie bei `CcTarget`.
+struct CModRoute {
+    id: String,
+    modulator_id: String,
+    port: String,
+    channel: u8,
+    cc_number: u8,
+    /// -1..1 — der Modulatorwert (0..1 oder -1..1, je `bipolar`) wird damit
+    /// skaliert und um CC 64 zentriert gesendet (Standard-Mod-Matrix-
+    /// Konvention: Tiefe 0 = immer 64, das Ziel braucht seinen eigenen
+    /// Basiswert von woanders).
+    depth: f64,
 }
 
 /// Eigenständige „▶ Play" im Baustein-Detail: spielt GENAU einen Baustein
@@ -419,6 +490,15 @@ struct CLane {
     /// starten/halten (wie ein externer MIDI-Trigger), statt nur die Rate zu
     /// treiben? S. `Lane::keytrack_source_starts`.
     keytrack_source_starts: bool,
+    /// MIDI-Kanal dieser Lane — für `press_roll`, das keinen Block braucht.
+    channel: u8,
+    /// `Lane.swing` — überschreibt `Engine::project_swing`, `None` = Projekt-Default.
+    swing: Option<f64>,
+    /// `Lane.humanizeTiming`/`humanizeVelocity` (0..1, `None` = aus).
+    humanize_timing: Option<f64>,
+    humanize_velocity: Option<f64>,
+    /// `Lane.echo` — `None` = aus, s. `EchoConfig`.
+    echo: Option<EchoConfig>,
     blocks: Vec<CBlock>,
 }
 
@@ -451,6 +531,26 @@ struct Playback {
     /// LFO-Key-Tracking von CC-Bausteinen (`rateKeyTrack`). `None` bei Touch-
     /// oder Sequencer-Auslösung ohne Note.
     trigger_note: Option<u8>,
+    /// Beat-Repeat/Stutter (`press_repeat`/`release_repeat`): `Some` friert
+    /// `pos` ein und loopt stattdessen ein kurzes Fenster der jüngsten
+    /// Vergangenheit, bis losgelassen wird — s. `RepeatState`.
+    repeat: Option<RepeatState>,
+    /// Scatter/Glitch (`press_scatter`/`release_scatter`): `pos` läuft normal
+    /// weiter (Timing/Wrap unangetastet), aber JEDER Step-Trigger liest den
+    /// Inhalt eines ZUFÄLLIGEN Steps desselben Blocks statt des eigenen —
+    /// "welcher Step" wird neu gewürfelt, "wann" bleibt exakt im Raster.
+    scatter: bool,
+}
+
+/// Aktives Beat-Repeat/Stutter EINER Lane: loopt `[window_start,
+/// window_start + window_len)` (in Pulsen, innerhalb des laufenden Blocks)
+/// endlos, während `Playback::pos` selbst eingefroren bleibt — beim
+/// Loslassen läuft die Lane exakt dort weiter, als wäre keine Zeit vergangen.
+#[derive(Clone, Copy)]
+struct RepeatState {
+    window_start: u32,
+    window_len: u32,
+    cursor: u32,
 }
 
 struct PendingOff {
@@ -460,6 +560,54 @@ struct PendingOff {
     at: u64, // absoluter Puls
     /// Index der Lane, die dieses Note-Off erzeugt hat — `release_slot` kann so
     /// gezielt die noch offenen Noten genau dieser Lane sofort abschalten.
+    lane_idx: usize,
+    /// `BeatHit::choke_group`, falls dieses Note-Off zu einem Choke-fähigen
+    /// Hit gehört — s. `Engine::choke`.
+    choke_group: Option<u32>,
+}
+
+/// Ein NOCH NICHT gesendetes Note-On (Humanize-Timing/Micro-Timing/Ratchet-
+/// Retrigger verschieben den Zünd-Zeitpunkt in die Zukunft). Wird wie
+/// `PendingOff` in `on_pulse` geflusht, sobald `at` erreicht ist — die
+/// meisten Hits (kein Shift) kommen nie hier an, sondern senden sofort.
+struct PendingOn {
+    port: String,
+    ch: u8,
+    note: u8,
+    vel: u8,
+    at: u64,
+    off_at: u64,
+    lane_idx: usize,
+    choke_group: Option<u32>,
+}
+
+/// Note-Echo/Delay (`Lane.echo`): jede gespielte Note dieser Lane bekommt
+/// zusätzlich `repeats` abklingende Wiederholungen im festen `rate_div`-Raster
+/// (Hits pro Viertelnote, wie beim Roll) — anders als `StepMod.ratchet`
+/// (fest, INNERHALB eines Steps) ein offener, leiser werdender Nachhall.
+#[derive(Clone, Copy)]
+struct EchoConfig {
+    repeats: u32,
+    rate_div: u32,
+    /// 0..1 — Velocity-Multiplikator PRO Wiederholung (kumulativ: `decay^n`).
+    decay: f32,
+}
+
+/// Ein gehaltener Roll (`press_roll`/`release_roll`, LaneControl "roll"):
+/// retriggert `note` in festem Puls-Abstand, unabhängig vom Sequencer-
+/// Playhead der Lane — für Finger-Drumming-Rolls (Snare-Wirbel o.ä.).
+struct ActiveRoll {
+    /// `LaneControl.id` — eindeutig, unterscheidet mehrere gleichzeitig
+    /// gehaltene Rolls (auch auf derselben Lane, unterschiedliche Noten).
+    control_key: String,
+    port: String,
+    ch: u8,
+    note: u8,
+    vel: u8,
+    rate_pulses: u32,
+    next_at: u64,
+    /// Für `release_slot`/`stop_lane`-artiges Note-Off-Bookkeeping, falls die
+    /// Lane parallel gestoppt wird — Rolls hängen sonst an nichts.
     lane_idx: usize,
 }
 
@@ -509,6 +657,11 @@ pub struct Engine {
     lanes: Vec<CLane>,
     playback: Vec<Playback>,
     pending: Vec<PendingOff>,
+    /// Note-Ons mit Verzögerung (Humanize-Timing, Micro-Timing, Ratchet-
+    /// Retrigger) — fällig werden sie wie `pending` in `on_pulse` geflusht,
+    /// die meisten Hits (kein Shift) umgehen diese Warteschlange komplett und
+    /// senden sofort in `fire_step`.
+    pending_on: Vec<PendingOn>,
     gen_seen: u64,
     /// Ports der Devices mit aktiviertem `sendClock` — Clock/Start/Stop gehen
     /// NUR dorthin, nicht an jeden offenen Ausgang (s. `Device::send_clock`).
@@ -532,6 +685,21 @@ pub struct Engine {
     playing: bool,
     /// Pulse pro Takt aus der Projekt-Taktart — Grenze für "nextBar".
     bar_pulses: u32,
+    /// Projekt-Default-Swing (0..1) — Lanes ohne eigenen `Lane.swing`-Override
+    /// übernehmen ihn. S. `on_pulse`s Step-Boundary-Berechnung.
+    project_swing: f64,
+    /// Performance-Taste „Fill" (`transport.setFill`) — treibt
+    /// `TrigCondition::Fill`/`NotFill`.
+    fill_active: bool,
+    /// Aktive Rolls (`press_roll`/`release_roll`, LaneControl "roll") — pro
+    /// Control-Id höchstens einer, unabhängig vom Sequencer-Playhead der Lane.
+    rolls: Vec<ActiveRoll>,
+    /// Mod-Matrix: globale Modulatoren + ihre Ziele, kompiliert bei `rebuild`.
+    modulators: Vec<CModulator>,
+    mod_routes: Vec<CModRoute>,
+    /// Letzter gesendeter CC-Wert je `ModRoute.id` — Sende-Rate-Limit wie bei
+    /// `cc_send_state`.
+    mod_send_state: HashMap<String, CcSendState>,
     /// Eigenständige Baustein-Vorschau des Baustein-Details (s. `PreviewPlayback`).
     /// `None` = kein Editor mit aktiver „▶ Play" gerade offen.
     preview: Option<PreviewPlayback>,
@@ -552,6 +720,7 @@ impl Engine {
             lanes: Vec::new(),
             playback: Vec::new(),
             pending: Vec::new(),
+            pending_on: Vec::new(),
             gen_seen: u64::MAX,
             clock_ports: Vec::new(),
             elapsed_secs: 0.0,
@@ -560,6 +729,12 @@ impl Engine {
             cc_restores: Vec::new(),
             playing: false,
             bar_pulses: pulses_per_bar("4/4"),
+            project_swing: 0.0,
+            fill_active: false,
+            rolls: Vec::new(),
+            modulators: Vec::new(),
+            mod_routes: Vec::new(),
+            mod_send_state: HashMap::new(),
             preview: None,
             pending_gate_releases: Vec::new(),
             keytrack_gate_count: HashMap::new(),
@@ -587,6 +762,8 @@ impl Engine {
         }
         self.midi.all_notes_off();
         self.pending.clear();
+        self.pending_on.clear();
+        self.rolls.clear();
         // Nicht-destruktive CC-Ziele auf ihre Ruhelage zurückstellen — sonst
         // bliebe das Gerät nach dem Stop dort stehen, wo die Automation zuletzt war.
         self.restore_cc_targets(false);
@@ -639,6 +816,8 @@ impl Engine {
     pub fn panic(&mut self) {
         self.midi.all_notes_off();
         self.pending.clear();
+        self.pending_on.clear();
+        self.rolls.clear();
     }
 
     /// Löst den Baustein hinter `slot_id` in der Lane `lane_id` aus — je nach
@@ -816,9 +995,55 @@ impl Engine {
         self.playback[idx].held = false;
         self.playback[idx].pos = 0;
         self.playback[idx].loops_done = 0;
+        self.flush_lane_note_offs(idx);
+    }
 
-        // Offene Note-Offs dieser Lane herauslösen und pro Port in EINEM Packet
-        // rausschicken — wie die Batch-Logik in `on_pulse`.
+    /// Stoppt eine Lane sofort, UNABHÄNGIG vom Play-Mode — Gegenstück zu
+    /// `press_slot`/`trigger_slot` für Scene-Targets mit `action: "stop"`.
+    /// Anders als `release_slot` (nur Touch-Up-Semantik für "hold") wirkt das
+    /// auf jeden Play-Mode: eine Scene muss auch eine laufende
+    /// sequential/oneShot-Lane zum Schweigen bringen können.
+    pub fn stop_lane(&mut self, lane_id: &str) {
+        let Some(idx) = self.lanes.iter().position(|l| l.id == lane_id) else {
+            return;
+        };
+        self.playback[idx].queued = None;
+        self.playback[idx].running = false;
+        self.playback[idx].held = false;
+        self.playback[idx].pos = 0;
+        self.playback[idx].loops_done = 0;
+        self.flush_lane_note_offs(idx);
+    }
+
+    /// Löst EIN Scene-Target aus (s. `Scene`/`SceneTarget` in `shared/model.ts`).
+    /// `"trigger"` ohne `slot_id` nimmt den gerade aktiven Slot der Lane, sonst
+    /// den ersten — genau die in `SceneTarget.slotId`s Doc beschriebene Regel.
+    pub fn fire_scene_target(&mut self, lane_id: &str, action: &str, slot_id: Option<&str>) {
+        match action {
+            "stop" => self.stop_lane(lane_id),
+            "trigger" => {
+                let Some(idx) = self.lanes.iter().position(|l| l.id == lane_id) else {
+                    return;
+                };
+                let resolved = slot_id.map(str::to_string).or_else(|| {
+                    self.lanes[idx]
+                        .blocks
+                        .get(self.playback[idx].slot)
+                        .or_else(|| self.lanes[idx].blocks.first())
+                        .map(|b| b.slot_id.clone())
+                });
+                if let Some(sid) = resolved {
+                    self.trigger_slot(lane_id, &sid, None);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Offene Note-Offs EINER Lane herauslösen und pro Port in einem Packet
+    /// rausschicken — wie die Batch-Logik in `on_pulse`. Gemeinsamer Kern von
+    /// `release_slot` und `stop_lane`.
+    fn flush_lane_note_offs(&mut self, idx: usize) {
         let mut off_batches: std::collections::HashMap<String, Vec<u8>> = std::collections::HashMap::new();
         let mut i = 0;
         while i < self.pending.len() {
@@ -835,6 +1060,139 @@ impl Engine {
         for (port, bytes) in off_batches {
             self.midi.send(&port, &bytes);
         }
+    }
+
+    /// Touch-Down auf einen Beat-Repeat-Baustein-Control: friert die Lane auf
+    /// ein Fenster der letzten `steps` Steps ein und loopt es, bis
+    /// `release_repeat` kommt. `steps` ist in Bausteinsteps gemeint (1 = das
+    /// jüngste 1/x-tel, wobei x die Auflösung des laufenden Blocks ist), nicht
+    /// in absoluten Pulsen — so bleibt "1 Step" unabhängig vom BPM/der
+    /// Block-Auflösung immer "das letzte Steppchen". Ein bereits aktives
+    /// Repeat auf derselben Lane wird ignoriert (kein Re-Trigger mitten drin).
+    pub fn press_repeat(&mut self, lane_id: &str, steps: u32) {
+        let Some(idx) = self.lanes.iter().position(|l| l.id == lane_id) else {
+            return;
+        };
+        if self.playback[idx].repeat.is_some() || self.lanes[idx].blocks.is_empty() {
+            return;
+        }
+        let slot = self.playback[idx].slot % self.lanes[idx].blocks.len();
+        let block = &self.lanes[idx].blocks[slot];
+        let len = block.len_pulses.max(1);
+        let window_len = (block.pulses_per_step.max(1) * steps.max(1)).min(len);
+        let pos = self.playback[idx].pos;
+        // Fenster endet GENAU an `pos` (die zuletzt gespielte Vergangenheit),
+        // nicht danach — sonst würde ein noch nicht gespielter Step mitgezogen.
+        let window_start = (pos + len - window_len % len) % len;
+        self.playback[idx].repeat = Some(RepeatState {
+            window_start,
+            window_len,
+            cursor: window_start,
+        });
+    }
+
+    /// Touch-Up: Repeat beenden, die Lane läuft ab `Playback::pos` weiter —
+    /// der stand während des gesamten Haltens still, es ist also kein
+    /// „Nachholen" nötig. No-op ohne aktives Repeat.
+    pub fn release_repeat(&mut self, lane_id: &str) {
+        if let Some(idx) = self.lanes.iter().position(|l| l.id == lane_id) {
+            self.playback[idx].repeat = None;
+        }
+    }
+
+    /// Touch-Down auf einen "scatter"-LaneControl: ab jetzt liest jeder
+    /// Step-Trigger dieser Lane den Inhalt eines ZUFÄLLIGEN Steps desselben
+    /// Blocks statt des eigenen — Timing/Wrap bleiben exakt im Raster, nur
+    /// der Inhalt glitcht. `release_scatter` schaltet zurück auf normal.
+    pub fn press_scatter(&mut self, lane_id: &str) {
+        if let Some(idx) = self.lanes.iter().position(|l| l.id == lane_id) {
+            self.playback[idx].scatter = true;
+        }
+    }
+
+    pub fn release_scatter(&mut self, lane_id: &str) {
+        if let Some(idx) = self.lanes.iter().position(|l| l.id == lane_id) {
+            self.playback[idx].scatter = false;
+        }
+    }
+
+    /// Mod-Matrix: wertet jeden globalen Modulator EINMAL pro Puls aus
+    /// (taktsynchron über `Engine::bar_pulses`, unabhängig von jeder Lane) und
+    /// sendet für jede Route ein CC — zentriert um 64, skaliert mit `depth`
+    /// (s. `CModRoute`s Doc-Kommentar). Rate-limitiert wie CC-Bausteine
+    /// (`MIN_CC_SEND_INTERVAL`, gleicher Wert-und-Zeit-Vergleich).
+    fn eval_global_modulators(&mut self, global_pulse: u64) {
+        if self.modulators.is_empty() || self.mod_routes.is_empty() {
+            return;
+        }
+        let ppb = self.bar_pulses.max(1) as f64;
+        let mut values: HashMap<&str, f64> = HashMap::new();
+        for m in &self.modulators {
+            let raw_phase = (global_pulse as f64 / ppb) / m.rate_bars + m.phase;
+            let v01 = eval_waveform(&m.waveform, raw_phase);
+            values.insert(m.id.as_str(), if m.bipolar { v01 * 2.0 - 1.0 } else { v01 });
+        }
+        let now = Instant::now();
+        let mut sends: Vec<(String, Vec<u8>)> = Vec::new();
+        for route in &self.mod_routes {
+            let Some(&v) = values.get(route.modulator_id.as_str()) else {
+                continue;
+            };
+            let cc_val = (64.0 + v * route.depth * 63.0).round().clamp(0.0, 127.0) as u8;
+            let state = self
+                .mod_send_state
+                .entry(route.id.clone())
+                .or_insert_with(|| CcSendState { last_val: None, last_sent: now - MIN_CC_SEND_INTERVAL });
+            if state.last_val == Some(cc_val) || now.duration_since(state.last_sent) < MIN_CC_SEND_INTERVAL {
+                continue;
+            }
+            state.last_val = Some(cc_val);
+            state.last_sent = now;
+            sends.push((route.port.clone(), vec![0xB0 | (route.channel - 1), route.cc_number, cc_val]));
+        }
+        for (port, bytes) in sends {
+            self.midi.send(&port, &bytes);
+        }
+    }
+
+    /// Performance-Taste „Fill" (`transport.setFill`) — treibt
+    /// `TrigCondition::Fill`/`NotFill` in `fire_step`.
+    pub fn set_fill(&mut self, active: bool) {
+        self.fill_active = active;
+    }
+
+    /// Touch-Down auf einen "roll"-LaneControl: startet sofort einen Hit und
+    /// merkt den Roll aktiv vor — `on_pulse` retriggert ihn danach im festen
+    /// `rate_pulses`-Abstand, bis `release_roll`. `control_key` (die
+    /// `LaneControl.id`) hält mehrere gleichzeitige Rolls auseinander.
+    pub fn press_roll(&mut self, control_key: &str, lane_id: &str, note: u8, vel: u8, rate_pulses: u32, global_pulse: u64) {
+        let Some(idx) = self.lanes.iter().position(|l| l.id == lane_id) else {
+            return;
+        };
+        if self.rolls.iter().any(|r| r.control_key == control_key) {
+            return; // schon gehalten — kein zweiter Start
+        }
+        let port = self.lanes[idx].port.clone();
+        let ch = self.lanes[idx].channel;
+        let rate_pulses = rate_pulses.max(1);
+        self.midi.send(&port, &[0x90 | (ch - 1), note, vel]);
+        self.schedule_note_off(&port, ch, note, global_pulse + rate_pulses as u64, idx, None);
+        self.rolls.push(ActiveRoll {
+            control_key: control_key.to_string(),
+            port,
+            ch,
+            note,
+            vel,
+            rate_pulses,
+            next_at: global_pulse + rate_pulses as u64,
+            lane_idx: idx,
+        });
+    }
+
+    /// Touch-Up: den Roll mit dieser `control_key` beenden. No-op, wenn
+    /// keiner (mehr) läuft.
+    pub fn release_roll(&mut self, control_key: &str) {
+        self.rolls.retain(|r| r.control_key != control_key);
     }
 
     /// Sendet rohe MIDI-Bytes an einen Port (für Live-Controls vom Dashboard).
@@ -876,6 +1234,7 @@ impl Engine {
         // Taktlänge fürs "nextBar"-Raster — die Taktart kann sich im Projekt
         // ändern, also bei jedem Rebuild mitziehen.
         self.bar_pulses = pulses_per_bar(&project.time_signature);
+        self.project_swing = project.swing;
         // Bisherige Playback-Positionen je Lane-ID merken.
         let prev: std::collections::HashMap<String, Playback> = self
             .lanes
@@ -927,6 +1286,15 @@ impl Engine {
                     chain,
                     keytrack_source: None, // unten aufgelöst
                     keytrack_source_starts: lane.keytrack_source_starts,
+                    channel: lane_channel,
+                    swing: lane.swing,
+                    humanize_timing: lane.humanize_timing,
+                    humanize_velocity: lane.humanize_velocity,
+                    echo: lane.echo.as_ref().map(|e| EchoConfig {
+                        repeats: e.repeats.max(1),
+                        rate_div: e.rate_div.max(1),
+                        decay: e.decay.clamp(0.0, 1.0) as f32,
+                    }),
                     blocks,
                 });
             }
@@ -960,6 +1328,8 @@ impl Engine {
                         held: false,
                         queued: None,
                         trigger_note: None,
+                        repeat: None,
+                        scatter: false,
                     });
                 if l.blocks.is_empty() {
                     pb.slot = 0;
@@ -970,6 +1340,11 @@ impl Engine {
                         pb.pos = 0;
                     }
                 }
+                // Ein laufendes Beat-Repeat bezieht sich auf Pulse-Offsets DES
+                // ALTEN Blocks — nach einem Rebuild (Baustein editiert, Länge
+                // geändert) könnten die ungültig sein. Sicherer Reset statt
+                // stiller Fehlbedienung; wer noch hält, tippt einfach neu an.
+                pb.repeat = None;
                 pb
             })
             .collect();
@@ -983,6 +1358,41 @@ impl Engine {
         self.cc_send_state.retain(|k, _| active_slot_ids.contains(k.as_str()));
 
         self.lanes = lanes;
+
+        // Mod-Matrix: globale Modulatoren + ihre Ziele neu kompilieren — Ziel
+        // ist hier direkt (Port, Kanal, CC), nicht über eine Lane aufgelöst.
+        self.modulators = project
+            .modulators
+            .iter()
+            .map(|m| CModulator {
+                id: m.id.clone(),
+                waveform: m.waveform.clone(),
+                rate_bars: m.rate_bars.max(0.0001),
+                phase: m.phase,
+                bipolar: m.bipolar,
+            })
+            .collect();
+        self.mod_routes = project
+            .mod_routes
+            .iter()
+            .filter_map(|r| {
+                let dev = project.devices.iter().find(|d| d.id == r.device_id)?;
+                if dev.midi_out_port.is_empty() {
+                    return None;
+                }
+                Some(CModRoute {
+                    id: r.id.clone(),
+                    modulator_id: r.modulator_id.clone(),
+                    port: dev.midi_out_port.clone(),
+                    channel: r.channel.unwrap_or(1).clamp(1, 16),
+                    cc_number: r.cc_number.min(127),
+                    depth: r.depth.clamp(-1.0, 1.0),
+                })
+            })
+            .collect();
+        let active_route_ids: std::collections::HashSet<&str> =
+            self.mod_routes.iter().map(|r| r.id.as_str()).collect();
+        self.mod_send_state.retain(|k, _| active_route_ids.contains(k.as_str()));
     }
 
     /// Ein Puls Vorlauf: fällige Note-Offs senden, dann pro Lane Steps auslösen.
@@ -990,6 +1400,7 @@ impl Engine {
     /// treibt `elapsed_secs`, die Zeitbasis frei laufender (Hz-)LFOs.
     pub fn on_pulse(&mut self, global_pulse: u64, dt_secs: f64) {
         self.elapsed_secs += dt_secs;
+        self.eval_global_modulators(global_pulse);
 
         // Fällige Note-Offs: pro Ziel-Port zu EINEM Puffer zusammenfassen und in
         // einem einzigen `send()` (= ein CoreMIDI-Packet) rausschicken, statt pro
@@ -1010,6 +1421,57 @@ impl Engine {
         }
         for (port, bytes) in off_batches {
             self.midi.send(&port, &bytes);
+        }
+
+        // Fällige VERSCHOBENE Note-Ons (Humanize-Timing/Nudge/Ratchet, s.
+        // `PendingOn`) — spiegelt die Note-Off-Batch oben, plant aber
+        // zusätzlich das passende Note-Off nach und choked ggf. die Gruppe.
+        let mut on_batches: std::collections::HashMap<String, Vec<u8>> = std::collections::HashMap::new();
+        let mut i = 0;
+        while i < self.pending_on.len() {
+            if self.pending_on[i].at <= global_pulse {
+                let on = self.pending_on.swap_remove(i);
+                on_batches
+                    .entry(on.port.clone())
+                    .or_default()
+                    .extend_from_slice(&[0x90 | (on.ch - 1), on.note, on.vel]);
+                self.schedule_note_off(&on.port, on.ch, on.note, on.off_at, on.lane_idx, on.choke_group);
+                if let Some(g) = on.choke_group {
+                    self.choke(&on.port, on.ch, g, on.note);
+                }
+            } else {
+                i += 1;
+            }
+        }
+        for (port, bytes) in on_batches {
+            self.midi.send(&port, &bytes);
+        }
+
+        // Fällige Roll-Retrigger (`press_roll`/`release_roll`) — unabhängig
+        // vom Sequencer-Playhead, läuft nur solange die Taste gehalten wird.
+        // Fällige Rolls einsammeln (mit NEUEM `next_at`/Off-Fälligkeit) und
+        // dabei gleich weiterrücken — `schedule_note_off` braucht `&mut self`
+        // und muss deshalb NACH dieser Schleife laufen, nicht während der
+        // Leihe von `self.rolls`.
+        let mut due_rolls: Vec<(String, u8, u8, u8, u64, usize)> = Vec::new();
+        for roll in self.rolls.iter_mut() {
+            if roll.next_at <= global_pulse {
+                // Off-Fälligkeit = NÄCHSTER Retrigger-Punkt, nicht der aktuelle
+                // — sonst bekäme die Note eine Länge von 0.
+                let off_at = roll.next_at + roll.rate_pulses as u64;
+                due_rolls.push((roll.port.clone(), roll.ch, roll.note, roll.vel, off_at, roll.lane_idx));
+                roll.next_at = off_at;
+            }
+        }
+        let mut roll_batches: std::collections::HashMap<String, Vec<u8>> = std::collections::HashMap::new();
+        for (port, ch, note, vel, ..) in &due_rolls {
+            roll_batches.entry(port.clone()).or_default().extend_from_slice(&[0x90 | (ch - 1), *note, *vel]);
+        }
+        for (port, bytes) in roll_batches {
+            self.midi.send(&port, &bytes);
+        }
+        for (port, ch, note, _vel, off_at, lane_idx) in due_rolls {
+            self.schedule_note_off(&port, ch, note, off_at, lane_idx, None);
         }
 
         // Fällige Keytrack-Gate-Freigaben (`keytrack_source_starts`): sobald
@@ -1050,11 +1512,48 @@ impl Engine {
                 (pb.slot % self.lanes[idx].blocks.len(), pb.pos)
             };
 
-            // Step-Boundary?
+            // Beat-Repeat aktiv: `pos` bleibt eingefroren (s. `press_repeat`),
+            // stattdessen an `cursor` feuern und NUR innerhalb des Fensters
+            // weiterrücken — die normale Fortschaltung unten wird übersprungen.
+            if let Some(rep) = self.playback[idx].repeat {
+                let pps = self.lanes[idx].blocks[slot].pulses_per_step.max(1);
+                if rep.cursor % pps == 0 {
+                    let step = rep.cursor / pps;
+                    self.fire_step(idx, slot, step, global_pulse);
+                }
+                self.eval_cc_pulse(idx, slot, rep.cursor, global_pulse);
+                let mut cursor = rep.cursor + 1;
+                if cursor >= rep.window_start + rep.window_len {
+                    cursor = rep.window_start;
+                }
+                self.playback[idx].repeat = Some(RepeatState { cursor, ..rep });
+                continue;
+            }
+
+            // Step-Boundary? Ungerade Steps ggf. um `swing_pulses` verzögert —
+            // Block-Länge/Wrap bleiben unswinged (der Vergleich unten prüft nur,
+            // WANN innerhalb des eigenen Step-Fensters gezündet wird), bei
+            // Swing 0 identisch zum alten `pos % pps == 0`.
             let pps = self.lanes[idx].blocks[slot].pulses_per_step.max(1);
-            if pos % pps == 0 {
-                let step = pos / pps;
-                self.fire_step(idx, slot, step, global_pulse);
+            let step = pos / pps;
+            let in_step = pos % pps;
+            let swing = self.lanes[idx].swing.unwrap_or(self.project_swing).clamp(0.0, 1.0);
+            let swing_pulses = ((swing * pps as f64 * 0.5).round() as u32).min(pps.saturating_sub(1));
+            let trigger_at = if step % 2 == 1 { swing_pulses } else { 0 };
+            if in_step == trigger_at {
+                // Scatter/Glitch: welcher STEP feuert wird neu gewürfelt, WANN
+                // er feuert bleibt exakt im (ggf. geswingten) Raster.
+                let fire_step_idx = if self.playback[idx].scatter {
+                    let len = self.lanes[idx].blocks[slot].len_pulses.max(1);
+                    let total_steps = (len / pps).max(1);
+                    let seed = global_pulse
+                        .wrapping_mul(0xD1B54A32D192ED03)
+                        .wrapping_add(idx as u64);
+                    (pseudo_rand(seed) * total_steps as f64) as u32 % total_steps
+                } else {
+                    step
+                };
+                self.fire_step(idx, slot, fire_step_idx, global_pulse);
             }
 
             // CC/LFO: anders als Note-Steps kontinuierlich JEDEN Puls auswerten
@@ -1146,28 +1645,50 @@ impl Engine {
     }
 
     fn fire_step(&mut self, lane_idx: usize, slot: usize, step: u32, global_pulse: u64) {
+        struct Hit {
+            note: u8,
+            vel: u8,
+            len_pulses: u64,
+            m: StepMod,
+            choke_group: Option<u32>,
+        }
+
         let lane = &self.lanes[lane_idx];
         let port = lane.port.clone();
         let block = &lane.blocks[slot];
         let ch = block.channel;
-        let pps = block.pulses_per_step.max(1);
+        let pps = block.pulses_per_step.max(1) as u64;
+        let humanize_timing = lane.humanize_timing.unwrap_or(0.0).clamp(0.0, 1.0);
+        let humanize_velocity = lane.humanize_velocity.unwrap_or(0.0).clamp(0.0, 1.0);
+        let echo = lane.echo;
 
-        // (note, vel, off_at) einsammeln, dann senden (Borrow-Konflikt vermeiden).
-        let mut hits: Vec<(u8, u8, u64)> = Vec::new();
+        // Step-Inhalt einsammeln, dann senden (Borrow-Konflikt vermeiden).
+        let mut raw: Vec<Hit> = Vec::new();
         let is_notey = matches!(block.kind, CKind::Melody(_) | CKind::Chord(_) | CKind::Arp(_));
         match &block.kind {
             CKind::Melody(notes) | CKind::Chord(notes) | CKind::Arp(notes) => {
                 for n in notes {
                     if n.step == step {
-                        let off = global_pulse + (n.len_steps.max(1) * pps) as u64;
-                        hits.push((n.note, n.vel, off));
+                        raw.push(Hit {
+                            note: n.note,
+                            vel: n.vel,
+                            len_pulses: (n.len_steps.max(1) as u64) * pps,
+                            m: n.m,
+                            choke_group: None,
+                        });
                     }
                 }
             }
             CKind::Beat(steps) => {
                 if let Some(row) = steps.get(step as usize) {
-                    for (note, vel) in row {
-                        hits.push((*note, *vel, global_pulse + pps as u64));
+                    for h in row {
+                        raw.push(Hit {
+                            note: h.note,
+                            vel: h.vel,
+                            len_pulses: pps,
+                            m: h.m,
+                            choke_group: h.choke_group,
+                        });
                     }
                 }
             }
@@ -1176,6 +1697,42 @@ impl Engine {
             CKind::Cc(_) => {}
         }
 
+        // `StepMod.probability` UND `.condition` auswürfeln/prüfen — beide
+        // müssen zustimmen (falls gesetzt), sonst fällt der Hit für DIESEN
+        // Durchlauf komplett weg (kein Ton, kein Keytrack-Impuls).
+        // Deterministisch-abhängigkeitsfreier Hash statt `rand`-Crate, s.
+        // `pseudo_rand`. `loops_done`: wie oft der laufende Block seit dem
+        // letzten Slot-Wechsel schon durchgelaufen ist — Basis für
+        // First/NotFirst/Ratio.
+        let loops_done = self.playback[lane_idx].loops_done;
+        let fill_active = self.fill_active;
+        let hits: Vec<Hit> = raw
+            .into_iter()
+            .enumerate()
+            .filter(|(i, h)| {
+                let seed = global_pulse
+                    .wrapping_mul(0x9E3779B97F4A7C15)
+                    .wrapping_add(lane_idx as u64)
+                    .wrapping_add(*i as u64)
+                    .wrapping_add(h.note as u64);
+                let prob_ok = match h.m.probability {
+                    Some(p) => pseudo_rand(seed) < p as f64,
+                    None => true,
+                };
+                let cond_ok = match h.m.condition {
+                    None => true,
+                    Some(TrigCondition::Fill) => fill_active,
+                    Some(TrigCondition::NotFill) => !fill_active,
+                    Some(TrigCondition::First) => loops_done == 0,
+                    Some(TrigCondition::NotFirst) => loops_done != 0,
+                    Some(TrigCondition::Ratio(a, b)) => loops_done % b == (a.saturating_sub(1)),
+                    Some(TrigCondition::Probability(p)) => pseudo_rand(seed ^ 0xC0FFEE) < p as f64,
+                };
+                prob_ok && cond_ok
+            })
+            .map(|(_, h)| h)
+            .collect();
+
         // Keytrack-Weitergabe: eine Melodie/Chord/Arp-Lane treibt live das
         // LFO-Key-Tracking jeder CC-Lane, die sie als Quelle gewählt hat
         // (`Lane::keytrack_source_lane_id`) — dieselbe `trigger_note`, die
@@ -1183,7 +1740,7 @@ impl Engine {
         // einem Akkord zählt die höchste Note; ohne neue Noten in diesem
         // Step bleibt die zuletzt gehaltene Note stehen (Sample & Hold).
         if is_notey {
-            if let Some(top_note) = hits.iter().map(|h| h.0).max() {
+            if let Some(top_note) = hits.iter().map(|h| h.note).max() {
                 for i in 0..self.lanes.len() {
                     if self.lanes[i].keytrack_source == Some(lane_idx) {
                         self.playback[i].trigger_note = Some(top_note);
@@ -1207,8 +1764,8 @@ impl Engine {
                     }
                     let was_silent = self.keytrack_gate_count.get(&i).copied().unwrap_or(0) == 0;
                     *self.keytrack_gate_count.entry(i).or_insert(0) += hits.len() as u32;
-                    for (_, _, off) in &hits {
-                        self.pending_gate_releases.push((*off, i));
+                    for h in &hits {
+                        self.pending_gate_releases.push((global_pulse + h.len_pulses, i));
                     }
                     if was_silent && !self.lanes[i].blocks.is_empty() {
                         let block_idx = self.playback[i].slot % self.lanes[i].blocks.len();
@@ -1220,34 +1777,132 @@ impl Engine {
             }
         }
 
-        // Alle Note-Ons dieses Steps in EINEM Puffer sammeln und mit einem
-        // einzigen `send()` (= ein CoreMIDI-Packet, ein Timestamp) rausschicken —
+        // Alle Note-Ons OHNE zeitlichen Versatz (der Normalfall: kein
+        // Humanize/Micro-Timing/Ratchet) landen in EINEM Puffer und gehen mit
+        // einem einzigen `send()` (= ein CoreMIDI-Packet, ein Timestamp) raus —
         // sonst bekommt jede Note im Akkord ihren eigenen IPC-Call und die Noten
         // driften durch OS-Scheduling-Jitter hörbar auseinander statt scharf
-        // gleichzeitig anzukommen.
+        // gleichzeitig anzukommen. Verschobene Hits (Ratchet-Folgetreffer,
+        // Nudge, Humanize) gehen einzeln über `pending_on`.
         let mut on_bytes = Vec::with_capacity(hits.len() * 3);
-        for (note, vel, off) in &hits {
-            on_bytes.extend_from_slice(&[0x90 | (ch - 1), *note, *vel]);
-            // Retrigger derselben Tonhöhe, solange eine längere Note noch
-            // klingt: MIDI kennt kein „Note-Off für GENAU diese Note" — das
-            // Off der Vorgängerin würde mitten in die neue fallen und sie
-            // abwürgen (bei `lengthSteps` 1 kann das nie passieren, ab 2
-            // schon). Also die alte Fälligkeit verwerfen; die neue, spätere
-            // beendet beide.
-            self.pending
-                .retain(|p| !(p.note == *note && p.ch == ch && p.port == port));
-            self.pending.push(PendingOff {
-                port: port.clone(),
-                ch,
-                note: *note,
-                at: *off,
-                lane_idx,
-            });
+        for (i, h) in hits.iter().enumerate() {
+            let retriggers = h.m.ratchet.max(1) as u64;
+            let span = (h.len_pulses / retriggers).max(1);
+            let mut primary_on_at = global_pulse;
+            for r in 0..retriggers {
+                let seed = global_pulse
+                    .wrapping_mul(0xA24BAED4963EE407)
+                    .wrapping_add(lane_idx as u64)
+                    .wrapping_add(i as u64)
+                    .wrapping_add(r)
+                    .wrapping_add(h.note as u64);
+                let micro = h.m.micro_timing.clamp(-1.0, 1.0) as f64 * pps as f64;
+                let human = if humanize_timing > 0.0 {
+                    (pseudo_rand(seed ^ 0xA) * 2.0 - 1.0) * humanize_timing * pps as f64
+                } else {
+                    0.0
+                };
+                // Nudge/Humanize gilt nur für den ERSTEN Retrigger — Folge-
+                // Retrigger bleiben im gleichmäßigen Ratchet-Raster, sonst
+                // würde ein Roll unregelmäßig stottern.
+                let shift = if r == 0 { (micro + human).round() as i64 } else { 0 };
+                let on_at = (global_pulse as i64 + r as i64 * span as i64 + shift).max(0) as u64;
+                let off_at = on_at + span;
+                if r == 0 {
+                    primary_on_at = on_at;
+                }
+
+                let mut vel = h.vel;
+                if humanize_velocity > 0.0 {
+                    let jitter = ((pseudo_rand(seed ^ 0xB) * 2.0 - 1.0) * humanize_velocity * 40.0).round() as i32;
+                    vel = (vel as i32 + jitter).clamp(1, 127) as u8;
+                }
+
+                if on_at == global_pulse {
+                    on_bytes.extend_from_slice(&[0x90 | (ch - 1), h.note, vel]);
+                    self.schedule_note_off(&port, ch, h.note, off_at, lane_idx, h.choke_group);
+                    if let Some(g) = h.choke_group {
+                        self.choke(&port, ch, g, h.note);
+                    }
+                } else {
+                    self.pending_on.push(PendingOn {
+                        port: port.clone(),
+                        ch,
+                        note: h.note,
+                        vel,
+                        at: on_at,
+                        off_at,
+                        lane_idx,
+                        choke_group: h.choke_group,
+                    });
+                }
+            }
+
+            // Note-Echo/Delay (`Lane.echo`): zusätzlich zum eigentlichen Hit
+            // (und seinen Ratchet-Retriggern) abklingende Wiederholungen im
+            // festen `rate_div`-Raster einplanen, verankert am PRIMÄREN
+            // Zünd-Zeitpunkt (inkl. dessen Nudge/Humanize-Verschiebung).
+            if let Some(echo) = echo {
+                let interval = (PPQN / echo.rate_div.max(1)).max(1) as u64;
+                for n in 1..=echo.repeats {
+                    let on_at = primary_on_at + interval * n as u64;
+                    let off_at = on_at + interval;
+                    let decay_mul = echo.decay.clamp(0.0, 1.0).powi(n as i32);
+                    let vel = ((h.vel as f32) * decay_mul).round().clamp(1.0, 127.0) as u8;
+                    self.pending_on.push(PendingOn {
+                        port: port.clone(),
+                        ch,
+                        note: h.note,
+                        vel,
+                        at: on_at,
+                        off_at,
+                        lane_idx,
+                        choke_group: h.choke_group,
+                    });
+                }
+            }
         }
         if !on_bytes.is_empty() {
             self.midi.send(&port, &on_bytes);
             // Sichtbares Lebenszeichen für die UI (s. `LaneRuntime::hits`).
             self.playback[lane_idx].hits = self.playback[lane_idx].hits.wrapping_add(1);
+        }
+    }
+
+    /// Merkt ein fälliges Note-Off vor — verwirft zuerst eine evtl. schon
+    /// wartende Fälligkeit derselben Tonhöhe (Retrigger einer noch klingenden
+    /// Note: das alte Off würde sonst mitten in die neue fallen und sie
+    /// abwürgen; die neue, spätere beendet beide). Gemeinsamer Kern von
+    /// `fire_step`s Sofort-Pfad und dem `pending_on`-Flush in `on_pulse`.
+    fn schedule_note_off(&mut self, port: &str, ch: u8, note: u8, at: u64, lane_idx: usize, choke_group: Option<u32>) {
+        self.pending.retain(|p| !(p.note == note && p.ch == ch && p.port == port));
+        self.pending.push(PendingOff {
+            port: port.to_string(),
+            ch,
+            note,
+            at,
+            lane_idx,
+            choke_group,
+        });
+    }
+
+    /// Choke-Gruppe (`BeatLine.chokeGroup`): schneidet sofort jede noch
+    /// offene Note DERSELBEN Gruppe auf demselben Port/Kanal ab (außer der
+    /// gerade neu ausgelösten) — klassisches Hihat-open/closed-Cutoff.
+    fn choke(&mut self, port: &str, ch: u8, group: u32, except_note: u8) {
+        let mut off_bytes = Vec::new();
+        let mut i = 0;
+        while i < self.pending.len() {
+            let p = &self.pending[i];
+            if p.port == port && p.ch == ch && p.choke_group == Some(group) && p.note != except_note {
+                let off = self.pending.swap_remove(i);
+                off_bytes.extend_from_slice(&[0x80 | (ch - 1), off.note, 0]);
+            } else {
+                i += 1;
+            }
+        }
+        if !off_bytes.is_empty() {
+            self.midi.send(port, &off_bytes);
         }
     }
 
@@ -1498,9 +2153,9 @@ impl Engine {
                 CKind::Beat(steps) => {
                     if let Some(row) = steps.get(step as usize) {
                         let mut on_bytes = Vec::new();
-                        for (note, vel) in row {
-                            on_bytes.extend_from_slice(&[0x90 | (ch - 1), *note, *vel]);
-                            p.pending.push((ch, *note, global_pulse + pps as u64));
+                        for h in row {
+                            on_bytes.extend_from_slice(&[0x90 | (ch - 1), h.note, h.vel]);
+                            p.pending.push((ch, h.note, global_pulse + pps as u64));
                         }
                         if !on_bytes.is_empty() {
                             self.midi.send(&p.port, &on_bytes);
@@ -1584,6 +2239,65 @@ fn one() -> f64 {
     1.0
 }
 
+/// Gemeinsame optionale `StepMod`-Felder (`shared/model.ts`), per
+/// `#[serde(flatten)]` in `MelodyNoteJson`/`BeatStepJson`/`ChordEventJson`
+/// eingemischt — genau wie die TS-Interfaces `extends StepMod`.
+#[derive(Deserialize, Default)]
+struct StepModJson {
+    #[serde(default)]
+    probability: Option<f32>,
+    #[serde(default)]
+    ratchet: Option<u32>,
+    #[serde(rename = "microTiming", default)]
+    micro_timing: Option<f32>,
+    /// Roh belassen (String ODER Objekt, `shared/model.ts`s `TrigCondition`)
+    /// — `parse_trig_condition` wertet es manuell aus, statt ein
+    /// String-oder-Objekt-Serde-Enum zu riskieren.
+    #[serde(default)]
+    condition: Option<serde_json::Value>,
+}
+
+impl StepModJson {
+    fn compile(&self) -> StepMod {
+        StepMod {
+            probability: self.probability,
+            ratchet: self.ratchet.unwrap_or(1).max(1),
+            micro_timing: self.micro_timing.unwrap_or(0.0).clamp(-1.0, 1.0),
+            condition: parse_trig_condition(&self.condition),
+        }
+    }
+}
+
+/// `TrigCondition` (`shared/model.ts`) ist ein String-ODER-Objekt-Union
+/// ("fill" | "first" | … | `{ratio:[a,b]}` | `{probability:p}`) — manuell
+/// aus dem rohen JSON gelesen statt über ein Serde-Enum, das mit dieser
+/// Mischung nur fragil zurechtkäme. `"always"` und Unbekanntes ergeben KEIN
+/// Gate (immer spielen), genau wie ein fehlendes `condition`-Feld.
+fn parse_trig_condition(v: &Option<serde_json::Value>) -> Option<TrigCondition> {
+    let v = v.as_ref()?;
+    if let Some(s) = v.as_str() {
+        return match s {
+            "fill" => Some(TrigCondition::Fill),
+            "notFill" => Some(TrigCondition::NotFill),
+            "first" => Some(TrigCondition::First),
+            "notFirst" => Some(TrigCondition::NotFirst),
+            _ => None,
+        };
+    }
+    let obj = v.as_object()?;
+    if let Some(r) = obj.get("ratio").and_then(|r| r.as_array()) {
+        if r.len() == 2 {
+            let a = r[0].as_u64().unwrap_or(1).max(1) as u32;
+            let b = r[1].as_u64().unwrap_or(1).max(1) as u32;
+            return Some(TrigCondition::Ratio(a.min(b), b));
+        }
+    }
+    if let Some(p) = obj.get("probability").and_then(|p| p.as_f64()) {
+        return Some(TrigCondition::Probability(p as f32));
+    }
+    None
+}
+
 #[derive(Deserialize)]
 struct MelodyNoteJson {
     step: u32,
@@ -1591,12 +2305,16 @@ struct MelodyNoteJson {
     len_steps: u32,
     note: i32,
     velocity: u8,
+    #[serde(flatten)]
+    step_mod: StepModJson,
 }
 
 #[derive(Deserialize)]
 struct BeatStepJson {
     #[serde(default)]
     velocity: u8,
+    #[serde(flatten)]
+    step_mod: StepModJson,
 }
 
 #[derive(Deserialize)]
@@ -1608,6 +2326,8 @@ struct ChordEventJson {
     notes: Vec<i32>,
     #[serde(default = "vel_100")]
     velocity: u8,
+    #[serde(flatten)]
+    step_mod: StepModJson,
 }
 
 fn vel_100() -> u8 {
@@ -1618,11 +2338,26 @@ fn arp_up() -> String {
 }
 
 #[derive(Deserialize)]
+struct EuclidConfigJson {
+    enabled: bool,
+    pulses: u32,
+    steps: u32,
+    #[serde(default)]
+    rotation: u32,
+}
+
+#[derive(Deserialize)]
 struct BeatLineJson {
     note: u8,
     #[serde(default)]
     muted: bool,
     steps: Vec<BeatStepJson>,
+    /// Optional: Muster euklidisch generieren statt der manuellen `steps`-Velocities.
+    #[serde(default)]
+    euclid: Option<EuclidConfigJson>,
+    /// Choke-Gruppe (Hihat open/closed o.ä.) — s. `Engine::choke`.
+    #[serde(rename = "chokeGroup", default)]
+    choke_group: Option<u32>,
 }
 
 /// Ein Baustein ist reiner INHALT — Noten, Steps, Bewegungs-Layer. Kein Kanal,
@@ -1687,6 +2422,36 @@ pub(crate) fn pulses_per_bar(ts: &str) -> u32 {
     (num * PULSES_PER_WHOLE / den.max(1)).max(1)
 }
 
+/// Abhängigkeitsfreier Pseudozufall für Wahrscheinlichkeits-/Humanize-Würfe —
+/// muss nicht kryptographisch sein, nur hörbar streuen. Splitmix64-artiger
+/// Bit-Mix, `seed` treibt sowohl Zeit (`global_pulse`) als auch Identität
+/// (Lane/Note/Zweck) rein, damit gleichzeitige Würfe nicht identisch ausfallen.
+fn pseudo_rand(seed: u64) -> f64 {
+    let mut h = seed.wrapping_add(0x9E3779B97F4A7C15);
+    h = (h ^ (h >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    h = (h ^ (h >> 27)).wrapping_mul(0x94D049BB133111EB);
+    h ^= h >> 31;
+    (h % 1_000_000) as f64 / 1_000_000.0
+}
+
+/// Euklidischer Rhythmus: verteilt `pulses` aktive Schläge so gleichmäßig wie
+/// möglich über `steps` Steps (additive/Bresenham-Verteilung — für die hier
+/// gebrauchten Muster äquivalent zum rekursiven Bjorklund-Algorithmus),
+/// optional um `rotation` Steps verschoben. `pulses` wird auf `steps`
+/// geklemmt. Geprüft gegen den Referenzfall E(3,8) = "x..x..x." (Tresillo,
+/// s. `groove_tests::euclidean_three_in_eight_is_the_tresillo`).
+fn euclidean_pattern(pulses: u32, steps: u32, rotation: u32) -> Vec<bool> {
+    let steps = steps.max(1) as usize;
+    let pulses = (pulses as usize).min(steps);
+    if pulses == 0 {
+        return vec![false; steps];
+    }
+    let mut pattern: Vec<bool> = (0..steps).map(|i| (i * pulses) % steps < pulses).collect();
+    let r = rotation as usize % steps;
+    pattern.rotate_left(r);
+    pattern
+}
+
 fn compile_slots(
     slots_json: &serde_json::Value,
     blocks_json: &serde_json::Value,
@@ -1746,20 +2511,51 @@ fn compile_block(
                     len_steps: n.len_steps.max(1),
                     note: (n.note + transpose).clamp(0, 127) as u8,
                     vel: n.velocity.clamp(1, 127),
+                    m: n.step_mod.compile(),
                 })
                 .collect();
             CKind::Melody(notes)
         }
         "beat" => {
-            let mut steps: Vec<Vec<(u8, u8)>> = vec![Vec::new(); total_steps as usize];
+            let mut steps: Vec<Vec<BeatHit>> = vec![Vec::new(); total_steps as usize];
             for line in &b.lines {
                 if line.muted {
                     continue;
                 }
                 let note = (line.note as i32 + transpose).clamp(0, 127) as u8;
-                for (i, s) in line.steps.iter().enumerate() {
-                    if i < steps.len() && s.velocity > 0 {
-                        steps[i].push((note, s.velocity.clamp(1, 127)));
+                let choke_group = line.choke_group;
+                match line.euclid.as_ref().filter(|e| e.enabled) {
+                    // Muster generieren statt der manuellen Step-Velocities —
+                    // die bleiben trotzdem als Velocity-Quelle nutzbar (per
+                    // Step-Index modulo Muster-Länge), nur das AN/AUS kommt
+                    // jetzt aus dem euklidischen Muster.
+                    Some(cfg) => {
+                        let pattern = euclidean_pattern(cfg.pulses, cfg.steps, cfg.rotation);
+                        let plen = pattern.len().max(1);
+                        let slen = line.steps.len().max(1);
+                        for i in 0..steps.len() {
+                            if pattern[i % plen] {
+                                let vel = line
+                                    .steps
+                                    .get(i % slen)
+                                    .map(|s| s.velocity)
+                                    .filter(|v| *v > 0)
+                                    .unwrap_or(100);
+                                steps[i].push(BeatHit { note, vel, m: StepMod::default(), choke_group });
+                            }
+                        }
+                    }
+                    None => {
+                        for (i, s) in line.steps.iter().enumerate() {
+                            if i < steps.len() && s.velocity > 0 {
+                                steps[i].push(BeatHit {
+                                    note,
+                                    vel: s.velocity.clamp(1, 127),
+                                    m: s.step_mod.compile(),
+                                    choke_group,
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -1782,11 +2578,13 @@ fn compile_block(
                     let step = c.step;
                     let len = c.len_steps.max(1);
                     let vel = c.velocity.clamp(1, 127);
+                    let m = c.step_mod.compile();
                     c.notes.iter().map(move |n| CNote {
                         step,
                         len_steps: len,
                         note: (n + transpose).clamp(0, 127) as u8,
                         vel,
+                        m,
                     })
                 })
                 .collect();
@@ -1945,6 +2743,7 @@ fn build_arp(
             len_steps: gate_steps,
             note: pool[idx],
             vel,
+            m: StepMod::default(),
         });
         i += 1;
         step += rate_steps;
@@ -2230,5 +3029,82 @@ mod keytrack_tests {
         let low = layer.eval(&ctx(Some(24), 0.37));
         let high = layer.eval(&ctx(Some(96), 0.37));
         assert_eq!(low, high, "rate_key_track = 0 muss die Rate unabhängig von der Note halten");
+    }
+}
+
+#[cfg(test)]
+mod groove_tests {
+    use super::*;
+
+    /// Klassiker E(3,8) — der "Tresillo"-Rhythmus (Kuba/Flamenco/Reggaeton) —
+    /// muss exakt auf x..x..x. fallen, das gängige Referenzmuster für
+    /// euklidische Rhythmus-Generatoren.
+    #[test]
+    fn euclidean_three_in_eight_is_the_tresillo() {
+        let pattern = euclidean_pattern(3, 8, 0);
+        assert_eq!(pattern, vec![true, false, false, true, false, false, true, false]);
+    }
+
+    /// 0 Pulse → alles aus (kein Off-by-one/Div-by-zero); mehr Pulse als
+    /// Steps wird auf "alles an" geklemmt statt zu crashen.
+    #[test]
+    fn euclidean_edge_cases_dont_panic() {
+        assert_eq!(euclidean_pattern(0, 8, 0), vec![false; 8]);
+        assert_eq!(euclidean_pattern(9, 8, 0), vec![true; 8]);
+        assert_eq!(euclidean_pattern(3, 8, 8), euclidean_pattern(3, 8, 0), "Rotation um die volle Länge = keine Rotation");
+    }
+
+    /// Rotation verschiebt das Muster zyklisch, ändert aber nicht seine
+    /// Pulsanzahl.
+    #[test]
+    fn euclidean_rotation_shifts_without_changing_pulse_count() {
+        let base = euclidean_pattern(3, 8, 0);
+        let rotated = euclidean_pattern(3, 8, 3);
+        assert_eq!(rotated.iter().filter(|b| **b).count(), 3);
+        assert_ne!(base, rotated);
+        assert_eq!(rotated, vec![true, false, false, true, false, true, false, false]);
+    }
+
+    /// `pseudo_rand` muss in [0, 1) bleiben und für verschiedene Seeds streuen
+    /// (kein entarteter Fall, der immer denselben Wert liefert).
+    #[test]
+    fn pseudo_rand_stays_in_unit_range_and_varies() {
+        let vals: Vec<f64> = (0..100).map(pseudo_rand).collect();
+        assert!(vals.iter().all(|v| (0.0..1.0).contains(v)));
+        assert!(vals.windows(2).any(|w| w[0] != w[1]), "sollte nicht immer denselben Wert liefern");
+    }
+
+    /// `StepMod::default()` (Arp/Euklid-generierte Hits ohne eigene
+    /// Modulation) muss "immer spielen, kein Ratchet, kein Nudge" bedeuten.
+    #[test]
+    fn default_step_mod_is_neutral() {
+        let m = StepMod::default();
+        assert_eq!(m.probability, None);
+        assert_eq!(m.ratchet.max(1), 1);
+        assert_eq!(m.micro_timing, 0.0);
+    }
+
+    /// `TrigCondition` ist ein String-oder-Objekt-Union in TS — die manuelle
+    /// JSON-Auswertung muss jede Schreibweise treffen, inklusive der
+    /// no-op-Fälle ("always", fehlend, unbekannt).
+    #[test]
+    fn trig_condition_parses_every_shape() {
+        let of = |s: &str| parse_trig_condition(&Some(serde_json::json!(s)));
+        assert!(matches!(of("fill"), Some(TrigCondition::Fill)));
+        assert!(matches!(of("notFill"), Some(TrigCondition::NotFill)));
+        assert!(matches!(of("first"), Some(TrigCondition::First)));
+        assert!(matches!(of("notFirst"), Some(TrigCondition::NotFirst)));
+        assert!(of("always").is_none());
+        assert!(of("nonsense").is_none());
+        assert!(parse_trig_condition(&None).is_none());
+
+        match parse_trig_condition(&Some(serde_json::json!({ "ratio": [1, 4] }))) {
+            Some(TrigCondition::Ratio(a, b)) => assert_eq!((a, b), (1, 4)),
+            other => panic!("expected Ratio(1, 4), got {other:?}"),
+        }
+        match parse_trig_condition(&Some(serde_json::json!({ "probability": 0.5 }))) {
+            Some(TrigCondition::Probability(p)) => assert!((p - 0.5).abs() < 1e-6),
+            other => panic!("expected Probability(0.5), got {other:?}"),
+        }
     }
 }

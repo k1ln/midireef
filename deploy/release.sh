@@ -46,6 +46,7 @@ echo "\$(git rev-parse --short HEAD)-\$(date +%s)" > ui/dist/.build-id
 echo "▸ Artefakte übernehmen"
 rsync -a --delete ui/dist/ '$PI_DIR/ui/'
 install -m755 deploy/bin/midireef-net '$PI_DIR/bin/midireef-net'
+install -m755 deploy/bin/midireef-display '$PI_DIR/bin/midireef-display'
 sudo systemctl stop midireef-server
 install -m755 server/target/release/midireef-server '$PI_DIR/bin/midireef-server'
 sudo systemctl start midireef-server

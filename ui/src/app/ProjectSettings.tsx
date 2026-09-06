@@ -27,6 +27,7 @@ import {
   type BgConfig,
   type BgCountField,
 } from "./bgConfig";
+import { GrooveRow } from "./overview/SettingsDock";
 
 /** Spiegelt `ProjectSummary` aus shared/model.ts (`updatedAt` in Unix-Sekunden). */
 interface ProjectSummary {
@@ -465,6 +466,7 @@ export function ProjectSettings({ onClose }: { onClose: () => void }) {
         </div>
       </section>
 
+      <GrooveCard />
       <WifiApCard />
       <DisplayCard />
       <GithubBackupCard />
@@ -627,6 +629,24 @@ function FieldRow({ label, value, onTap, mono }: { label: string; value: string;
         </span>
       </Button>
     </div>
+  );
+}
+
+/** Projekt-Default-Swing (`Project.swing`) — Lanes ohne eigenen Swing-Override
+ *  (Lane-Einstellungen → „Groove") übernehmen diesen Wert. Siehe
+ *  `Engine::on_pulse`s Step-Boundary-Berechnung in server/src/engine.rs. */
+function GrooveCard() {
+  const send = useSend();
+  const swing = useStoreValue((s) => (s.project?.swing as number | undefined) ?? 0);
+
+  return (
+    <section className="settings-card">
+      <div className="popup-subtitle">Groove — project-wide default swing</div>
+      <div style={{ fontSize: 13, color: "var(--pal-text-dim)", marginBottom: 12 }}>
+        Delays every other step for a shuffled feel. Individual lanes can override this in their own settings.
+      </div>
+      <GrooveRow label="Swing" value={swing} onChange={(v) => send({ t: "project.setSwing", swing: v ?? 0 })} />
+    </section>
   );
 }
 

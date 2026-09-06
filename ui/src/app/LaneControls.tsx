@@ -81,6 +81,11 @@ export function LaneControls({ laneId, onClose }: LaneControlsProps) {
             </div>
           )}
 
+          {(found.lane.role === "melody" ||
+            found.lane.role === "chord" ||
+            found.lane.role === "arp" ||
+            found.lane.role === "beat") && <LiveFxRow lane={found.lane} />}
+
           <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
             {(found.lane.controls ?? []).map((ctrl) => (
               <ControlTile
@@ -124,6 +129,104 @@ export function LaneControls({ laneId, onClose }: LaneControlsProps) {
   );
 }
 
+/** "Live FX": Beat-repeat/Scatter (hold) and Echo (toggle), always available
+ *  on every note-producing lane — no need to add a control first. This is
+ *  the "insert chain" for the live overlay effects: they already compose
+ *  with each other and with Groove/Echo settings, so a quick surface to
+ *  reach for them beats requiring setup ahead of time. Roll stays an
+ *  addable custom control below (it needs a note picked, so it doesn't fit
+ *  a zero-setup row). */
+function LiveFxRow({ lane }: { lane: Lane }) {
+  const send = useSend();
+  const [repeatHeld, setRepeatHeld] = useState(false);
+  const [scatterHeld, setScatterHeld] = useState(false);
+
+  const fxBtn: React.CSSProperties = {
+    width: 100,
+    height: 56,
+    borderRadius: 12,
+    border: "1.5px solid rgba(255, 255, 255, 0.3)",
+    fontSize: 13,
+    fontWeight: 700,
+    cursor: "pointer",
+    touchAction: "none",
+  };
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ fontSize: 12, color: "var(--pal-text-dim)", marginBottom: 6 }}>Live FX</div>
+      <div style={{ display: "flex", gap: 10 }}>
+        <button
+          type="button"
+          aria-label="Beat repeat"
+          style={{
+            ...fxBtn,
+            background: repeatHeld ? "var(--pal-btn-active)" : "var(--pal-btn)",
+            color: repeatHeld ? "var(--pal-ink)" : "var(--pal-text)",
+          }}
+          onPointerDown={(e) => {
+            e.currentTarget.setPointerCapture(e.pointerId);
+            setRepeatHeld(true);
+            send({ t: "lane.pressBeatRepeat", laneId: lane.id, steps: 2 });
+          }}
+          onPointerUp={() => {
+            setRepeatHeld(false);
+            send({ t: "lane.releaseBeatRepeat", laneId: lane.id });
+          }}
+          onPointerCancel={() => {
+            setRepeatHeld(false);
+            send({ t: "lane.releaseBeatRepeat", laneId: lane.id });
+          }}
+        >
+          ▶▶ Repeat
+        </button>
+        <button
+          type="button"
+          aria-label="Scatter"
+          style={{
+            ...fxBtn,
+            background: scatterHeld ? "var(--pal-btn-active)" : "var(--pal-btn)",
+            color: scatterHeld ? "var(--pal-ink)" : "var(--pal-text)",
+          }}
+          onPointerDown={(e) => {
+            e.currentTarget.setPointerCapture(e.pointerId);
+            setScatterHeld(true);
+            send({ t: "lane.pressScatter", laneId: lane.id });
+          }}
+          onPointerUp={() => {
+            setScatterHeld(false);
+            send({ t: "lane.releaseScatter", laneId: lane.id });
+          }}
+          onPointerCancel={() => {
+            setScatterHeld(false);
+            send({ t: "lane.releaseScatter", laneId: lane.id });
+          }}
+        >
+          ✳ Scatter
+        </button>
+        <button
+          type="button"
+          aria-label="Echo"
+          style={{
+            ...fxBtn,
+            background: lane.echo ? "var(--pal-btn-active)" : "var(--pal-btn)",
+            color: lane.echo ? "var(--pal-ink)" : "var(--pal-text)",
+          }}
+          onClick={() =>
+            send({
+              t: "lane.setEcho",
+              laneId: lane.id,
+              echo: lane.echo ? null : { repeats: 3, rateDiv: 8, decay: 0.6 },
+            })
+          }
+        >
+          ~ Echo
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ControlTile({
   ctrl,
   laneId,
@@ -148,8 +251,23 @@ function ControlTile({
   const macroValue = local ?? target?.value ?? 0;
 
   const isMacro = ctrl.kind === "macroKnob";
-  const momentary = ctrl.kind === "macroKnob" ? false : ctrl.kind === "drumButton" ? ctrl.action === "trigger" : ctrl.trigger === "momentary";
-  const isToggle = ctrl.kind !== "macroKnob" && ctrl.kind !== "drumButton" && ctrl.trigger === "toggle";
+  // Beat-Repeat/Roll/Scatter kennen kein oneShot/toggle — Halten IST der
+  // ganze Punkt.
+  const momentary =
+    ctrl.kind === "macroKnob"
+      ? false
+      : ctrl.kind === "beatRepeat" || ctrl.kind === "roll" || ctrl.kind === "scatter"
+        ? true
+        : ctrl.kind === "drumButton"
+          ? ctrl.action === "trigger"
+          : ctrl.trigger === "momentary";
+  const isToggle =
+    ctrl.kind !== "macroKnob" &&
+    ctrl.kind !== "drumButton" &&
+    ctrl.kind !== "beatRepeat" &&
+    ctrl.kind !== "roll" &&
+    ctrl.kind !== "scatter" &&
+    ctrl.trigger === "toggle";
   const isActive = isMacro ? false : isToggle ? active : pressed;
 
   const tileProps: HTMLAttributes<HTMLDivElement> = {};
@@ -367,6 +485,51 @@ function AddControlPicker({
         },
       });
       break;
+  }
+
+  // Beat-repeat/stutter: hold to loop the last N steps of whatever's playing
+  // on this lane. Makes sense for anything with steppable note content —
+  // not for cc/programChange/patternShift, which have no "steps" to loop.
+  if (lane.role === "melody" || lane.role === "chord" || lane.role === "arp" || lane.role === "beat") {
+    rows.push({
+      text: "Beat repeat",
+      onTap: () => {
+        onClose();
+        numberEdit(1, 1, 16, (steps) =>
+          send({
+            t: "laneControl.add",
+            laneId: lane.id,
+            control: { kind: "beatRepeat", label: `Rpt ${steps}`, steps },
+          }),
+        );
+      },
+    });
+    // Manual roll: hold to retrigger ONE note at a fixed rate, independent
+    // of the pattern's own steps — a finger-drumming roll/snare fill.
+    rows.push({
+      text: "Roll",
+      onTap: () => {
+        onClose();
+        openNotePicker(lane.role === "beat" ? 36 : 60, (note) =>
+          numberEdit(4, 1, 16, (rateDiv) =>
+            send({
+              t: "laneControl.add",
+              laneId: lane.id,
+              control: { kind: "roll", label: `Roll ${noteName(note)}`, note, velocity: 100, rateDiv },
+            }),
+          ),
+        );
+      },
+    });
+    // Scatter/glitch: hold to make every step read a random step's content
+    // instead of its own — timing stays on the grid, only content glitches.
+    rows.push({
+      text: "Scatter",
+      onTap: () => {
+        onClose();
+        send({ t: "laneControl.add", laneId: lane.id, control: { kind: "scatter", label: "Scatter" } });
+      },
+    });
   }
 
   return (

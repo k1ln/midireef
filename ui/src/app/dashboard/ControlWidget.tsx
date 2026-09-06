@@ -3,8 +3,8 @@
 //! vertikal ziehen → CC-Wert. Rechtsklick / Zwei-Finger → Kontextmenü
 //! (an Dashboard delegiert, da es die Multi-Pointer-Verfolgung besitzt).
 
-import { useRef, useState } from "react";
-import { useSend } from "../store";
+import { useEffect, useRef, useState } from "react";
+import { useNet, useSend } from "../store";
 
 export interface LiveControl {
   id: string;
@@ -67,10 +67,20 @@ export interface ControlWidgetProps {
   onToggleLane?: () => void;
 }
 
+/** BPM-Bereich des Tempo-Knobs — dieselben Grenzen wie `transport.setBpm`
+ *  serverseitig (`server/src/ws.rs`) und `Transport.tsx`s `setBpm`. */
+const TEMPO_MIN = 20;
+const TEMPO_MAX = 300;
+
 export function ControlWidget({ ctrl, deviceName, editMode, zoom, selected, onSelect, onContextMenu, onPress, onRelease, externalActive, recording, laneEnabled, laneGone, onToggleLane }: ControlWidgetProps) {
   const send = useSend();
+  const net = useNet();
   const isKeyboard = ctrl.kind === "keyboard";
   const isLaneButton = ctrl.kind === "laneButton";
+  // "Tempo": kein MIDI, kein `ctrl.value` — ein großer Knob, der man mit dem
+  // Finger scratcht (gleiche Zieh-Geste wie jeder Regler), aber
+  // `transport.setBpm` treibt statt eine CC. S. `control.addTempoKnob` in ws.rs.
+  const isTempo = ctrl.kind === "tempo";
   const isButton = ctrl.kind === "button" || isKeyboard || ctrl.mapping?.kind === "note" || isLaneButton;
   const size = ctrl.w ?? 130;
 
@@ -79,7 +89,22 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, selected, onSe
   const [pressed, setPressed] = useState(false);
   const lit = pressed || !!externalActive || (isLaneButton && !!laneEnabled);
   const mode = useRef<"none" | "drag" | "turn">("none");
-  const start = useRef({ gx: 0, gy: 0, x: 0, y: 0, value: 0 });
+  const start = useRef({ gx: 0, gy: 0, x: 0, y: 0, value: 0, bpm: 120 });
+
+  // Live-BPM nur für den Tempo-Knob verfolgen — jede andere Kachel bleibt bei
+  // ihrem `ctrl.value` vom Server-Snapshot, kein zusätzliches Abo.
+  const [liveBpm, setLiveBpm] = useState(120);
+  const [dragBpm, setDragBpm] = useState<number | null>(null);
+  useEffect(() => {
+    if (!isTempo) return;
+    const off = net.onEvent((evt) => {
+      if ((evt.t === "transport.tick" || evt.t === "state.snapshot") && evt.transport) {
+        setLiveBpm(evt.transport.bpm);
+      }
+    });
+    return off;
+  }, [net, isTempo]);
+  const bpm = dragBpm ?? liveBpm;
   // Pointer IDs currently down on THIS widget — lets a second finger landing
   // on the knob itself (not just one on the knob + one on the background)
   // open the context menu too. Separate from Dashboard's own multi-touch
@@ -120,7 +145,7 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, selected, onSe
     // Sequencer-Übersicht) — im „Move"-Modus nicht, da ist der Tipp zum Ziehen.
     if (!editMode) onSelect();
     e.currentTarget.setPointerCapture(e.pointerId);
-    start.current = { gx: e.clientX, gy: e.clientY, x, y, value };
+    start.current = { gx: e.clientX, gy: e.clientY, x, y, value, bpm };
     if (editMode) {
       mode.current = "drag";
     } else if (isLaneButton) {
@@ -150,9 +175,15 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, selected, onSe
       });
     } else if (mode.current === "turn") {
       const dy = start.current.gy - e.clientY;
-      const v = Math.min(127, Math.max(0, Math.round(start.current.value + dy * 0.7)));
-      setDragValue(v);
-      send({ t: "control.setValue", controlId: ctrl.id, value: v });
+      if (isTempo) {
+        const next = Math.min(TEMPO_MAX, Math.max(TEMPO_MIN, Math.round(start.current.bpm + dy * 0.5)));
+        setDragBpm(next);
+        send({ t: "transport.setBpm", bpm: next });
+      } else {
+        const v = Math.min(127, Math.max(0, Math.round(start.current.value + dy * 0.7)));
+        setDragValue(v);
+        send({ t: "control.setValue", controlId: ctrl.id, value: v });
+      }
     }
   };
 
@@ -171,6 +202,7 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, selected, onSe
       // its `??` above) — a knob touched once would never again show a
       // physically turned update or any other server-driven change.
       setDragValue(null);
+      setDragBpm(null);
     } else if (isButton && !isKeyboard && !isLaneButton) {
       setPressed(false);
       send({ t: "control.release", controlId: ctrl.id });
@@ -260,11 +292,31 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, selected, onSe
           <line
             x1={size / 2}
             y1={size / 2}
-            x2={size / 2 + Math.sin((-135 + (value / 127) * 270) * (Math.PI / 180)) * (size / 2 - 16)}
-            y2={size / 2 - Math.cos((-135 + (value / 127) * 270) * (Math.PI / 180)) * (size / 2 - 16)}
+            x2={
+              size / 2 +
+              Math.sin((-135 + (isTempo ? (bpm - TEMPO_MIN) / (TEMPO_MAX - TEMPO_MIN) : value / 127) * 270) * (Math.PI / 180)) *
+                (size / 2 - 16)
+            }
+            y2={
+              size / 2 -
+              Math.cos((-135 + (isTempo ? (bpm - TEMPO_MIN) / (TEMPO_MAX - TEMPO_MIN) : value / 127) * 270) * (Math.PI / 180)) *
+                (size / 2 - 16)
+            }
             stroke="var(--pal-white)"
             strokeWidth={3}
           />
+          {isTempo && (
+            <text
+              x={size / 2}
+              y={size / 2 + 6}
+              textAnchor="middle"
+              fontSize={size * 0.16}
+              fontWeight={700}
+              fill="var(--pal-white)"
+            >
+              {Math.round(bpm)}
+            </text>
+          )}
         </svg>
       )}
 
@@ -276,6 +328,11 @@ export function ControlWidget({ ctrl, deviceName, editMode, zoom, selected, onSe
         {isLaneButton && (
           <div className="mono" style={{ fontSize: 11, fontWeight: 700, color: laneGone ? "var(--pal-danger)" : "var(--pal-text-dim)" }}>
             {laneGone ? "lane removed" : laneEnabled ? "LANE ON" : "LANE OFF"}
+          </div>
+        )}
+        {isTempo && (
+          <div className="mono" style={{ fontSize: 11, color: "var(--pal-text-dim)" }}>
+            BPM · no MIDI
           </div>
         )}
         {ctrl.mapping && (

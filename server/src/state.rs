@@ -9,7 +9,7 @@ use std::time::Instant;
 use tokio::sync::broadcast;
 
 use crate::clock::{ClockCommand, ClockHandle};
-use crate::model::{Project, TransportState};
+use crate::model::{Project, RouteTransform, TransportState};
 
 /// Ein per `record.arm` live an eine Melodie-Lane gelinktes Keyboard-Control
 /// (siehe `AppState::forward_to_recorder`). `channel` kommt aus dessen
@@ -461,6 +461,124 @@ impl AppState {
             "on": on,
         }));
     }
+
+    /// Routing-Hub: leitet eine eingehende MIDI-Nachricht an alle passenden,
+    /// AKTIVIERTEN `MidiRoute`s weiter — gefiltert und transformiert aufs
+    /// Ziel-Device. Ein komplett eigener Pfad, unabhängig vom MIDI-Learn/
+    /// Record/NoteInput oben: Quellen-Zuordnung über `MidiInputSource.port`
+    /// (benannter Eingang), nicht über gelernte Controls.
+    pub fn forward_via_routing(&self, source_port: &str, msg: &[u8]) {
+        if msg.is_empty() || crate::midi::is_own_port(source_port) {
+            return;
+        }
+        let status = msg[0] & 0xF0;
+        let in_channel = (msg[0] & 0x0F) + 1;
+
+        let (targets, fired_route_ids): (Vec<(String, Vec<u8>)>, Vec<String>) = {
+            let proj = self.project.lock().unwrap();
+            let Some(source) = proj.routing.sources.iter().find(|s| s.port == source_port) else {
+                return;
+            };
+            if let Some(chf) = source.channel_filter {
+                if chf != in_channel {
+                    return;
+                }
+            }
+            let mut out = Vec::new();
+            let mut fired = Vec::new();
+            for route in proj.routing.routes.iter().filter(|r| r.enabled && r.source_id == source.id) {
+                if !message_kind_matches(&route.message_filter, status) {
+                    continue;
+                }
+                if status == 0xB0 {
+                    if let Some(cc_filter) = &route.cc_filter {
+                        if msg.len() < 2 || !cc_filter.contains(&msg[1]) {
+                            continue;
+                        }
+                    }
+                }
+                if (status == 0x90 || status == 0x80) && msg.len() >= 2 {
+                    if let Some(range) = &route.note_range {
+                        if msg[1] < range.low || msg[1] > range.high {
+                            continue;
+                        }
+                    }
+                }
+                let Some(dev) = proj.devices.iter().find(|d| d.id == route.transform.device_id) else {
+                    continue;
+                };
+                if dev.midi_out_port.is_empty() {
+                    continue;
+                }
+                out.push((dev.midi_out_port.clone(), apply_route_transform(msg, &route.transform)));
+                fired.push(route.id.clone());
+            }
+            (out, fired)
+        };
+
+        for (port, bytes) in targets {
+            self.clock.send(ClockCommand::Midi(port, bytes));
+        }
+        for route_id in fired_route_ids {
+            let _ = self
+                .events
+                .send(serde_json::json!({ "t": "routing.activity", "routeId": route_id }));
+        }
+    }
+}
+
+/// `MidiRoute.messageFilter` ist `"all"` ODER eine Liste von Nachrichtenarten
+/// ("note"|"cc"|"pitchBend"|"aftertouch"|"programChange") — manuell
+/// ausgewertet statt über ein fragiles String-oder-Array-Serde-Enum (gleiche
+/// Idee wie `parse_trig_condition` in engine.rs).
+fn message_kind_matches(filter: &serde_json::Value, status: u8) -> bool {
+    if filter.as_str() == Some("all") {
+        return true;
+    }
+    let Some(arr) = filter.as_array() else { return true };
+    let kind = match status {
+        0x90 | 0x80 => "note",
+        0xB0 => "cc",
+        0xE0 => "pitchBend",
+        0xD0 | 0xA0 => "aftertouch",
+        0xC0 => "programChange",
+        _ => return false,
+    };
+    arr.iter().any(|v| v.as_str() == Some(kind))
+}
+
+/// Wendet `RouteTransform` auf eine rohe MIDI-Nachricht an: Kanal-Remap,
+/// Noten-Transpose, Velocity-Scale, CC-Umnummerierung.
+fn apply_route_transform(msg: &[u8], t: &RouteTransform) -> Vec<u8> {
+    let mut out = msg.to_vec();
+    let status = out[0] & 0xF0;
+    if let Some(ch) = t.channel {
+        out[0] = status | (ch.clamp(1, 16) - 1);
+    }
+    match status {
+        0x90 | 0x80 if out.len() >= 3 => {
+            if let Some(semi) = t.note_transpose {
+                out[1] = (out[1] as i32 + semi).clamp(0, 127) as u8;
+            }
+            // Nur eine ECHTE Note-On (velocity > 0) skalieren — velocity 0 ist
+            // die verbreitete Schreibweise fürs Note-Off und muss 0 bleiben,
+            // sonst würde daraus versehentlich ein Retrigger.
+            if status == 0x90 && out[2] > 0 {
+                if let Some(scale) = t.velocity_scale {
+                    out[2] = ((out[2] as f64) * scale.clamp(0.0, 2.0)).round().clamp(1.0, 127.0) as u8;
+                }
+            }
+        }
+        0xB0 if out.len() >= 2 => {
+            if let Some(remap) = &t.cc_remap {
+                if let Some(entry) = remap.iter().find(|e| e.from == out[1]) {
+                    out[1] = entry.to;
+                }
+            }
+        }
+        _ => {}
+    }
+    out
 }
 
 /// Ob das Mapping eines Live-Controls zu Kanal/Art/Nummer einer eingehenden
