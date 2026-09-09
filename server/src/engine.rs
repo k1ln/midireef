@@ -511,6 +511,14 @@ struct Playback {
     /// Inhalt eines ZUFÄLLIGEN Steps desselben Blocks statt des eigenen —
     /// "welcher Step" wird neu gewürfelt, "wann" bleibt exakt im Raster.
     scatter: bool,
+    /// NUR für Auto-Run-Modes (sequential/loop/random/manual), NICHT
+    /// "hold"/"oneShot" (die haben dafür schon `running`): die Lane wurde
+    /// eben (wieder) eingeschaltet, während der Transport lief, und ihr
+    /// `pos` ist ein Zeitpunkt aus der Vergangenheit (s. `rebuild`) — bis
+    /// `queued` an der nächsten Quantisierungsgrenze zündet, überspringt
+    /// `on_pulse` sie komplett, statt sie ab dem stehengebliebenen `pos`
+    /// weiterlaufen zu lassen. `apply_queued` löscht es beim Zünden.
+    pending_realign: bool,
 }
 
 /// Aktives Beat-Repeat/Stutter EINER Lane: loopt `[window_start,
@@ -726,9 +734,13 @@ impl Engine {
         // bliebe das Gerät nach dem Stop dort stehen, wo die Automation zuletzt war.
         self.restore_cc_targets(false);
         // Vormerkungen verwerfen: sie beziehen sich auf eine Zeitachse, die es
-        // nach dem Stop nicht mehr gibt.
+        // nach dem Stop nicht mehr gibt. `pending_realign` mit — sonst bliebe
+        // eine Lane, die beim Stop gerade auf ihre Grenze wartete, auch nach
+        // dem nächsten Start für immer stumm (nichts löscht es sonst, `queued`
+        // ist ja schon weg).
         for pb in &mut self.playback {
             pb.queued = None;
+            pb.pending_realign = false;
         }
     }
 
@@ -823,25 +835,14 @@ impl Engine {
         }
     }
 
-    /// Klingt diese Lane gerade? "hold"/"oneShot" sind zwischen den
-    /// Auslösungen stumm; alle anderen Play-Modes laufen immer durch.
-    fn is_sounding(&self, idx: usize) -> bool {
-        !matches!(self.lanes[idx].play_mode.as_str(), "hold" | "oneShot")
-            || self.playback[idx].running
-    }
-
     /// Soll dieser Trigger sofort greifen, statt vorgemerkt zu werden?
-    ///
-    /// Neben "immediate" und stehendem Transport ist der dritte Fall der
-    /// wichtige: "nextBlock" wartet auf das ENDE des laufenden Bausteins — läuft
-    /// gerade keiner (stumme hold/oneShot-Lane), kommt dieses Ende nie, und die
-    /// Vormerkung bliebe für immer hängen. Ohne Baustein gibt es nichts
-    /// abzuwarten, also los.
+    /// Nur "immediate" und stehender Transport (dann käme nie eine Grenze) —
+    /// jede andere Quantisierung, "nextBlock" eingeschlossen, wartet auf
+    /// `apply_queued`.
     fn triggers_now(&self, idx: usize) -> bool {
         match self.lanes[idx].trigger_quantize.as_str() {
             _ if !self.playing => true,
             "immediate" => true,
-            "nextBlock" => !self.is_sounding(idx),
             _ => false,
         }
     }
@@ -856,9 +857,6 @@ impl Engine {
     /// Schaltet vorgemerkte Slots scharf, deren Grenze auf `global_pulse` fällt.
     /// Läuft VOR dem Abspielen des Pulses, damit der neue Baustein denselben
     /// Puls noch als seinen Step 0 spielt — sonst käme er einen Puls zu spät.
-    ///
-    /// "nextBlock" wird hier NICHT behandelt: dessen Grenze ist das Ende des
-    /// laufenden Bausteins, und das kennt nur die Fortschaltung in `on_pulse`.
     fn apply_queued(&mut self, global_pulse: u64) {
         for idx in 0..self.lanes.len() {
             let Some(block_idx) = self.playback[idx].queued else {
@@ -867,10 +865,29 @@ impl Engine {
             let hit = match self.lanes[idx].trigger_quantize.as_str() {
                 "nextBeat" => global_pulse % PPQN as u64 == 0,
                 "nextBar" => global_pulse % self.bar_pulses.max(1) as u64 == 0,
+                // "Next block": nicht das Ende IRGENDEINES laufenden Bausteins
+                // (das war rein lokal an diese eine Lane gebunden und ignorierte
+                // jede andere — genau das war die Meldung: Lanes liefen dadurch
+                // nicht synchron). Stattdessen der nächste Vielfache der Länge
+                // DES NEUEN Bausteins, gezählt ab dem gemeinsamen Nullpunkt
+                // (`global_pulse`, wie `nextBar`/`nextBeat`) — die kleinste
+                // Grenze, an der der neue Baustein „ins Raster" der anderen
+                // passt, unabhängig davon, was diese Lane vorher spielte oder
+                // ob sie überhaupt schon klang (löst nebenbei das alte Problem
+                // einer stummen hold/oneShot-Lane, die nie ein Ende meldete).
+                "nextBlock" => {
+                    let len = self.lanes[idx]
+                        .blocks
+                        .get(block_idx)
+                        .map(|b| b.len_pulses.max(1) as u64)
+                        .unwrap_or(1);
+                    global_pulse % len == 0
+                }
                 _ => false,
             };
             if hit {
                 self.playback[idx].queued = None;
+                self.playback[idx].pending_realign = false;
                 self.start_slot(idx, block_idx);
                 // "oneShot" ist bis zum Auslösen stumm (`running == false`) —
                 // beim Scharfschalten muss die Lane also mitlaufen, sonst
@@ -900,13 +917,18 @@ impl Engine {
         // MIDI-Note ODER Keytrack-Quelle) — s. `Lane::keytrack_source_starts`
         // und `control.setTrigger`s `setsKeytrack`. Wer die Note auch fürs
         // Key-Tracking will, ruft zusätzlich `set_trigger_note` auf.
-        // "hold" wird SOFORT scharf: die Lane soll klingen, solange der Finger
-        // liegt — würde der Start auf den nächsten Takt warten, wäre die Geste
-        // bei einem kurzen Antippen schon vorbei, bevor überhaupt etwas kommt.
-        // "oneShot" dagegen ist ein normaler Auslöser und folgt der
-        // Quantisierung wie `trigger_slot`.
+        // "hold" folgt WIE "oneShot" der Quantisierung der Lane (`triggers_now`
+        // deckt "immediate" und den stehenden Transport schon als Sofort-Fall
+        // ab) — vorher zündete "hold" IMMER sofort, unabhängig von
+        // `Lane.trigger_quantize`: eine zur Bar/zum Beat einrastende Lane
+        // startete beim Antippen mitten im Takt und blieb fortan dauerhaft
+        // gegen alle anderen (gleich langen!) Lanes verschoben, obwohl die
+        // Quantisierung genau das verhindern soll. Wer weiterhin sofortiges
+        // Ansprechen für eine "hold"-Lane will (kurzes Antippen, bevor die
+        // nächste Grenze kommt), stellt deren Quantisierung auf "immediate" —
+        // das bleibt unverändert sofort.
         let hold = self.lanes[idx].play_mode == "hold";
-        if hold || self.triggers_now(idx) {
+        if self.triggers_now(idx) {
             self.playback[idx].queued = None;
             self.start_slot(idx, block_idx);
             self.playback[idx].running = true;
@@ -1098,6 +1120,8 @@ impl Engine {
             // scharf (stumm bis zum nächsten Touch); für alle anderen egal.
             p.running = false;
             p.held = false;
+            p.queued = None;
+            p.pending_realign = false;
         }
         self.pending.clear();
         self.pending_gate_releases.clear();
@@ -1130,6 +1154,11 @@ impl Engine {
             .zip(self.playback.iter())
             .map(|(l, p)| (l.id.clone(), *p))
             .collect();
+        // ...UND ob sie bis eben (vor diesem Rebuild) lief — `enabled` ist hier
+        // schon die kompilierte Fassung, zieht also `Lane.muted`/`Device.muted`
+        // mit ein (s. unten). Grundlage für den Realignment-Fall gleich danach.
+        let prev_enabled: std::collections::HashMap<String, bool> =
+            self.lanes.iter().map(|l| (l.id.clone(), l.enabled)).collect();
 
         let mut clock_ports = Vec::new();
         for dev in &project.devices {
@@ -1218,6 +1247,7 @@ impl Engine {
                         trigger_note: None,
                         repeat: None,
                         scatter: false,
+                        pending_realign: false,
                     });
                 if l.blocks.is_empty() {
                     pb.slot = 0;
@@ -1233,6 +1263,35 @@ impl Engine {
                 // geändert) könnten die ungültig sein. Sicherer Reset statt
                 // stiller Fehlbedienung; wer noch hält, tippt einfach neu an.
                 pb.repeat = None;
+
+                // Lane (wieder) eingeschaltet (an/aus, stumm/laut, Geräte-Mute),
+                // während der Transport läuft: `on_pulse` überspringt eine
+                // ausgeschaltete Lane komplett — ihr `pos` blieb die ganze Zeit
+                // stehen. Ohne Korrektur setzte sie GENAU DORT wieder ein: ein
+                // Zeitpunkt aus der Vergangenheit, dauerhaft verschoben gegen
+                // jede Lane, die durchgelaufen ist — auch wenn beide Bausteine
+                // exakt gleich lang sind (das war die eigentliche Meldung: „die
+                // Blocks sind trotz gleicher Länge nicht ausgerichtet"). Wie ein
+                // frischer Trigger auf denselben Slot behandeln: sofort bei
+                // "immediate", sonst zur nächsten Quantisierungs-Grenze
+                // vorgemerkt — dieselbe Regel wie `trigger_slot`/`press_slot`.
+                // NUR für Auto-Run-Modes: eine "hold"/"oneShot"-Lane soll durchs
+                // bloße Einschalten nicht von selbst lostönen, das bleibt an
+                // `press_slot` hängen.
+                let gated = matches!(l.play_mode.as_str(), "hold" | "oneShot");
+                let was_enabled = prev_enabled.get(&l.id).copied().unwrap_or(l.enabled);
+                if self.playing && l.enabled && !was_enabled && !gated && !l.blocks.is_empty() {
+                    // "nextBeat"/"nextBar"/"nextBlock" kennt `apply_queued` —
+                    // alles Übrige (nur noch "immediate") sofort auflösen.
+                    if matches!(l.trigger_quantize.as_str(), "nextBeat" | "nextBar" | "nextBlock") {
+                        pb.queued = Some(pb.slot);
+                        pb.pending_realign = true;
+                    } else {
+                        pb.pos = 0;
+                        pb.loops_done = 0;
+                        pb.queued = None;
+                    }
+                }
                 pb
             })
             .collect();
@@ -1355,8 +1414,11 @@ impl Engine {
                 continue;
             }
             // "hold"/"oneShot"-Lanes sind stumm, bis `press_slot` sie startet.
+            // Eine grad wieder eingeschaltete Auto-Run-Lane wartet ebenso
+            // still auf `apply_queued` (s. `Playback::pending_realign`) statt
+            // ab ihrem stehengebliebenen `pos` weiterzulaufen.
             let gated = matches!(self.lanes[idx].play_mode.as_str(), "hold" | "oneShot");
-            if gated && !self.playback[idx].running {
+            if (gated && !self.playback[idx].running) || self.playback[idx].pending_realign {
                 continue;
             }
             let (slot, pos) = {
@@ -1423,21 +1485,6 @@ impl Engine {
                 //   hold    → von vorn loopen, solange die Kachel gehalten wird;
                 //             das `release_slot` beendet es.
                 if gated {
-                    // Eine "nextBlock"-Vormerkung wartet genau auf DIESEN
-                    // Moment. Sie muss vor dem Stummschalten greifen, sonst
-                    // bliebe sie liegen: die Lane wäre danach still, und der
-                    // stumme Zweig oben überspringt sie fortan — die
-                    // Vormerkung käme nie mehr zum Zug.
-                    if let Some(queued) = self.playback[idx].queued {
-                        if self.lanes[idx].trigger_quantize.as_str() == "nextBlock" {
-                            self.playback[idx].queued = None;
-                            self.playback[idx].slot = queued;
-                            self.playback[idx].pos = 0;
-                            self.playback[idx].loops_done = 0;
-                            self.playback[idx].running = true;
-                            continue;
-                        }
-                    }
                     if self.lanes[idx].play_mode == "oneShot" {
                         self.playback[idx].running = false;
                     }
@@ -1451,21 +1498,10 @@ impl Engine {
                 //   max_loops == 0 → ∞, dieser Block loopt endlos, kein Wechsel.
                 //   sonst          → nach max_loops Durchläufen weiterrücken;
                 //                    "sequential" zum nächsten, "random" zufällig.
-                // "nextBlock": der laufende Baustein ist hier zu Ende — das ist
-                // genau die Grenze, auf die die Vormerkung gewartet hat. Sie
-                // gewinnt gegen die reguläre Fortschaltung.
-                if let Some(queued) = self.playback[idx].queued {
-                    if self.lanes[idx].trigger_quantize.as_str() == "nextBlock" {
-                        self.playback[idx].queued = None;
-                        self.playback[idx].slot = queued;
-                        self.playback[idx].pos = 0;
-                        self.playback[idx].loops_done = 0;
-                        if matches!(self.lanes[idx].play_mode.as_str(), "hold" | "oneShot") {
-                            self.playback[idx].running = true;
-                        }
-                        continue;
-                    }
-                }
+                // Eine Vormerkung (jede Quantisierung inkl. "nextBlock") wird
+                // NICHT hier aufgelöst — das übernimmt `apply_queued` an ihrer
+                // jeweiligen Grenze; diese Fortschaltung läuft unabhängig davon
+                // einfach normal weiter, bis es soweit ist.
                 let n_blocks = self.lanes[idx].blocks.len();
                 let max_loops = self.lanes[idx].blocks[slot].max_loops;
                 if self.lanes[idx].play_mode != "manual" && max_loops != 0 {

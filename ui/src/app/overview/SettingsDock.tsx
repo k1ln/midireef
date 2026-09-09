@@ -36,7 +36,7 @@ const QUANTIZE_OPTIONS: SelectOption<string>[] = [
   { value: "immediate", label: "⚡ Immediate — start the moment you tap" },
   { value: "nextBeat", label: "♩ Next beat — snap to the next beat" },
   { value: "nextBar", label: "| Next bar — snap to the next bar (stays in sync)" },
-  { value: "nextBlock", label: "⊣ Next block — wait until the running block finishes" },
+  { value: "nextBlock", label: "⊣ Next block — snap to a multiple of this block's own length (stays in sync)" },
 ];
 const QUANTIZE_SHORT: Record<string, string> = {
   immediate: "⚡ Immediate",

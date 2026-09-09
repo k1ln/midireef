@@ -116,7 +116,7 @@ export type TriggerQuantize =
   | "immediate" // sofort bei Touch
   | "nextBeat" // beim nächsten Beat
   | "nextBar" // beim nächsten Taktanfang
-  | "nextBlock"; // wenn der laufende Baustein fertig ist
+  | "nextBlock"; // nächstes Vielfaches der Länge des NEUEN Bausteins ab Puls 0 — bleibt im Raster der anderen Lanes
 
 /** Wie eine Lane durch ihre Bausteine läuft. */
 export type LanePlayMode =

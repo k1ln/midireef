@@ -1381,15 +1381,20 @@ textarea {
 }
 /* 0-hoher Stretch-Wrapper: kommt auf die von den Kacheln/Lanes bestimmte
    Höhe; der absolut gesetzte Knopf darin klippt lange Namen, statt die
-   Zeile/das Panel nach unten auszutreiben. */
+   Zeile/das Panel nach unten auszutreiben. Mindesthöhe, weil ohne Kacheln
+   daneben (ein frisches Gerät hat 0 Lanes, `Device::new` — eine frische Lane
+   0 Slots) sonst nur die 44px des Mute-/Run-Knopfs übrig blieben: zu wenig
+   für einen lesbaren, treffsicheren senkrechten Namen. */
 .overview-name-wrap {
   position: relative;
   flex: 0 0 auto;
   width: 42px;
+  min-height: 84px;
   align-self: stretch;
 }
 .overview-name-wrap.device {
   width: 48px;
+  min-height: 96px;
 }
 .overview-dim {
   font-size: 13px;
