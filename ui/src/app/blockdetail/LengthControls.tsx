@@ -30,10 +30,10 @@ export function BlockLengthControls({ block }: { block: Block }) {
 
   return (
     <>
-      <Button variant="alt" style={{ width: 96, height: 40, fontSize: 15 }} onClick={() => setPicking("bars")}>
+      <Button variant="alt" style={{ width: 80, height: 40, fontSize: 15 }} onClick={() => setPicking("bars")}>
         {bars} {bars === 1 ? "bar" : "bars"}
       </Button>
-      <Button variant="alt" style={{ width: 120, height: 40, fontSize: 15 }} onClick={() => setPicking("steps")}>
+      <Button variant="alt" style={{ width: 100, height: 40, fontSize: 15 }} onClick={() => setPicking("steps")}>
         {stepsPerBar}/bar
       </Button>
       <div style={{ fontSize: 12, color: "var(--pal-text-dim)" }}>{bars * stepsPerBar} steps</div>

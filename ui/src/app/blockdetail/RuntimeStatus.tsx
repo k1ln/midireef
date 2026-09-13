@@ -18,12 +18,23 @@ import { useRuntimeBlockStatus, useStoreValue } from "../store";
  *  laufendem Transport auf „idle" und man suchte den Fehler bei sich. */
 export const PLAYABLE = ["melody", "beat", "cc", "chord", "arp"];
 
-export function BlockRuntimeStatus({ block }: { block: Block }) {
-  const idleText = useStoreValue((s) => idleReason(s, block));
-  const statusRef = useRuntimeBlockStatus(block.id, idleText);
+export function BlockRuntimeStatus({
+  block,
+  compact,
+}: {
+  block: Block;
+  /** Piano-Rolle: nur "step/total" statt der ausgeschriebenen Sätze — die
+   *  Kopfzeile hat dafür keinen Platz mehr (s. Nutzer-Feedback: "step counter
+   *  that wide"). Der volle Grund (Lane gemutet, keine Lane, …) steht noch im
+   *  Tooltip. */
+  compact?: boolean;
+}) {
+  const idleText = useStoreValue((s) => (compact ? idleCompact(block) : idleReason(s, block)));
+  const statusRef = useRuntimeBlockStatus(block.id, idleText, compact);
+  const title = useStoreValue((s) => idleReason(s, block));
 
   return (
-    <div className="runtime-strip">
+    <div className="runtime-strip" title={compact ? title : undefined}>
       <span className="runtime-chip" ref={statusRef} />
       {block.type === "cc" && (
         <span className="cc-meter" title="last value actually sent">
@@ -32,6 +43,13 @@ export function BlockRuntimeStatus({ block }: { block: Block }) {
       )}
     </div>
   );
+}
+
+/** Kompakter Leerlauf-Text: "0/N" statt eines Satzes — der Grund bleibt im
+ *  Tooltip (title) erreichbar, s. `BlockRuntimeStatus`. */
+function idleCompact(block: Block): string {
+  const total = (block.stepsPerBar ?? 16) * (block.lengthBars ?? 1);
+  return `0/${total}`;
 }
 
 /** Warum gerade nichts zu sehen ist — der statische Teil des Feedbacks, den

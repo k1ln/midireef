@@ -72,6 +72,9 @@ export class RuntimeFeed {
   private blockStatusNodes = new Map<string, HTMLElement>();
   /** Was der Chip sagen soll, solange der Baustein nicht läuft. */
   private blockIdleText = new Map<string, string>();
+  /** Bausteine, deren Chip nur "step/total" statt ausgeschriebener Sätze
+   *  zeigen soll — s. `BlockRuntimeStatus`s `compact`-Prop. */
+  private compactBlocks = new Set<string>();
   /** Welche Kachel je Lane momentan als "playing" markiert ist. */
   private lit = new Map<string, string>();
   /** Zuletzt als „wartend" markierte Kachel je Lane — damit die Markierung
@@ -194,15 +197,18 @@ export class RuntimeFeed {
   /** ref-Callback-Ziel des Status-Chips. Seinen Text schreibt AUSSCHLIESSLICH
    *  diese Klasse — die Komponente rendert ihn leer, sonst überschriebe ein
    *  React-Re-Render die Laufzeit-Anzeige mit dem statischen JSX-Kind. */
-  setBlockStatus(blockId: string, el: HTMLElement | null, idleText = IDLE_TEXT) {
+  setBlockStatus(blockId: string, el: HTMLElement | null, idleText = IDLE_TEXT, compact = false) {
     if (el) {
       this.blockStatusNodes.set(blockId, el);
       this.blockIdleText.set(blockId, idleText);
+      if (compact) this.compactBlocks.add(blockId);
+      else this.compactBlocks.delete(blockId);
       el.textContent = idleText;
       this.apply(performance.now());
     } else {
       this.blockStatusNodes.delete(blockId);
       this.blockIdleText.delete(blockId);
+      this.compactBlocks.delete(blockId);
     }
   }
 
@@ -366,7 +372,7 @@ export class RuntimeFeed {
 
     const status = this.blockStatusNodes.get(st.blockId);
     if (!status) return;
-    const text = statusText(st, step);
+    const text = statusText(st, step, this.compactBlocks.has(st.blockId));
     if (status.textContent !== text) status.textContent = text;
   }
 }
@@ -374,8 +380,11 @@ export class RuntimeFeed {
 /** Was der Status-Chip sagt, während der Baustein läuft. Für CC-Bausteine ist
  *  die wichtigste Auskunft nicht der Wert, sondern OB überhaupt etwas rausgeht:
  *  ohne Ziel-Knob an der Lane läuft die Automation ins Leere (s. `resolve_cc_target`
- *  in engine.rs), und das sah bisher genauso aus wie eine stille Kurve. */
-function statusText(st: LaneState, step: number): string {
+ *  in engine.rs), und das sah bisher genauso aus wie eine stille Kurve.
+ *  `compact` (Piano-Rolle, s. Nutzer-Feedback): nur "step/total", ohne Satz
+ *  drumherum — der volle Grund/Wert steht dort ohnehin nicht zur Verfügung. */
+function statusText(st: LaneState, step: number, compact: boolean): string {
+  if (compact) return `${step + 1}/${st.steps}`;
   const pos = `▶ step ${step + 1}/${st.steps}`;
   if (st.kind !== "cc") return pos;
   if (st.ccNumber === undefined) return `${pos} · no CC target on the lane — nothing is sent`;

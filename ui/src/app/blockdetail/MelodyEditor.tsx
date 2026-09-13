@@ -71,32 +71,36 @@ export function MelodyToolbar({
     <>
       <Button
         variant="alt"
-        style={{ width: 130, height: 40, fontSize: 14 }}
+        style={{ width: 84, height: 40, fontSize: 14 }}
         onClick={() => setLayout(layout === "stack" ? "grid" : "stack")}
       >
-        {layout === "stack" ? "▤ Columns" : "▦ Piano roll"}
+        {layout === "stack" ? "▤ Cols" : "▦ Roll"}
       </Button>
       {/* Nur in der Piano-Rolle: dort gibt es die Tonhöhen-Zeilen, an denen
           man den Cursor und das Eingespielte SIEHT. In der Spalten-Ansicht
-          bliebe vom Einspielen nur eine wachsende Zahlenkolonne. */}
+          bliebe vom Einspielen nur eine wachsende Zahlenkolonne. Play-Zeichen
+          + "IN" statt "Play in" ausgeschrieben — an/aus zeigt schon die Farbe. */}
       {layout === "grid" && (
         <Button
           variant={playIn ? "active" : "alt"}
-          style={{ width: 120, height: 40, fontSize: 14 }}
+          style={{ width: 56, height: 40, fontSize: 14 }}
           title="Play the melody in from a connected keyboard or the on-screen keys"
           onClick={() => setPlayIn(!playIn)}
         >
-          {playIn ? "● Play in" : "○ Play in"}
+          ▶ IN
         </Button>
       )}
+      {/* "∅" statt des Papierkorb-Emojis: das blieb auf dem Pi-Kiosk ohne
+          Color-Emoji-Font leer (s. Nutzer-Feedback beim Delete-Knopf) — ∅ ist
+          ein normales Textzeichen und meint dasselbe ("leer machen"). */}
       <Button
         variant="danger"
-        style={{ width: 90, height: 40, fontSize: 14 }}
+        style={{ width: 44, height: 40, fontSize: 18 }}
         title="Remove every note in this melody"
         disabled={noteCount === 0}
         onClick={() => setConfirmClear(true)}
       >
-        🗑 Clear
+        ∅
       </Button>
 
       {confirmClear && (
@@ -131,16 +135,21 @@ export function MelodyEditor({
   flow,
   layout,
   playIn,
+  paint,
 }: {
   block: Block;
   flow: StepFlow;
   layout: MelodyLayout;
   playIn: boolean;
+  /** Paint-Werkzeug lebt in BlockDetail (s. dort) und rendert die Farb-Leiste
+   *  selbst, in derselben Kopfzeile wie Play/Clear/Delete — die Rolle hier
+   *  braucht das armierte Werkzeug nur lesend, für Tipper auf die Zellen. */
+  paint: PaintTool;
 }) {
   return layout === "stack" ? (
     <MelodyStack block={block} flow={flow} />
   ) : (
-    <MelodyGrid block={block} flow={flow} playIn={playIn} />
+    <MelodyGrid block={block} flow={flow} playIn={playIn} paint={paint} />
   );
 }
 
@@ -365,7 +374,7 @@ function MelodyStack({ block, flow }: { block: Block; flow: StepFlow }) {
 // ihren Wert) — ein Tipper auf eine Note akzentuiert sie, ein Tipper auf eine
 // leere Zelle setzt gleich eine neue Note mit diesem Anschlag.
 
-type PaintTool = "grey" | "red" | "green" | "blue" | null;
+export type PaintTool = "grey" | "red" | "green" | "blue" | null;
 type PaintColor = "red" | "green" | "blue";
 
 const PAINT_VELOCITY_DEFAULT: Record<PaintColor, number> = { red: 127, green: 90, blue: 50 };
@@ -407,11 +416,11 @@ function PaintSwatch({
       title={title}
       {...handlers}
       style={{
-        width: 32,
-        height: 32,
+        width: 48,
+        height: 48,
         borderRadius: "50%",
         background: color,
-        border: active ? "3px solid var(--pal-text)" : "3px solid transparent",
+        border: active ? "4px solid var(--pal-text)" : "4px solid transparent",
         cursor: "pointer",
         flexShrink: 0,
       }}
@@ -466,7 +475,7 @@ function PaintVelocityPopup({
   );
 }
 
-function PaintToolbar({ paint, setPaint }: { paint: PaintTool; setPaint: (v: PaintTool) => void }) {
+export function PaintToolbar({ paint, setPaint }: { paint: PaintTool; setPaint: (v: PaintTool) => void }) {
   const [redVel, setRedVel] = usePaintVelocity("red");
   const [greenVel, setGreenVel] = usePaintVelocity("green");
   const [blueVel, setBlueVel] = usePaintVelocity("blue");
@@ -482,8 +491,7 @@ function PaintToolbar({ paint, setPaint }: { paint: PaintTool; setPaint: (v: Pai
   ];
 
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-      <span style={{ fontSize: 12, color: "var(--pal-text-dim)" }}>Paint:</span>
+    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
       {swatches.map((s) => (
         <PaintSwatch
           key={s.key}
@@ -512,18 +520,26 @@ function PaintToolbar({ paint, setPaint }: { paint: PaintTool; setPaint: (v: Pai
 
 // Quadratische Zellen: eine 34×20-Zelle ist mit dem Finger senkrecht kaum zu
 // treffen — daneben liegt sofort die nächste Tonhöhe. Gleich hoch wie breit
-// kostet Sichtfeld (der Ausschnitt scrollt ohnehin), trifft dafür.
-const ROW_H = 50;
-const CELL_W = 50;
+// kostet Sichtfeld (der Ausschnitt scrollt ohnehin), trifft dafür. 64 statt 50:
+// selbst 50 war für einen Finger noch knapp (s. Nutzer-Feedback) — das
+// Sichtfeld verkleinert sich dadurch, aber die Rolle ist ja ohnehin auf
+// Scrollen ausgelegt (und seit der Zeilen-Virtualisierung kostet das nichts).
+const ROW_H = 64;
+const CELL_W = 64;
 
-function MelodyGrid({ block, flow, playIn }: { block: Block; flow: StepFlow; playIn: boolean }) {
+function MelodyGrid({
+  block,
+  flow,
+  playIn,
+  paint,
+}: {
+  block: Block;
+  flow: StepFlow;
+  playIn: boolean;
+  paint: PaintTool;
+}) {
   const send = useSend();
   const [editing, setEditing] = useState<NoteRef | null>(null);
-  const [paint, setPaint] = useState<PaintTool>(null);
-  // Ein armiertes Werkzeug gehört zur Sitzung an DIESEM Baustein — beim
-  // Wechsel auf einen anderen soll nicht versehentlich eine fremde Note
-  // akzentiert werden, nur weil das Werkzeug von vorhin noch stand.
-  useEffect(() => setPaint(null), [block.id]);
   const [redVel] = usePaintVelocity("red");
   const [greenVel] = usePaintVelocity("green");
   const [blueVel] = usePaintVelocity("blue");
@@ -591,7 +607,6 @@ function MelodyGrid({ block, flow, playIn }: { block: Block; flow: StepFlow; pla
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
-      <PaintToolbar paint={paint} setPaint={setPaint} />
       <StepBars
         totalSteps={totalSteps}
         stepsPerBar={stepsPerBar}
@@ -618,7 +633,7 @@ function MelodyGrid({ block, flow, playIn }: { block: Block; flow: StepFlow; pla
         )}
       </StepBars>
 
-      <div style={{ marginTop: 10, fontSize: 12, color: "var(--pal-text-dim)", flexShrink: 0 }}>
+      <div style={{ marginTop: 6, fontSize: 12, color: "var(--pal-text-dim)", flexShrink: 0 }}>
         {playIn ? (
           <>
             Play a connected MIDI keyboard or the keys below — notes land on the marked step, held keys become one chord, and the

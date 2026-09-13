@@ -61,11 +61,11 @@ export function useRuntimeBlock(blockId: string) {
   return useCallback((el: HTMLElement | null) => runtime.setBlock(blockId, el), [runtime, blockId]);
 }
 
-export function useRuntimeBlockStatus(blockId: string, idleText: string) {
+export function useRuntimeBlockStatus(blockId: string, idleText: string, compact = false) {
   const { runtime } = useAppCtx();
   return useCallback(
-    (el: HTMLElement | null) => runtime.setBlockStatus(blockId, el, idleText),
-    [runtime, blockId, idleText],
+    (el: HTMLElement | null) => runtime.setBlockStatus(blockId, el, idleText, compact),
+    [runtime, blockId, idleText, compact],
   );
 }
 

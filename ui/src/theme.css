@@ -725,7 +725,6 @@ textarea {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin: 0 0 14px;
   min-height: 30px;
 }
 .runtime-chip {
@@ -877,6 +876,14 @@ textarea {
      `pointercancel`, sobald der Browser den Wisch übernimmt. */
   touch-action: manipulation;
   user-select: none;
+  /* Am rechten Rand DES SICHTBAREN Ausschnitts kleben, nicht des Rasters —
+     bei vielen/breiten Steps lag der Tonname sonst weit rechts außerhalb des
+     Bildschirms, bis man dorthin querscrollte (s. Nutzer-Feedback). Die
+     deckenden Hintergründe oben sorgen dafür, dass keine Zelle durchscheint. */
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  box-shadow: -6px 0 6px -4px rgba(0, 0, 0, 0.4);
 }
 .roll-key.white {
   background: var(--pal-key-white);
