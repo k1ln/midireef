@@ -150,7 +150,7 @@ export function Transport({ view, onNav, onAddDevice }: TransportProps) {
         title={recording ? "Stop recording (hold for recordings)" : "Record (hold for recordings)"}
         {...recordPress}
       >
-        ⏺
+        ●
       </Button>
       {/* Navigations-Tabs: eine Gruppe, eng gesetzt (gap 3) auf einer eigenen
           Fläche, damit sie nicht die halbe Leiste frisst. */}

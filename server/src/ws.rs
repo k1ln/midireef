@@ -2495,6 +2495,13 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 broadcast_audio_state(state);
             }
         }
+        // Testet nacheinander jeden sichtbaren Eingang und meldet dessen
+        // Spitzenpegel (`audio.probeStart`/`audio.probeResult`, zuletzt
+        // `audio.probeDone`) — hilft, mehrdeutig benannte Einträge
+        // auseinanderzuhalten (ins richtige Mikro sprechen, zusehen, wo der
+        // Pegel ausschlägt). Läuft auf einem eigenen Thread (blockiert
+        // ~300ms PRO Eingang), der Command-Loop wartet nicht darauf.
+        "audio.probeInputs" => audio::probe_inputs(state.events.clone()),
         other => {
             // Noch nicht implementierte Commands werden geloggt, aber ignoriert.
             tracing::debug!("Command (noch) nicht behandelt: {other}");
