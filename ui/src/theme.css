@@ -17,6 +17,11 @@
   --pal-line: #ffffff;
   --pal-panel: #111111;
   --pal-panel-deep: #080808;
+  /* Piano-Rolle: Zeilen bekommen je nach Taste (weiß/schwarz) einen sehr
+     leichten Ton-Unterschied — nur ein Hinweis, bei weitem nicht der
+     Kontrast einer gehaltenen Note (--pal-step-held bleibt viel heller). */
+  --pal-roll-white: #171717;
+  --pal-roll-black: #0c0c0c;
 
   --pal-btn: #1c1c1c;
   --pal-btn-alt: #2a2a2a;
@@ -193,6 +198,37 @@ body {
 }
 @media (prefers-reduced-motion: reduce) {
   .btn.transport-stop::after {
+    animation: none;
+    opacity: 0.85;
+  }
+}
+
+/* ── Record-Knopf (Transport-Leiste, neben Play) — dieselbe Puls-Idee wie
+   .transport-stop (Farbe --pal-stop), aber unabhängig schaltbar: Aufnahme und
+   Play/Stop laufen unabhängig voneinander (Einspielen bei laufendem Sequencer
+   genau wie im Leerlauf). ── */
+.btn.transport-record {
+  color: var(--pal-text-dim);
+}
+.btn.transport-record.recording {
+  position: relative;
+  background: rgba(var(--pal-stop-rgb), 0.18);
+  border-color: rgba(var(--pal-stop-rgb), 0.9);
+  color: var(--pal-stop);
+}
+.btn.transport-record.recording::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  pointer-events: none;
+  box-shadow:
+    0 0 22px rgba(var(--pal-stop-rgb), 0.85),
+    inset 0 0 18px rgba(var(--pal-stop-rgb), 0.3);
+  animation: transport-stop-glow 1.4s ease-in-out infinite;
+  will-change: opacity;
+}
+@media (prefers-reduced-motion: reduce) {
+  .btn.transport-record.recording::after {
     animation: none;
     opacity: 0.85;
   }
@@ -876,14 +912,23 @@ textarea {
      `pointercancel`, sobald der Browser den Wisch übernimmt. */
   touch-action: manipulation;
   user-select: none;
-  /* Am rechten Rand DES SICHTBAREN Ausschnitts kleben, nicht des Rasters —
-     bei vielen/breiten Steps lag der Tonname sonst weit rechts außerhalb des
-     Bildschirms, bis man dorthin querscrollte (s. Nutzer-Feedback). Die
-     deckenden Hintergründe oben sorgen dafür, dass keine Zelle durchscheint. */
+  /* Am Rand DES SICHTBAREN Ausschnitts kleben, nicht des Rasters — bei
+     vielen/breiten Steps lag der Tonname sonst weit außerhalb des
+     Bildschirms, bis man dorthin querscrollte (s. Nutzer-Feedback). Rechts
+     UND links: mit der rechten Hand über dem Display sind die rechten Tasten
+     verdeckt, darum gibt es dieselbe Klaviatur seitenverkehrt links noch
+     einmal (s. RollKey `side`). Die deckenden Hintergründe oben sorgen
+     dafür, dass keine Zelle durchscheint. */
   position: sticky;
-  right: 0;
   z-index: 2;
+}
+.roll-key.right {
+  right: 0;
   box-shadow: -6px 0 6px -4px rgba(0, 0, 0, 0.4);
+}
+.roll-key.left {
+  left: 0;
+  box-shadow: 6px 0 6px -4px rgba(0, 0, 0, 0.4);
 }
 .roll-key.white {
   background: var(--pal-key-white);
@@ -905,6 +950,17 @@ textarea {
   font-size: 10px;
   color: var(--pal-text-dim);
   -webkit-tap-highlight-color: transparent;
+}
+/* Leerer Platzhalter vor dem Lineal, exakt so breit wie die klebende linke
+   `RollKey`-Spalte jeder Zeile darunter — hält Lineal-Zahlen und Spalten
+   zueinander ausgerichtet, egal wie weit quergescrollt ist (s. StepBars'
+   `leftGutter`-Prop). */
+.step-ruler-gutter {
+  flex-shrink: 0;
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--pal-panel);
 }
 .step-ruler-cell.pickable {
   cursor: pointer;
@@ -1600,6 +1656,7 @@ textarea {
    toten) Animation. Die Blitz-Layer trägt runtime.ts nie wieder ab — ohne
    das hier bliebe ihr Schein dauerhaft stehen. */
 :root[data-motion="off"] .btn.transport-stop::after,
+:root[data-motion="off"] .btn.transport-record.recording::after,
 :root[data-motion="off"] .slot-tile.starting::before,
 :root[data-motion="off"] .runtime-chip.hit::after,
 :root[data-motion="off"] .lane-row.hit .lane-pulse {

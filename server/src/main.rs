@@ -2,6 +2,7 @@
 //!
 //! Startet Clock-Engine, WebSocket-Server und lädt/erzeugt ein Default-Projekt.
 
+mod audio;
 mod clock;
 #[cfg(target_os = "macos")]
 mod coremidi_hotplug;
@@ -133,6 +134,12 @@ async fn main() {
     // persistiert in github.json, niemals im Klartext an die UI zurück.
     let github_cfg = Arc::new(Mutex::new(github::load(&data_dir)));
 
+    // Audio-Aufnahme-Interface (siehe audio.rs): Soll-Zustand aus audio.json.
+    // Der Ordner mit den WAV-Dateien wird gleich unten als eigene HTTP-Route
+    // ausgeliefert (Download übers WLAN, kein eigener Datei-Server nötig).
+    let audio_cfg = Arc::new(Mutex::new(audio::load(&data_dir)));
+    let recordings_dir = audio::recordings_dir(&data_dir);
+
     let state = AppState {
         project,
         transport,
@@ -148,6 +155,8 @@ async fn main() {
         network: network.clone(),
         display: display_cfg.clone(),
         github: github_cfg,
+        audio: audio_cfg,
+        audio_recording: Arc::new(Mutex::new(None)),
         last_streamed_snapshot: Arc::new(Mutex::new(None)),
         snapshot_pending: Arc::new(AtomicBool::new(false)),
     };
@@ -186,6 +195,9 @@ async fn main() {
     let app = Router::new()
         .route("/ws", get(ws::ws_handler))
         .with_state(state)
+        // Aufnahmen als statische Dateien — direkt per Browser/curl übers
+        // WLAN herunterladbar (`http://<pi>:8787/recordings/<datei>.wav`).
+        .nest_service("/recordings", ServeDir::new(recordings_dir))
         .fallback_service(ui_service());
 
     let port: u16 = std::env::var("MIDIREEF_PORT")

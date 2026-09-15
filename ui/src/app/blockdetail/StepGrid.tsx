@@ -35,6 +35,13 @@ export const ROLL_KEY_W = 78;
 
 const BLACK_KEYS = [1, 3, 6, 8, 10];
 
+/** Ist die Tonhöhe (jede Oktave) ein schwarzer Halbton? Exportiert, weil die
+ *  Piano-Rolle (s. MelodyEditor) dieselbe Einteilung für die Zeilen-Tönung
+ *  braucht wie `RollKey` für die Tastenfarbe. */
+export function isBlackKey(note: number): boolean {
+  return BLACK_KEYS.includes(((note % 12) + 12) % 12);
+}
+
 /** Haltedauer für „lang drücken" — identisch zu `useLongPress`, damit sich die
  *  Geste über alle Raster gleich anfühlt. */
 export const HOLD_MS = 500;
@@ -58,6 +65,7 @@ export function RollKey({
   label,
   height,
   width = ROLL_KEY_W,
+  side = "right",
   onPress,
   onRelease,
 }: {
@@ -65,11 +73,16 @@ export function RollKey({
   label: string;
   height: number;
   width?: number;
+  /** Welchem Rand der Rolle sie klebt — s. Kopfkommentar. Rechts ist der
+   *  langjährige Standard (unverändert für bestehende Aufrufer), links kommt
+   *  dazu: hält man das Display mit der rechten Hand, verdeckt die genau
+   *  dort. */
+  side?: "left" | "right";
   onPress: () => void;
   onRelease: () => void;
 }) {
   const [down, setDown] = useState(false);
-  const black = BLACK_KEYS.includes(((note % 12) + 12) % 12);
+  const black = isBlackKey(note);
   const release = () => {
     if (!down) return;
     setDown(false);
@@ -77,7 +90,7 @@ export function RollKey({
   };
   return (
     <div
-      className={`roll-key ${black ? "black" : "white"}${down ? " down" : ""}`}
+      className={`roll-key ${side} ${black ? "black" : "white"}${down ? " down" : ""}`}
       style={{ width, height, lineHeight: `${height}px` }}
       onPointerDown={(e) => {
         if (down) return;
@@ -173,6 +186,7 @@ export function StepBars({
   fillHeight,
   cursorStep,
   onPickStep,
+  leftGutter,
   children,
 }: {
   totalSteps: number;
@@ -190,6 +204,11 @@ export function StepBars({
    *  und ist dort — mit `onPickStep` — auch direkt setzbar. */
   cursorStep?: number;
   onPickStep?: (step: number) => void;
+  /** Freihaltung links im Lineal, exakt so breit wie eine klebende linke
+   *  Randspalte einer Zeile (s. Piano-Rolle in MelodyEditor mit ihrer
+   *  linken `RollKey`) — sonst rutschen Lineal-Zahlen und Spalten
+   *  gegeneinander, sobald quergescrollt wird. */
+  leftGutter?: number;
   children: (steps: number[], barStart: number) => ReactNode;
 }) {
   const perRow = flow === "wrap" ? Math.max(1, stepsPerBar) : Math.max(1, totalSteps);
@@ -217,6 +236,7 @@ export function StepBars({
                   cellW={cellW}
                   cursorStep={cursorStep}
                   onPickStep={onPickStep}
+                  leftGutter={leftGutter}
                 />
                 {children(steps, steps[0])}
               </div>
@@ -234,18 +254,24 @@ export function StepRuler({
   cellW,
   cursorStep,
   onPickStep,
+  leftGutter,
 }: {
   steps: number[];
   stepsPerBar: number;
   cellW: number;
   cursorStep?: number;
   onPickStep?: (step: number) => void;
+  leftGutter?: number;
 }) {
   // Gerundet: stepsPerBar ist frei wählbar (auch 6, 12, 24 …), ein krummer
   // Divisor würde die Beat-Zahlen sonst willkürlich verteilen.
   const marker = Math.max(1, Math.round(stepsPerBar / 4));
   return (
     <div style={{ display: "flex", marginBottom: 4 }}>
+      {/* Leerer, klebender Platzhalter statt einer echten linken Spalte —
+          deckt nur die Lücke, die die linke `RollKey` jeder Zeile beim
+          Kleben am Rand offen ließe (s. Prop-Kommentar bei `StepBars`). */}
+      {leftGutter !== undefined && <div className="step-ruler-gutter" style={{ width: leftGutter }} />}
       {steps.map((step) => (
         <div
           key={step}

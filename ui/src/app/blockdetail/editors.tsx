@@ -224,6 +224,9 @@ export function ArpEditor({ block }: { block: Block }) {
   const gateSteps = block.gateSteps ?? 1;
   const rateSteps = block.rateSteps ?? 1;
   const velocity = block.velocity ?? 100;
+  const driftIndex = block.driftIndex ?? 0;
+  const driftAmount = block.driftAmount ?? 0;
+  const maxDriftIndex = Math.max(0, chordNotes.length - 1);
 
   const notes: number[] = [];
   for (let n = low; n <= high; n++) notes.push(n);
@@ -281,6 +284,28 @@ export function ArpEditor({ block }: { block: Block }) {
           onClick={() => wheel({ title: "Velocity", min: 1, max: 127, value: velocity, onPick: (n) => setField(block.id, "velocity", n) })}
         >
           Vel {velocity}
+        </Button>
+      </div>
+
+      <div style={{ fontSize: 13, color: "var(--pal-text-dim)", marginTop: 20, marginBottom: 8 }}>
+        Drift — one note in the cycle slips a few steps further every time the block loops, so the pattern slowly goes crooked before it wraps back:
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+        <Button
+          style={{ width: 150, height: 34, fontSize: 14 }}
+          onClick={() =>
+            wheel({ title: "Drift note", min: 0, max: maxDriftIndex, value: Math.min(driftIndex, maxDriftIndex), format: (v) => `note #${v + 1}`, onPick: (n) => setField(block.id, "driftIndex", n) })
+          }
+        >
+          Drift note #{driftIndex + 1}
+        </Button>
+        <Button
+          style={{ width: 170, height: 34, fontSize: 14 }}
+          onClick={() =>
+            wheel({ title: "Drift amount", min: -16, max: 16, unit: " step(s)/loop", value: driftAmount, onPick: (n) => setField(block.id, "driftAmount", n) })
+          }
+        >
+          Drift {driftAmount === 0 ? "off" : `${driftAmount > 0 ? "+" : ""}${driftAmount}/loop`}
         </Button>
       </div>
     </div>

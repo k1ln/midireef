@@ -22,6 +22,8 @@ import { FpsMeter } from "./FpsMeter";
 import { TRANSPORT_H } from "./layout";
 import { getBgConfig, BG_CONFIG_EVENT } from "./bgConfig";
 import { useWheelPicker } from "./widgets/WheelPicker";
+import { useLongPress } from "./useLongPress";
+import { RecordingsPopup } from "./RecordingsPopup";
 
 const BTN = 50;
 /** Navigations-„Tabs" — enger gesetzt als die Transport-Tasten und in einer
@@ -51,6 +53,10 @@ export function Transport({ view, onNav, onAddDevice }: TransportProps) {
   const wheel = useWheelPicker();
   const [t, setT] = useState<TransportState | null>(null);
   const [ports, setPorts] = useState<string[]>([]);
+  /** Laufende Audio-Aufnahme (s. RecordingsPopup) — nur der Ein/Aus-Zustand
+   *  interessiert hier fürs Knopf-Leuchten, der Rest lebt im Popup. */
+  const [recording, setRecording] = useState(false);
+  const [showRecordings, setShowRecordings] = useState(false);
   const bpmRef = useRef(120);
   const [bpmDisplay, setBpmDisplay] = useState(120);
   /** Optionale FPS-Anzeige (⚙ → Background scene). Nur der Schalter landet
@@ -73,9 +79,11 @@ export function Transport({ view, onNav, onAddDevice }: TransportProps) {
         }
       }
       if (evt.t === "midi.ports") setPorts(evt.outputs ?? []);
+      if (evt.t === "audio.state") setRecording(!!evt.recording);
     });
+    send({ t: "audio.getState" });
     return off;
-  }, [net]);
+  }, [net, send]);
 
   // Solange am BPM-Wert gezogen wird, die (evtl. noch alten) Server-Ticks NICHT
   // zurückschreiben lassen — sonst ruckelt die Zahl beim Ziehen.
@@ -90,10 +98,16 @@ export function Transport({ view, onNav, onAddDevice }: TransportProps) {
   };
   const nudgeBpm = (delta: number) => setBpm(bpmRef.current + delta);
 
+  const recordPress = useLongPress(
+    () => setShowRecordings(true),
+    () => send({ t: recording ? "audio.record.stop" : "audio.record.start" }),
+  );
+
   const posText = t ? `${t.bar} : ${t.beat}` : "1 : 1";
   const portText = ports.length > 0 ? `MIDI: ${ports.length} Out` : "MIDI: no ports";
 
   return (
+    <>
     <div
       className="hifi-rail"
       style={{
@@ -126,6 +140,17 @@ export function Transport({ view, onNav, onAddDevice }: TransportProps) {
         }}
       >
         {t?.playing ? "■" : "▶"}
+      </Button>
+      {/* Aufnahme: Tipp startet/stoppt (unabhängig von Play/Stop — Einspielen
+          bei laufendem Sequencer genauso wie im Leerlauf), langes Halten
+          öffnet Interface-Auswahl + Aufnahmen-Liste (RecordingsPopup). */}
+      <Button
+        className={recording ? "transport-record recording" : "transport-record"}
+        style={{ width: BTN, height: BTN, fontSize: 20, marginRight: 6 }}
+        title={recording ? "Stop recording (hold for recordings)" : "Record (hold for recordings)"}
+        {...recordPress}
+      >
+        ⏺
       </Button>
       {/* Navigations-Tabs: eine Gruppe, eng gesetzt (gap 3) auf einer eigenen
           Fläche, damit sie nicht die halbe Leiste frisst. */}
@@ -242,6 +267,8 @@ export function Transport({ view, onNav, onAddDevice }: TransportProps) {
         <span>REEF</span>
       </div>
     </div>
+    {showRecordings && <RecordingsPopup onClose={() => setShowRecordings(false)} />}
+    </>
   );
 }
 

@@ -112,4 +112,13 @@ export class Net {
       this.ws.send(JSON.stringify(cmd));
     }
   }
+
+  /** Base HTTP URL of the server this WS connects to (e.g. for the
+   *  `/recordings/…` download links — see RecordingsPopup.tsx). Derived from
+   *  the WS URL itself rather than `location.origin`: in HMR dev mode the UI
+   *  is served by the Mac's Vite server while the WS points at the Pi (see
+   *  `urlFromLocation` above), and only the Pi actually has the files. */
+  httpBase(): string {
+    return this.url.replace(/^wss:/, "https:").replace(/^ws:/, "http:").replace(/\/ws\/?$/, "");
+  }
 }

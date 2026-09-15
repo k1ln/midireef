@@ -106,6 +106,8 @@ export interface Block {
   gateSteps?: number; // arp
   rateSteps?: number; // arp
   velocity?: number; // arp
+  driftIndex?: number; // arp: which note of one pass through the pool drifts (0-based)
+  driftAmount?: number; // arp: steps that note shifts per loop (wraps within the block)
   outMin?: number; // cc
   outMax?: number; // cc
   destructive?: boolean; // cc: false/undef = Ziel kehrt am Blockende zur Ruhelage zurück

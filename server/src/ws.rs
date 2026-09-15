@@ -6,6 +6,7 @@ use axum::extract::State;
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 
+use crate::audio;
 use crate::clock::ClockCommand;
 use crate::display;
 use crate::github;
@@ -49,6 +50,18 @@ fn broadcast_network_state(state: &AppState) {
 fn broadcast_display_state(state: &AppState) {
     let cfg = *state.display.lock().unwrap();
     let _ = state.events.send(display::state_event(&cfg));
+}
+
+/// Baut `audio.state` aus dem aktuellen `AppState` — Eingangsliste, gewählter
+/// Eingang, laufende Aufnahme (falls eine), gespeicherte Aufnahmen.
+fn audio_state_event(state: &AppState) -> serde_json::Value {
+    let cfg = state.audio.lock().unwrap().clone();
+    let active = state.audio_recording.lock().unwrap();
+    audio::state_event(&cfg, active.as_ref(), &state.data_dir)
+}
+
+fn broadcast_audio_state(state: &AppState) {
+    let _ = state.events.send(audio_state_event(state));
 }
 
 pub async fn ws_handler(
@@ -122,6 +135,12 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     {
         let cfg = state.github.lock().unwrap().clone();
         let evt = github::state_event(&cfg);
+        let _ = sender.send(Message::Text(evt.to_string())).await;
+    }
+
+    // Audio-Aufnahme-Zustand — wie network.state nur an diesen Client.
+    {
+        let evt = audio_state_event(&state);
         let _ = sender.send(Message::Text(evt.to_string())).await;
     }
 
@@ -2406,6 +2425,74 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                     };
                     let _ = events.send(evt);
                 });
+            }
+        }
+        // ── Audio-Aufnahme (Transport → 🎙) ──────────────────────────────────
+        "audio.getState" => broadcast_audio_state(state),
+        "audio.setInput" => {
+            let device = cmd
+                .get("device")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .filter(|s| !s.is_empty());
+            let cfg = audio::AudioConfig { input_device: device };
+            if let Err(e) = audio::save(&state.data_dir, &cfg) {
+                tracing::warn!("audio.json speichern fehlgeschlagen: {e}");
+            }
+            *state.audio.lock().unwrap() = cfg;
+            broadcast_audio_state(state);
+        }
+        // Startet die Aufnahme auf einem eigenen Thread (blockierend, bis der
+        // Stream wirklich läuft — daher `spawn_blocking`, damit der Command-
+        // Loop währenddessen weiterläuft). No-op, wenn schon eine Aufnahme
+        // läuft: nur EINE gleichzeitig (v1).
+        "audio.record.start" => {
+            if state.audio_recording.lock().unwrap().is_some() {
+                tracing::debug!("audio.record.start: schon eine Aufnahme aktiv");
+            } else {
+                let device = state.audio.lock().unwrap().input_device.clone();
+                let events = state.events.clone();
+                let data_dir = state.data_dir.clone();
+                let audio_recording = state.audio_recording.clone();
+                let audio_cfg = state.audio.clone();
+                tokio::spawn(async move {
+                    let events_blocking = events.clone();
+                    let data_dir_blocking = data_dir.clone();
+                    let result = tokio::task::spawn_blocking(move || {
+                        audio::start_recording(device, data_dir_blocking, events_blocking)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Task abgebrochen: {e}")));
+                    match result {
+                        Ok(active) => {
+                            *audio_recording.lock().unwrap() = Some(active);
+                        }
+                        Err(msg) => {
+                            let _ = events.send(serde_json::json!({ "t": "audio.error", "message": msg }));
+                        }
+                    }
+                    let cfg = audio_cfg.lock().unwrap().clone();
+                    let active = audio_recording.lock().unwrap();
+                    let _ = events.send(audio::state_event(&cfg, active.as_ref(), &data_dir));
+                });
+            }
+        }
+        // Signalisiert dem Aufnahme-Thread den Stopp (er schließt die WAV-Datei
+        // ab und meldet die aktualisierte Liste selbst per `audio.recordings`)
+        // und blendet die laufende Aufnahme sofort aus der UI aus.
+        "audio.record.stop" => {
+            let stopped = state.audio_recording.lock().unwrap().take();
+            if let Some(active) = stopped {
+                active.stop();
+            }
+            broadcast_audio_state(state);
+        }
+        "audio.recordings.delete" => {
+            if let Some(file) = str_field(&cmd, "file") {
+                if let Err(e) = audio::delete_recording(&state.data_dir, &file) {
+                    tracing::warn!("Aufnahme löschen fehlgeschlagen: {e}");
+                }
+                broadcast_audio_state(state);
             }
         }
         other => {

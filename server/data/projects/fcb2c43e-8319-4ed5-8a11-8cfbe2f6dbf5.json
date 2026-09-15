@@ -14,6 +14,7 @@
       "name": "J-6 MIDI IN",
       "midiOutPort": "J-6 MIDI IN",
       "sendClock": true,
+      "muted": false,
       "latencyOffsetMs": 0.0,
       "lanes": [
         {
@@ -30,6 +31,7 @@
           "playMode": "sequential",
           "triggerQuantize": "nextBar",
           "channel": 1,
+          "keytrackSourceStarts": false,
           "slots": [
             {
               "blockId": "0b55b0e4-ee81-41b9-856e-f63de4e72219",
@@ -64,6 +66,7 @@
           "playMode": "sequential",
           "triggerQuantize": "nextBar",
           "channel": 1,
+          "keytrackSourceStarts": false,
           "slots": [
             {
               "blockId": "56ce203f-f5b7-4210-9785-568b01072fad",
@@ -290,15 +293,11 @@
   ],
   "controlScreens": [],
   "controlSnapshots": [],
-  "scenes": [],
-  "songs": [],
   "routing": {
-    "routes": [],
-    "scenes": [],
-    "sources": []
+    "sources": [],
+    "routes": []
   },
-  "modulators": [],
-  "modRoutes": [],
+  "keyLinks": [],
   "metronome": {
     "enabled": false,
     "channel": 10,

@@ -71,6 +71,12 @@ struct StepMod {
     /// -1..1, Bruchteil eines Steps früher/später (Nudge).
     micro_timing: f32,
     condition: Option<TrigCondition>,
+    /// Steps, um die sich dieser Hit PRO DURCHLAUF (`Playback::loops_done`)
+    /// weiterschiebt, modulo der Blocklänge in Steps — 0 = kein Drift, klingt
+    /// exakt wie zuvor. Erzeugt einen sich über die Bars verschiebenden
+    /// Einzel-Hit (Phasing), aktuell nur vom Arp-Baustein gesetzt
+    /// (s. `build_arp`).
+    drift_steps: i32,
 }
 
 /// Ziel einer CC-*Lane*: (Port, Kanal, CC-Nummer), aufgelöst aus dem
@@ -1549,14 +1555,20 @@ impl Engine {
         let humanize_timing = lane.humanize_timing.unwrap_or(0.0).clamp(0.0, 1.0);
         let humanize_velocity = lane.humanize_velocity.unwrap_or(0.0).clamp(0.0, 1.0);
         let echo = lane.echo;
+        // Wie oft der laufende Block seit dem letzten Slot-Wechsel schon
+        // durchgelaufen ist — Basis für First/NotFirst/Ratio UND für
+        // `StepMod.drift_steps` (Arp-Note wandert pro Loop weiter).
+        let loops_done = self.playback[lane_idx].loops_done;
 
         // Step-Inhalt einsammeln, dann senden (Borrow-Konflikt vermeiden).
         let mut raw: Vec<Hit> = Vec::new();
         let is_notey = matches!(block.kind, CKind::Melody(_) | CKind::Chord(_) | CKind::Arp(_));
         match &block.kind {
             CKind::Melody(notes) | CKind::Chord(notes) | CKind::Arp(notes) => {
+                let total_steps = (block.len_pulses / block.pulses_per_step.max(1)).max(1);
                 for n in notes {
-                    if n.step == step {
+                    let eff_step = drifted_step(n.step, n.m.drift_steps, loops_done, total_steps);
+                    if eff_step == step {
                         raw.push(Hit {
                             note: n.note,
                             vel: n.vel,
@@ -1589,10 +1601,7 @@ impl Engine {
         // müssen zustimmen (falls gesetzt), sonst fällt der Hit für DIESEN
         // Durchlauf komplett weg (kein Ton, kein Keytrack-Impuls).
         // Deterministisch-abhängigkeitsfreier Hash statt `rand`-Crate, s.
-        // `pseudo_rand`. `loops_done`: wie oft der laufende Block seit dem
-        // letzten Slot-Wechsel schon durchgelaufen ist — Basis für
-        // First/NotFirst/Ratio.
-        let loops_done = self.playback[lane_idx].loops_done;
+        // `pseudo_rand`.
         let hits: Vec<Hit> = raw
             .into_iter()
             .enumerate()
@@ -2149,6 +2158,7 @@ impl StepModJson {
             ratchet: self.ratchet.unwrap_or(1).max(1),
             micro_timing: self.micro_timing.unwrap_or(0.0).clamp(-1.0, 1.0),
             condition: parse_trig_condition(&self.condition),
+            drift_steps: 0,
         }
     }
 }
@@ -2286,6 +2296,13 @@ struct BlockJson {
     rate_steps: u32,
     #[serde(default = "vel_100")]
     velocity: u8,
+    /// Welche Note EINES Durchlaufs durch den Notenvorrat driftet (0-basiert,
+    /// `None`/außerhalb des Vorrats = kein Drift).
+    #[serde(rename = "driftIndex", default)]
+    drift_index: Option<u32>,
+    /// Steps Verschiebung pro Loop für die Drift-Note, s. `StepMod.drift_steps`.
+    #[serde(rename = "driftAmount", default)]
+    drift_amount: i32,
 }
 
 fn one_u32() -> u32 {
@@ -2487,6 +2504,8 @@ fn compile_block(
                 b.gate_steps.max(1),
                 b.velocity.clamp(1, 127),
                 total_steps,
+                b.drift_index.map(|v| v as usize),
+                b.drift_amount,
             ))
         }
         _ => return None,
@@ -2579,10 +2598,28 @@ fn resolve_and_compile_preview(
     Ok((dev.midi_out_port.clone(), cb))
 }
 
+/// Verschiebt `step` um `drift_steps * loops_done` Steps, gewrappt modulo
+/// `total_steps` — die Loop-für-Loop-Bewegung eines driftenden Hits
+/// (s. `StepMod.drift_steps`). `drift_steps == 0` gibt `step` unverändert
+/// zurück (kein Drift, wie zuvor).
+fn drifted_step(step: u32, drift_steps: i32, loops_done: u32, total_steps: u32) -> u32 {
+    if drift_steps == 0 {
+        return step;
+    }
+    let total = total_steps.max(1) as i64;
+    let shifted = step as i64 + drift_steps as i64 * loops_done as i64;
+    shifted.rem_euclid(total) as u32
+}
+
 /// Rollt den Notenvorrat eines Arp-Bausteins in eine feste Einzelnoten-Folge
 /// aus: alle `rate_steps` Steps die nächste Note laut `direction`, je
 /// `gate_steps` lang, bis `total_steps` voll ist. Vorab statt zur Laufzeit,
 /// damit der Rest der Engine ihn wie eine gewöhnliche Melodie behandelt.
+///
+/// `drift_index`/`drift_amount`: die `drift_index`-te Note JEDES Durchlaufs
+/// durch den Vorrat (0-basiert) bekommt `drift_amount` Steps Drift
+/// (s. `StepMod.drift_steps`) — sie wandert dadurch Loop für Loop über das
+/// Stepraster, während der Rest des Arps stehen bleibt ("crooked" Phasing).
 fn build_arp(
     pool: &[u8],
     direction: &str,
@@ -2590,6 +2627,8 @@ fn build_arp(
     gate_steps: u32,
     vel: u8,
     total_steps: u32,
+    drift_index: Option<usize>,
+    drift_amount: i32,
 ) -> Vec<CNote> {
     if pool.is_empty() {
         return Vec::new();
@@ -2621,12 +2660,14 @@ fn build_arp(
         } else {
             order[i % order.len()]
         };
+        let cycle_pos = i % order.len();
+        let drift_steps = if drift_index == Some(cycle_pos) { drift_amount } else { 0 };
         out.push(CNote {
             step,
             len_steps: gate_steps,
             note: pool[idx],
             vel,
-            m: StepMod::default(),
+            m: StepMod { drift_steps, ..StepMod::default() },
         });
         i += 1;
         step += rate_steps;
@@ -2965,6 +3006,64 @@ mod groove_tests {
         assert_eq!(m.probability, None);
         assert_eq!(m.ratchet.max(1), 1);
         assert_eq!(m.micro_timing, 0.0);
+        assert_eq!(m.drift_steps, 0);
+    }
+
+    /// `drift_steps == 0` (der Default) muss `step` unangetastet lassen, egal
+    /// wie oft der Block schon gelaufen ist — sonst würde jeder bestehende
+    /// Arp/Melody/Chord-Baustein plötzlich anders klingen.
+    #[test]
+    fn no_drift_leaves_step_unchanged_across_loops() {
+        for loops_done in 0..5 {
+            assert_eq!(drifted_step(3, 0, loops_done, 16), 3);
+        }
+    }
+
+    /// Mit Drift wandert der Hit pro Loop um `drift_steps` weiter und wrapt
+    /// modulo der Blocklänge — Grundlage des "crooked" Arp-Phasings: nach
+    /// `total_steps / drift_steps` Loops ist er wieder am Ausgangs-Step.
+    #[test]
+    fn drift_advances_by_amount_per_loop_and_wraps() {
+        // step 0, +3 Steps/Loop, 16 Steps lang.
+        assert_eq!(drifted_step(0, 3, 0, 16), 0);
+        assert_eq!(drifted_step(0, 3, 1, 16), 3);
+        assert_eq!(drifted_step(0, 3, 2, 16), 6);
+        // 5 * 3 = 15 < 16, noch kein Wrap.
+        assert_eq!(drifted_step(0, 3, 5, 16), 15);
+        // 6 * 3 = 18 -> wrapt auf 18 % 16 = 2.
+        assert_eq!(drifted_step(0, 3, 6, 16), 2);
+    }
+
+    /// Negativer Drift läuft rückwärts und muss trotzdem im positiven
+    /// Step-Bereich landen (kein negativer Step-Index).
+    #[test]
+    fn negative_drift_wraps_into_positive_range() {
+        assert_eq!(drifted_step(1, -1, 1, 16), 0);
+        assert_eq!(drifted_step(1, -1, 2, 16), 15);
+    }
+
+    /// `build_arp` darf nur die per `drift_index` ausgewählte Note EINES
+    /// Durchlaufs mit Drift versehen — alle anderen bleiben bei 0, sonst
+    /// würde das ganze Arp statt eines einzelnen Nodes wandern.
+    #[test]
+    fn build_arp_drifts_only_the_selected_note_in_each_pass() {
+        // Pool aus 3 Noten, up, rate 1, gate 1 -> 3 Noten pro Durchlauf, 2
+        // Durchläufe über 6 Steps. drift_index=1 -> die 2. Note jedes
+        // Durchlaufs (Steps 1 und 4) driftet, die anderen nicht.
+        let notes = build_arp(&[60, 64, 67], "up", 1, 1, 100, 6, Some(1), 2);
+        assert_eq!(notes.len(), 6);
+        for n in &notes {
+            let expected = if n.step == 1 || n.step == 4 { 2 } else { 0 };
+            assert_eq!(n.m.drift_steps, expected, "step {} hat falschen Drift", n.step);
+        }
+    }
+
+    /// `drift_index: None` (kein Feld gesetzt) darf gar keine Note driften
+    /// lassen — Bausteine ohne Drift-Konfiguration klingen wie vorher.
+    #[test]
+    fn build_arp_without_drift_index_drifts_nothing() {
+        let notes = build_arp(&[60, 64, 67], "up", 1, 1, 100, 6, None, 5);
+        assert!(notes.iter().all(|n| n.m.drift_steps == 0));
     }
 
     /// `TrigCondition` ist ein String-oder-Objekt-Union in TS — die manuelle

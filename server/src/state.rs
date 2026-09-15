@@ -73,6 +73,11 @@ pub struct AppState {
     /// GitHub-Backup-Ziel (Token + Repo, Einstellungen → „GitHub backup").
     /// Persistiert als `<data_dir>/github.json`, siehe `github`.
     pub github: Arc<Mutex<crate::github::GithubConfig>>,
+    /// Ausgewähltes Audio-Aufnahme-Interface (Transport → 🎙). Persistiert
+    /// als `<data_dir>/audio.json`, siehe `audio`.
+    pub audio: Arc<Mutex<crate::audio::AudioConfig>>,
+    /// Laufende Audio-Aufnahme, falls eine armiert ist — nur EINE gleichzeitig.
+    pub audio_recording: Arc<Mutex<Option<crate::audio::ActiveRecording>>>,
     /// Zeitpunkt des letzten gedrosselten Snapshots (s. `broadcast_snapshot_throttled`
     /// in ws.rs) — CC-Step-/Envelope-Balken und Velocity-Balken ziehen sonst bei
     /// jedem Zwischenwert einen vollen Engine-Rebuild + JSON-Snapshot + Autosave
