@@ -1495,6 +1495,24 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 broadcast_snapshot(state);
             }
         }
+        // Anzeigename einer Drum-Line (z.B. "Kick" → "808"). Rein kosmetisch,
+        // die Engine liest für diese Line nur `note`/`steps`/`muted`.
+        "beat.setLineName" => {
+            if let (Some(id), Some(line_id), Some(name)) = (
+                str_field(&cmd, "blockId"),
+                str_field(&cmd, "lineId"),
+                str_field(&cmd, "name"),
+            ) {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(b) = find_block_mut(&mut proj, &id) {
+                    if let Some(line) = find_beat_line_mut(b, &line_id) {
+                        line["name"] = serde_json::json!(name);
+                    }
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
         // Welche MIDI-Note diese Drum-Line schickt (0–127). Der Engine-Zweig für
         // Beat liest `line.note` direkt (s. `compile_block`), also reicht das
         // Umschreiben im Projekt.

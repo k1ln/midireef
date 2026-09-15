@@ -502,13 +502,9 @@ export function PaintToolbar({ paint, setPaint }: { paint: PaintTool; setPaint: 
           onHold={s.key === "grey" ? undefined : () => setEditing(s.key as PaintColor)}
         />
       ))}
-      {paint && (
-        <span style={{ fontSize: 12, color: "var(--pal-text-dim)" }}>
-          {paint === "grey"
-            ? "tap a note or the cells after it to lengthen it"
-            : "tap a note to accent it, an empty cell to add one"}
-        </span>
-      )}
+      {/* Kein Hinweistext mehr, sobald eine Farbe armiert ist — der drängte die
+          Zeile über die Bildschirmbreite und sprengte sie in eine zweite (s.
+          Nutzer-Feedback). Die Anleitung darunter im Editor deckt dasselbe ab. */}
       {editing && (
         <PaintVelocityPopup color={editing} value={vel[editing]} onChange={setVel[editing]} onClose={() => setEditing(null)} />
       )}
@@ -620,6 +616,7 @@ function MelodyGrid({
           <RollRows
             rows={rows}
             steps={steps}
+            stepsPerBar={stepsPerBar}
             block={block}
             playIn={playIn}
             play={play}
@@ -730,6 +727,7 @@ function useVisibleRollRows(
 function RollRows({
   rows,
   steps,
+  stepsPerBar,
   block,
   playIn,
   play,
@@ -742,6 +740,8 @@ function RollRows({
 }: {
   rows: number[];
   steps: number[];
+  /** Für die Takt-Trennlinien — s. `RollCell`s `barStart`. */
+  stepsPerBar: number;
   block: Block;
   playIn: boolean;
   play: PlayIn;
@@ -781,6 +781,11 @@ function RollRows({
               return (
                 <RollCell
                   key={step}
+                  // Anfang eines neuen Takts (außer dem allerersten Step) —
+                  // eine kräftigere Linie, damit man beim Scrollen durch
+                  // mehrtaktige Melodien sieht, wo ein Takt endet und der
+                  // nächste beginnt (s. Nutzer-Feedback).
+                  barStart={step > 0 && step % stepsPerBar === 0}
                   // Die Spalte, auf die das nächste Gespielte geht.
                   cursor={playIn && step === play.cursor}
                   // Gehaltene Note als eigener, DECKENDER Grauton statt als
@@ -847,12 +852,16 @@ function RollRows({
 function RollCell({
   background,
   cursor,
+  barStart,
   onTap,
   onLongPress,
 }: {
   background: string;
   /** Liegt die Zelle auf dem Schreib-Cursor des Einspielens? */
   cursor?: boolean;
+  /** Erster Step eines neuen Takts (außer dem allerersten) — kräftigere
+   *  linke Kante statt des normalen Zellrahmens, s. `RollRows`. */
+  barStart?: boolean;
   onTap: () => void;
   /** Fehlt bei leeren Zellen — dort gibt es nichts zu entfernen. */
   onLongPress?: () => void;
@@ -868,7 +877,12 @@ function RollCell({
   return (
     <div
       className={`step-cell${cursor ? " step-cursor" : ""}`}
-      style={{ width: CELL_W - 2, height: ROW_H, background }}
+      style={{
+        width: CELL_W - 2,
+        height: ROW_H,
+        background,
+        ...(barStart ? { borderLeft: "3px solid var(--pal-text-dim)" } : undefined),
+      }}
       {...handlers}
     />
   );

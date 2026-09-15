@@ -7,7 +7,7 @@
 //! entweder in eine lange scrollbare Reihe oder taktweise untereinander.
 
 import { useState } from "react";
-import type { Block } from "../../state";
+import type { Block, BeatLine } from "../../state";
 import { useSend } from "../store";
 import { noteName, useNotePicker } from "../NotePicker";
 import { Button } from "../widgets/Button";
@@ -15,6 +15,13 @@ import { Popup } from "../widgets/Popup";
 import { StepScroller, StepBars, StepCell, ROLL_LOW_NOTE, ROLL_HIGH_NOTE, type StepFlow } from "./StepGrid";
 import { useNumberEditor, useSetField } from "../useNumberEditor";
 import { useWheelPicker } from "../widgets/WheelPicker";
+import { useLongPress } from "../useLongPress";
+import { useTouchKeyboard } from "../TouchKeyboard";
+
+/** Zellgröße der Beat-Zeilen — dieselbe wie die Piano-Rolle (s. MelodyEditor),
+ *  damit ein Finger auf dem Touchdisplay auch hier sicher trifft (s. Nutzer-
+ *  Feedback: "same sizes as melody"). */
+const BEAT_CELL = 64;
 
 const DIRECTIONS = ["up", "down", "upDown", "random", "asPlayed"];
 const MSG_KINDS = ["programChange", "cc", "note"];
@@ -30,36 +37,21 @@ export function BeatEditor({ block, flow }: { block: Block; flow: StepFlow }) {
 
   // Zeilennamen links; bei taktweisem Layout wiederholt StepBars sie je Takt,
   // damit man auch in Takt 3 noch weiß, welche Zeile die Snare ist.
-  //   • Name antippen  → Line stummschalten
-  //   • Note antippen  → welche MIDI-Note die Line schickt (Note-Picker)
+  //   • Name antippen      → umbenennen (Tastatur)
+  //   • Name lang drücken  → "lernen", welche MIDI-Note diese Line schickt
+  //     (derselbe Note-Picker wie vorher, nur nicht mehr hinter einem Tipper
+  //     versteckt, der jetzt fürs Umbenennen gebraucht wird)
   const names = (
     <>
       <div style={{ height: 20 }} />
       {lines.map((line) => (
-        <div key={line.id} style={{ height: 46, display: "flex", flexDirection: "column", justifyContent: "center", gap: 2 }}>
-          <span
-            style={{ fontSize: 15, fontWeight: 600, cursor: "pointer", color: line.muted ? "var(--pal-text-dim)" : "var(--pal-text)" }}
-            onClick={() => send({ t: "beat.setLineMuted", blockId: block.id, lineId: line.id, muted: !line.muted })}
-          >
-            {line.name}
-            {line.muted && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "var(--pal-danger)" }}>MUTE</span>}
-          </span>
-          <span
-            style={{ fontSize: 12, fontWeight: 700, color: "var(--pal-text-dim)", cursor: "pointer" }}
-            title="Which MIDI note this line triggers"
-            onClick={() =>
-              openNotePicker(line.note, (n) => send({ t: "beat.setLineNote", blockId: block.id, lineId: line.id, note: n }))
-            }
-          >
-            ♪ {noteName(line.note)} ({line.note})
-          </span>
-        </div>
+        <BeatLineLabel key={line.id} block={block} line={line} openNotePicker={openNotePicker} send={send} />
       ))}
     </>
   );
 
   return (
-    <StepBars totalSteps={totalSteps} stepsPerBar={stepsPerBar} cellW={34} flow={flow} leftColumn={names} leftWidth={130}>
+    <StepBars totalSteps={totalSteps} stepsPerBar={stepsPerBar} cellW={BEAT_CELL} flow={flow} leftColumn={names} leftWidth={150}>
       {(steps) =>
         lines.map((line) => (
           <div key={line.id} className="step-row">
@@ -73,8 +65,8 @@ export function BeatEditor({ block, flow }: { block: Block; flow: StepFlow }) {
                   key={step}
                   className="step-cell"
                   style={{
-                    width: 32,
-                    height: 38,
+                    width: BEAT_CELL,
+                    height: BEAT_CELL,
                     // Deckend abgestuft (kein `opacity`): stumme Line dunkler,
                     // Beat-Marker etwas dunkler als die Zwischen-Steps.
                     background: on
@@ -93,6 +85,64 @@ export function BeatEditor({ block, flow }: { block: Block; flow: StepFlow }) {
         ))
       }
     </StepBars>
+  );
+}
+
+/** Eine Zeilenbeschriftung der Beat-Rolle. Eigene Komponente nur, weil
+ *  `useLongPress`/`useTouchKeyboard` Hooks sind und deshalb nicht in der
+ *  Zeilen-Schleife stehen dürfen. */
+function BeatLineLabel({
+  block,
+  line,
+  openNotePicker,
+  send,
+}: {
+  block: Block;
+  line: BeatLine;
+  openNotePicker: ReturnType<typeof useNotePicker>;
+  send: ReturnType<typeof useSend>;
+}) {
+  const openKeyboard = useTouchKeyboard();
+  const press = useLongPress(
+    () => openNotePicker(line.note, (n) => send({ t: "beat.setLineNote", blockId: block.id, lineId: line.id, note: n })),
+    () =>
+      openKeyboard(line.name, 16, (v) => {
+        if (v) send({ t: "beat.setLineName", blockId: block.id, lineId: line.id, name: v });
+      }),
+  );
+
+  return (
+    <div style={{ height: BEAT_CELL, display: "flex", flexDirection: "column", justifyContent: "center", gap: 4 }}>
+      <span
+        {...press}
+        title="Tap to rename, long-press to set which MIDI note plays this line"
+        style={{
+          fontSize: 17,
+          fontWeight: 700,
+          cursor: "pointer",
+          color: line.muted ? "var(--pal-text-dim)" : "var(--pal-text)",
+          touchAction: "manipulation",
+        }}
+      >
+        {line.name}
+      </span>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: "var(--pal-text-dim)" }}>
+          ♪ {noteName(line.note)} ({line.note})
+        </span>
+        <span
+          style={{
+            fontSize: 10,
+            fontWeight: 700,
+            cursor: "pointer",
+            color: line.muted ? "var(--pal-danger)" : "var(--pal-text-dim)",
+          }}
+          onClick={() => send({ t: "beat.setLineMuted", blockId: block.id, lineId: line.id, muted: !line.muted })}
+        >
+          {line.muted ? "MUTED" : "mute"}
+        </span>
+      </div>
+    </div>
   );
 }
 
