@@ -2568,6 +2568,28 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 broadcast_audio_state(state);
             }
         }
+        // Liest eine Aufnahme durch und meldet ihren Spitzenpegel — Diagnose,
+        // ob eine unhörbare Aufnahme an der Aufnahme selbst (stummer/falscher
+        // Eingang) oder an der Wiedergabe liegt, s. `audio::peak_of_recording`.
+        // Liest die ganze Datei, daher `spawn_blocking` statt den Command-Loop
+        // zu blockieren.
+        "audio.recordings.peek" => {
+            if let Some(file) = str_field(&cmd, "file") {
+                let data_dir = state.data_dir.clone();
+                let events = state.events.clone();
+                tokio::spawn(async move {
+                    let file_for_result = file.clone();
+                    let result = tokio::task::spawn_blocking(move || audio::peak_of_recording(&data_dir, &file))
+                        .await
+                        .unwrap_or_else(|e| Err(format!("Task abgebrochen: {e}")));
+                    let evt = match result {
+                        Ok(peak) => serde_json::json!({ "t": "audio.recordingPeak", "file": file_for_result, "peak": peak }),
+                        Err(e) => serde_json::json!({ "t": "audio.recordingPeak", "file": file_for_result, "error": e }),
+                    };
+                    let _ = events.send(evt);
+                });
+            }
+        }
         // Testet nacheinander jeden sichtbaren Eingang und meldet dessen
         // Spitzenpegel (`audio.probeStart`/`audio.probeResult`, zuletzt
         // `audio.probeDone`) — hilft, mehrdeutig benannte Einträge

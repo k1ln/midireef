@@ -111,6 +111,35 @@ fn find_output_device(host: &cpal::platform::Host, needle: &str) -> Option<cpal:
     find_device(host.output_devices().ok()?, needle)
 }
 
+/// Löst den zu benutzenden Ein-/Ausgang auf: explizit gewählter Name, sonst
+/// der beste verfügbare (`find_device` mit leerem Suchstring matcht — und
+/// sortiert damit nach `alsa_priority` — JEDES Gerät, liefert also denselben
+/// Spitzenreiter wie der erste Eintrag von `list_input_devices()`/
+/// `list_output_devices()`).
+///
+/// Bewusst NICHT `host.default_input_device()`/`default_output_device()`:
+/// cpals „Standardgerät" ist auf ALSA meist buchstäblich der Alias `"default"`
+/// aus `/etc/asound.conf` — der zeigt nicht zuverlässig auf ein frisch
+/// angeschlossenes USB-Interface, sondern oft weiter auf die Onboard-Karte.
+/// Ohne diese eigene Auflösung konnte die UI „aktiv" einen Eintrag zeigen
+/// (den Spitzenreiter der eigenen Liste), während Aufnahme/Wiedergabe
+/// tatsächlich über ein ANDERES, per `cpal` als „Standard" gemeldetes Gerät
+/// liefen — z.B. eine stumme Aufnahme, obwohl die Liste das richtige
+/// Interface als gewählt anzeigte.
+fn resolve_input_device(host: &cpal::platform::Host, selected: Option<&str>) -> Option<cpal::Device> {
+    match selected.filter(|n| !n.is_empty()) {
+        Some(name) => find_input_device(host, name),
+        None => find_device(host.input_devices().ok()?, ""),
+    }
+}
+
+fn resolve_output_device(host: &cpal::platform::Host, selected: Option<&str>) -> Option<cpal::Device> {
+    match selected.filter(|n| !n.is_empty()) {
+        Some(name) => find_output_device(host, name),
+        None => find_device(host.output_devices().ok()?, ""),
+    }
+}
+
 /// ALSA meldet eine einzelne physische Karte oft mehrfach unter
 /// verschiedenen Alias-Namen — `cpal`s ALSA-Backend listet sowohl alle ALSA-
 /// „Hints" (`default`/`sysdefault`/`front`/`surround*`/`dmix`/`dsnoop`/…) ALS
@@ -215,6 +244,29 @@ pub fn list_recordings(data_dir: &Path) -> Vec<serde_json::Value> {
         .collect();
     found.sort_by(|a, b| b.0.cmp(&a.0));
     found.into_iter().map(|(_, v)| v).collect()
+}
+
+/// Liest eine gespeicherte Aufnahme komplett durch und meldet ihren
+/// Spitzenpegel (0..1) — Diagnose-Werkzeug: „hört man eine Aufnahme nicht,
+/// liegt es an der Aufnahme (falscher/stummer Eingang beim Aufnehmen) oder an
+/// der Wiedergabe?" lässt sich damit ohne funktionierende Lautsprecher
+/// beantworten, ähnlich `probe_peak` fürs LIVE-Signal eines Eingangs. Bewusst
+/// NICHT automatisch bei jedem `list_recordings()` mitberechnet (das läuft in
+/// praktisch jedem `audio.state`-Broadcast) — ein voller Datei-Scan pro
+/// Aufnahme bei jedem Broadcast würde mit wachsendem Ordner spürbar lahmen;
+/// stattdessen ein eigener, auf Anfrage laufender Command.
+pub fn peak_of_recording(data_dir: &Path, file: &str) -> Result<f32, String> {
+    if file.contains('/') || file.contains("..") {
+        return Err("ungültiger Dateiname".into());
+    }
+    let path = recordings_dir(data_dir).join(file);
+    let reader = hound::WavReader::open(&path).map_err(|e| format!("WAV-Datei ließ sich nicht öffnen: {e}"))?;
+    let mut peak = 0f32;
+    for sample in reader.into_samples::<f32>() {
+        let Ok(s) = sample else { break };
+        peak = peak.max(s.abs());
+    }
+    Ok(peak)
 }
 
 /// Löscht eine gespeicherte Aufnahme. Nimmt nur einfache Dateinamen (kein
@@ -347,10 +399,7 @@ fn run_recording(
     stop_rx: std::sync::mpsc::Receiver<()>,
 ) {
     let host = cpal::default_host();
-    let device = match device_name.as_deref().filter(|n| !n.is_empty()) {
-        Some(name) => find_input_device(&host, name),
-        None => host.default_input_device(),
-    };
+    let device = resolve_input_device(&host, device_name.as_deref());
     let Some(device) = device else {
         let _ = ready_tx.send(Err("Audio-Eingang nicht gefunden".into()));
         return;
@@ -604,10 +653,7 @@ pub fn play_test_tone(device_name: Option<String>, events: tokio::sync::broadcas
 
 fn run_test_tone(device_name: Option<String>) -> Result<(), String> {
     let host = cpal::default_host();
-    let device = match device_name.as_deref().filter(|n| !n.is_empty()) {
-        Some(name) => find_output_device(&host, name),
-        None => host.default_output_device(),
-    };
+    let device = resolve_output_device(&host, device_name.as_deref());
     let Some(device) = device else {
         return Err("Audio-Ausgang nicht gefunden".into());
     };
@@ -728,10 +774,7 @@ fn run_playback(
     finished: Arc<AtomicBool>,
 ) {
     let host = cpal::default_host();
-    let device = match device_name.as_deref().filter(|n| !n.is_empty()) {
-        Some(name) => find_output_device(&host, name),
-        None => host.default_output_device(),
-    };
+    let device = resolve_output_device(&host, device_name.as_deref());
     let Some(device) = device else {
         let _ = ready_tx.send(Err("Audio-Ausgang nicht gefunden".into()));
         return;

@@ -87,6 +87,10 @@ export function AudioRecorderPanel() {
    *  (s. `audio::play_test_tone`), dieser Timer blendet den Button nur so
    *  lange als "läuft" ein. */
   const [testingTone, setTestingTone] = useState(false);
+  /** Ergebnis von `audio.recordings.peek`, je Dateiname — s. "Check level"
+   *  unten: sagt, ob eine unhörbare Aufnahme selbst stumm ist (dann liegt es
+   *  nicht an der Wiedergabe). */
+  const [peaks, setPeaks] = useState<Record<string, { loading: boolean; peak?: number; error?: string }>>({});
 
   useEffect(() => {
     const off = net.onEvent((evt) => {
@@ -117,6 +121,8 @@ export function AudioRecorderPanel() {
           ...p,
           [evt.device]: { testing: false, level: evt.level, error: evt.error },
         }));
+      } else if (evt.t === "audio.recordingPeak") {
+        setPeaks((p) => ({ ...p, [evt.file]: { loading: false, peak: evt.peak, error: evt.error } }));
       }
     });
     send({ t: "audio.getState" });
@@ -284,8 +290,42 @@ export function AudioRecorderPanel() {
                   </div>
                   <div style={{ fontSize: 11, color: "var(--pal-text-dim)" }}>
                     {formatBytes(r.size)} · {formatAge(r.createdAt)}
+                    {peaks[r.file] &&
+                      (peaks[r.file].loading ? (
+                        <> · checking…</>
+                      ) : peaks[r.file].error ? (
+                        <>
+                          {" · "}
+                          <span style={{ color: "var(--pal-danger)" }}>⚠ {peaks[r.file].error}</span>
+                        </>
+                      ) : (
+                        <>
+                          {" · peak "}
+                          <span
+                            style={{
+                              color: (peaks[r.file].peak ?? 0) < 0.02 ? "var(--pal-danger)" : "var(--pal-text-dim)",
+                              fontWeight: (peaks[r.file].peak ?? 0) < 0.02 ? 700 : 400,
+                            }}
+                          >
+                            {(peaks[r.file].peak ?? 0) < 0.02
+                              ? "near-silent"
+                              : `${Math.round((peaks[r.file].peak ?? 0) * 100)}%`}
+                          </span>
+                        </>
+                      ))}
                   </div>
                 </div>
+                <Button
+                  style={{ width: 44, height: 44, fontSize: 15 }}
+                  disabled={peaks[r.file]?.loading}
+                  title="Check whether this file actually has audio in it (no speakers needed)"
+                  onClick={() => {
+                    setPeaks((p) => ({ ...p, [r.file]: { loading: true } }));
+                    send({ t: "audio.recordings.peek", file: r.file });
+                  }}
+                >
+                  📊
+                </Button>
                 <Button
                   variant={audio.playing?.file === r.file ? "active" : "default"}
                   style={{ width: 44, height: 44, fontSize: 16 }}
