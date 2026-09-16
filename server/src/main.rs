@@ -139,6 +139,10 @@ async fn main() {
     // ausgeliefert (Download übers WLAN, kein eigener Datei-Server nötig).
     let audio_cfg = Arc::new(Mutex::new(audio::load(&data_dir)));
     let recordings_dir = audio::recordings_dir(&data_dir);
+    // `index.html` einmal beim Start auf den aktuellen Stand bringen (auch
+    // relevant nach einem Server-Neustart ohne zwischenzeitliche Aufnahme/
+    // Löschung) — s. `audio::write_index` fürs Warum.
+    audio::write_index(&data_dir);
 
     let state = AppState {
         project,
@@ -157,6 +161,7 @@ async fn main() {
         github: github_cfg,
         audio: audio_cfg,
         audio_recording: Arc::new(Mutex::new(None)),
+        audio_playback: Arc::new(Mutex::new(None)),
         last_streamed_snapshot: Arc::new(Mutex::new(None)),
         snapshot_pending: Arc::new(AtomicBool::new(false)),
     };
@@ -197,6 +202,10 @@ async fn main() {
         .with_state(state)
         // Aufnahmen als statische Dateien — direkt per Browser/curl übers
         // WLAN herunterladbar (`http://<pi>:8787/recordings/<datei>.wav`).
+        // Die bloße `/recordings/`-URL zeigt eine simple Verzeichnis-Liste:
+        // kein eigener Handler nötig, `ServeDir` liefert automatisch ein
+        // vorhandenes `index.html` aus einem Verzeichnis aus — `audio::
+        // write_index` hält genau diese Datei aktuell (s. dort fürs Warum).
         .nest_service("/recordings", ServeDir::new(recordings_dir))
         .fallback_service(ui_service());
 

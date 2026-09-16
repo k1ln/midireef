@@ -9,16 +9,31 @@
 //! Akkorde bilden (Hardware über gleichzeitiges Halten, Bildschirm-Tasten
 //! über mehrere Tipper — s. `notesAtCursor`).
 //!
-//! Eingespielt wird in SCHRITTEN, nicht in Echtzeit: es gibt einen
-//! Schreib-Cursor, gespielte Noten landen auf seinem Step, und er rückt mit
-//! `autoAdvance` weiter, sobald eine Hardware-Taste losgelassen (bzw. keine
-//! mehr gehalten) wird. Damit ist das Einspielen unabhängig vom Transport
-//! (man kann bei stehender Wiedergabe schreiben), Akkorde entstehen von
-//! selbst (was gleichzeitig gehalten wird, steht auf einem Step), und nichts
-//! landet „daneben", weil man zu früh oder zu spät war — Timing-Korrektur
-//! bräuchte auf einem Touchdisplay ohnehin eine Quantisierung, die man erst
-//! wieder einstellen müsste. Wer live gegen die laufende Uhr aufnehmen will,
-//! hat dafür `record.arm` im Dashboard.
+//! Zwei MODI, dieselbe Eingabe (s. `PlayInMode`):
+//!
+//!   "step" — eingespielt wird in SCHRITTEN, nicht in Echtzeit: es gibt einen
+//!     Schreib-Cursor, gespielte Noten landen auf seinem Step, und er rückt
+//!     mit `autoAdvance` weiter, sobald eine Hardware-Taste losgelassen (bzw.
+//!     keine mehr gehalten) wird. Damit ist das Einspielen unabhängig vom
+//!     Transport (man kann bei stehender Wiedergabe schreiben), Akkorde
+//!     entstehen von selbst (was gleichzeitig gehalten wird, steht auf einem
+//!     Step), und nichts landet „daneben", weil man zu früh oder zu spät war
+//!     — Timing-Korrektur bräuchte auf einem Touchdisplay ohnehin eine
+//!     Quantisierung, die man erst wieder einstellen müsste.
+//!
+//!   "live" — der Baustein läuft (der Transport wird beim Umschalten
+//!     angeworfen, falls er noch steht), der Schreib-Cursor IST der laufende
+//!     Playhead (`RuntimeFeed.currentStep`, dieselbe Live-Position, die auch
+//!     den Playhead in der Rolle zeichnet), und eine gespielte Note landet
+//!     genau dort, wo der Playhead gerade steht, mit ihrer TATSÄCHLICH
+//!     gehaltenen Länge (Note-on merkt sich den Start-Step, Note-off rechnet
+//!     die Länge bis zum dann aktuellen Step aus) — derselbe Ablauf wie
+//!     `record_note_in` in `clock.rs` (dem Server-Pendant für `record.arm` im
+//!     Dashboard), nur ohne den Umweg über ein gelerntes Keyboard-Control und
+//!     eine Lane-Zuordnung: hier ist der Baustein selbst das Ziel. Läuft der
+//!     Baustein gerade in keiner Lane (Status-Chip zeigt "idle"), gibt es
+//!     keine Live-Position — gespielte Noten klingen dann zwar (Vorschau),
+//!     werden aber nicht geschrieben.
 //!
 //! Der TON kommt bei Hardware-Noten vom Server (er spielt sie direkt aufs Ziel
 //! des Bausteins, s. `AppState::forward_note_input`), bei den Bildschirm-Tasten
@@ -28,9 +43,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Block } from "../../state";
-import { useNet, useSend } from "../store";
+import { useNet, useRuntime, useSend } from "../store";
 import { noteName } from "../NotePicker";
 import { Button } from "../widgets/Button";
+
+export type PlayInMode = "step" | "live";
 
 /** Notenlängen des Schreib-Cursors, in Steps — zugleich das Maß, um das er
  *  weiterrückt. Punktierte/krumme Werte fehlen bewusst: sie sind über den
@@ -45,9 +62,18 @@ const VELOCITIES = [20, 40, 60, 80, 100, 110, 127];
 const DEFAULT_VELOCITY = 100;
 
 export interface PlayIn {
-  /** Step, auf den die nächste gespielte Note geschrieben wird. */
+  mode: PlayInMode;
+  /** Step, auf den die nächste gespielte Note geschrieben wird — im
+   *  "live"-Modus der laufende Playhead, nicht per Hand versetzbar (s.
+   *  `setCursor`, das dort zur No-op wird). */
   cursor: number;
+  /** Im "live"-Modus wirkungslos — der Cursor IST der Playhead. */
   setCursor: (step: number) => void;
+  /** Nur im "live"-Modus interessant: läuft der Baustein gerade in einer
+   *  Lane (`RuntimeFeed.currentStep` liefert etwas)? `false` heißt: gespielte
+   *  Noten klingen zwar (Vorschau), landen aber nirgends — derselbe Grund,
+   *  den der Status-Chip oben schon als "idle" ausschreibt. */
+  liveRunning: boolean;
   /** Länge der geschriebenen Noten UND Schrittweite des Cursors. */
   lengthSteps: number;
   setLengthSteps: (steps: number) => void;
@@ -85,15 +111,17 @@ export interface PlayIn {
  * auf 0 — ein Baustein ist eine Schleife, und ein Cursor, der am Ende stehen
  * bleibt, würde alles Weitere auf denselben letzten Step stapeln.
  */
-export function usePlayIn(block: Block, totalSteps: number, active: boolean): PlayIn {
+export function usePlayIn(block: Block, totalSteps: number, active: boolean, mode: PlayInMode): PlayIn {
   const send = useSend();
   const net = useNet();
+  const runtime = useRuntime();
   const [cursor, setCursorState] = useState(0);
   const [lengthSteps, setLengthSteps] = useState(1);
   const [velocity, setVelocity] = useState(DEFAULT_VELOCITY);
   const [sendOnPlay, setSendOnPlay] = useState(true);
   const [autoAdvance, setAutoAdvance] = useState(true);
   const [held, setHeld] = useState<number[]>([]);
+  const [liveRunning, setLiveRunning] = useState(false);
 
   // Refs neben dem State, weil der WS-Handler unten NICHT bei jeder
   // Cursor-Bewegung neu aufgehängt werden soll (mitten im Spielen die
@@ -106,21 +134,96 @@ export function usePlayIn(block: Block, totalSteps: number, active: boolean): Pl
   totalRef.current = Math.max(1, totalSteps);
   lengthRef.current = lengthSteps;
   autoAdvanceRef.current = autoAdvance;
+  const modeRef = useRef<PlayInMode>(mode);
+  modeRef.current = mode;
+  // Live-Modus: Step, an dem eine gehaltene Note (Hardware ODER Bildschirm-
+  // Taste) begonnen hat — Note-off rechnet daraus die tatsächlich gehaltene
+  // Länge aus, statt einer geratenen festen Länge (s. Datei-Kopf, "live").
+  const liveHolds = useRef<Map<number, number>>(new Map());
 
   const setCursor = useCallback((step: number) => {
+    if (modeRef.current === "live") return; // Playhead, nicht per Hand versetzbar.
     const total = totalRef.current;
     const wrapped = ((step % total) + total) % total;
     cursorRef.current = wrapped;
     setCursorState(wrapped);
   }, []);
 
-  /** Schreibt die Note an den Cursor. Ohne `send` in den Deps — der Kontext
-   *  liefert dieselbe Funktion über die Lebensdauer der App. */
+  // Live-Modus: der Cursor folgt dem laufenden Playhead statt der Hand. Statt
+  // per rAF jeden Frame zu pollen (React-Re-Render, den niemand sieht, weil
+  // die Rolle sich ohnehin nur je Step sichtbar ändert), hängt sich das an
+  // genau die Events, die `RuntimeFeed` selbst treibt (`lane.runtime`, alle
+  // 16tel) — dieselbe Frequenz wie der Playhead-Sweep im Raster.
+  useEffect(() => {
+    if (!active || mode !== "live") return;
+    const sync = () => {
+      const step = runtime.currentStep(block.id);
+      setLiveRunning(step !== null);
+      if (step !== null) {
+        cursorRef.current = step;
+        setCursorState(step);
+      }
+    };
+    sync();
+    return net.onEvent((evt) => {
+      if (evt.t === "lane.runtime") sync();
+    });
+  }, [active, mode, net, runtime, block.id]);
+
+  /** Live-Modus: Note beginnt jetzt — merkt sich den Playhead-Step als Start
+   *  und schreibt sofort eine 1-Step-Note dorthin (wächst bei `liveWriteOff`
+   *  auf ihre tatsächliche Länge) — derselbe Ablauf wie `record_note_in` in
+   *  `clock.rs`. Ohne Live-Position (Baustein läuft in keiner Lane) klingt
+   *  die Note nur (Vorschau bzw. Server-Ton), es wird nichts geschrieben. */
+  const liveWriteOn = useCallback(
+    (note: number, velocity: number) => {
+      const step = runtime.currentStep(block.id);
+      if (step === null) return;
+      liveHolds.current.set(note, step);
+      const already = (block.notes ?? []).some((n) => n.step === step && n.note === note);
+      if (already) return;
+      send({
+        t: "melody.addNote",
+        blockId: block.id,
+        step,
+        note,
+        velocity: Math.max(1, Math.min(127, velocity)),
+        lengthSteps: 1,
+      });
+    },
+    [send, block.id, runtime, block.notes],
+  );
+
+  /** Live-Modus: Note endet — Länge = Abstand vom gemerkten Start-Step bis
+   *  zum jetzigen Playhead (mod Baustein-Länge, mindestens 1). Lief der
+   *  Baustein zwischenzeitlich nicht mehr, bleibt die Note bei ihrer 1-Step-
+   *  Startlänge stehen statt an einem geratenen Ende. */
+  const liveWriteOff = useCallback(
+    (note: number) => {
+      const startStep = liveHolds.current.get(note);
+      liveHolds.current.delete(note);
+      if (startStep === undefined) return;
+      const nowStep = runtime.currentStep(block.id);
+      if (nowStep === null) return;
+      const total = totalRef.current;
+      const len = Math.max(1, (((nowStep - startStep) % total) + total) % total);
+      send({ t: "melody.setNoteLength", blockId: block.id, step: startStep, note, lengthSteps: len });
+    },
+    [send, block.id, runtime],
+  );
+
+  /** Schreibt die Note an den Cursor (Step-Modus) bzw. am Playhead (Live-
+   *  Modus, s. `liveWriteOn`). Ohne `send` in den Deps — der Kontext liefert
+   *  dieselbe Funktion über die Lebensdauer der App. */
   const noteOn = useCallback(
     (note: number, velocity: number) => {
       if (heldRef.current.has(note)) return;
       heldRef.current.add(note);
       setHeld([...heldRef.current]);
+      if (modeRef.current === "live") {
+        liveWriteOn(note, velocity);
+        return;
+      }
       send({
         t: "melody.addNote",
         blockId: block.id,
@@ -130,20 +233,24 @@ export function usePlayIn(block: Block, totalSteps: number, active: boolean): Pl
         lengthSteps: lengthRef.current,
       });
     },
-    [send, block.id],
+    [send, block.id, liveWriteOn],
   );
 
   const noteOff = useCallback(
     (note: number) => {
       if (!heldRef.current.delete(note)) return;
       setHeld([...heldRef.current]);
+      if (modeRef.current === "live") {
+        liveWriteOff(note);
+        return;
+      }
       // Erst wenn ALLES los ist, rückt der Cursor: bis dahin gehört jede
       // weitere Taste zum selben Akkord auf demselben Step. Mit
       // `autoAdvance` aus bleibt er stehen — für einen Hardware-Akkord, der
       // in mehreren Anschlägen statt einer Hand voll Finger entsteht.
       if (heldRef.current.size === 0 && autoAdvanceRef.current) setCursor(cursorRef.current + lengthRef.current);
     },
-    [setCursor],
+    [setCursor, liveWriteOff],
   );
 
   // Server armieren/entwaffnen. Das Entwaffnen im Cleanup ist der Teil, der
@@ -192,19 +299,29 @@ export function usePlayIn(block: Block, totalSteps: number, active: boolean): Pl
       heldRef.current.add(note);
       setHeld([...heldRef.current]);
       if (sendOnPlay) send({ t: "block.previewNote", blockId: block.id, note, on: true, velocity });
+      // Live-Modus: die Note beginnt jetzt hörbar zu klingen, also beginnt
+      // hier auch ihr Start-Step (s. `liveWriteOn`) — nicht erst bei `release`.
+      if (modeRef.current === "live") liveWriteOn(note, velocity);
     },
-    [sendOnPlay, send, block.id, velocity],
+    [sendOnPlay, send, block.id, velocity, liveWriteOn],
   );
 
-  /** Loslassen entscheidet: Note noch nicht am Step → setzen (und mit
-   *  `autoAdvance` weiterrücken); steht sie schon (grün) → wieder weg. So
-   *  baut man einen Akkord durch mehrere Tipper auf denselben Step, statt
-   *  dass jeder Tipper allein schon den Cursor verschiebt. */
+  /** Loslassen entscheidet im Step-Modus: Note noch nicht am Step → setzen
+   *  (und mit `autoAdvance` weiterrücken); steht sie schon (grün) → wieder
+   *  weg. So baut man einen Akkord durch mehrere Tipper auf denselben Step,
+   *  statt dass jeder Tipper allein schon den Cursor verschiebt. Im
+   *  Live-Modus gibt es dieses Toggle nicht (der Cursor läuft ja weiter,
+   *  „derselbe Step" gibt es beim Loslassen meist nicht mehr) — dort schließt
+   *  `liveWriteOff` die bei `press` begonnene Note einfach ab. */
   const release = useCallback(
     (note: number) => {
       heldRef.current.delete(note);
       setHeld([...heldRef.current]);
       if (sendOnPlay) send({ t: "block.previewNote", blockId: block.id, note, on: false });
+      if (modeRef.current === "live") {
+        liveWriteOff(note);
+        return;
+      }
       const step = cursorRef.current;
       if (notes.some((n) => n.step === step && n.note === note)) {
         send({ t: "melody.removeNote", blockId: block.id, step, note });
@@ -213,12 +330,14 @@ export function usePlayIn(block: Block, totalSteps: number, active: boolean): Pl
         if (autoAdvanceRef.current) setCursor(step + lengthRef.current);
       }
     },
-    [sendOnPlay, send, block.id, notes, velocity, setCursor],
+    [sendOnPlay, send, block.id, notes, velocity, setCursor, liveWriteOff],
   );
 
   return {
+    mode,
     cursor,
     setCursor,
+    liveRunning,
     lengthSteps,
     setLengthSteps,
     velocity,
@@ -254,7 +373,9 @@ export function PlayInBar({
   baseNote: number;
 }) {
   const {
+    mode,
     cursor,
+    liveRunning,
     setCursor,
     lengthSteps,
     setLengthSteps,
@@ -290,10 +411,17 @@ export function PlayInBar({
             +8ve
           </Button>
         </div>
-        <div style={{ fontSize: 13, fontWeight: 700, color: "var(--pal-run)" }}>PLAY IN</div>
-        <Button variant="alt" style={{ width: 46, height: 38, fontSize: 16 }} title="Step back" onClick={() => setCursor(cursor - lengthSteps)}>
-          ◀
-        </Button>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "var(--pal-run)" }}>
+          {mode === "live" ? "● LIVE" : "PLAY IN"}
+        </div>
+        {/* Step-Modus: Cursor per Hand versetzbar. Im Live-Modus IST der
+            Cursor der Playhead — die Sprung-Knöpfe verschwinden, sonst
+            griffen sie ins Leere (`setCursor` ist dort eine No-op). */}
+        {mode === "step" && (
+          <Button variant="alt" style={{ width: 46, height: 38, fontSize: 16 }} title="Step back" onClick={() => setCursor(cursor - lengthSteps)}>
+            ◀
+          </Button>
+        )}
         {/* Der Schreib-Cursor als Text, weil Takt/Step im Raster oben zwar zu
             sehen, aber bei 64 Steps nicht abzuzählen sind. */}
         <div className="mono" style={{ minWidth: 132, textAlign: "center", fontSize: 14 }}>
@@ -303,18 +431,22 @@ export function PlayInBar({
             (bar {bar}.{beat})
           </span>
         </div>
-        {/* Vorrücken OHNE Note = Pause. Genau dasselbe, was das Loslassen
-            einer Taste tut — deshalb hier kein eigener „Rest"-Begriff. */}
-        <Button variant="alt" style={{ width: 46, height: 38, fontSize: 16 }} title="Step forward (rest)" onClick={() => setCursor(cursor + lengthSteps)}>
-          ▶
-        </Button>
-        <Button
-          style={{ width: 92, height: 38, fontSize: 14 }}
-          title="Note length and cursor step"
-          onClick={() => setLengthSteps(LENGTHS[(LENGTHS.indexOf(lengthSteps) + 1) % LENGTHS.length] ?? 1)}
-        >
-          Len {lengthSteps}
-        </Button>
+        {mode === "step" && (
+          // Vorrücken OHNE Note = Pause. Genau dasselbe, was das Loslassen
+          // einer Taste tut — deshalb hier kein eigener „Rest"-Begriff.
+          <Button variant="alt" style={{ width: 46, height: 38, fontSize: 16 }} title="Step forward (rest)" onClick={() => setCursor(cursor + lengthSteps)}>
+            ▶
+          </Button>
+        )}
+        {mode === "step" && (
+          <Button
+            style={{ width: 92, height: 38, fontSize: 14 }}
+            title="Note length and cursor step"
+            onClick={() => setLengthSteps(LENGTHS[(LENGTHS.indexOf(lengthSteps) + 1) % LENGTHS.length] ?? 1)}
+          >
+            Len {lengthSteps}
+          </Button>
+        )}
         <Button
           style={{ width: 92, height: 38, fontSize: 14 }}
           title="Velocity of notes played from the on-screen keys"
@@ -331,16 +463,27 @@ export function PlayInBar({
           >
             {sendOnPlay ? "🔊 Sound" : "🔇 Sound"}
           </Button>
-          <Button
-            variant={autoAdvance ? "active" : "alt"}
-            style={{ width: 84, height: 38, fontSize: 13 }}
-            title="Advance the cursor automatically after each new note (turn off to stack a chord on one step)"
-            onClick={() => setAutoAdvance(!autoAdvance)}
-          >
-            {autoAdvance ? "→ Auto" : "→ Hold"}
-          </Button>
+          {/* Auto/Hold ist eine Cursor-Schrittregel — im Live-Modus rückt
+              nichts "vor", der Playhead läuft von selbst, also gibt es hier
+              nichts umzuschalten. */}
+          {mode === "step" && (
+            <Button
+              variant={autoAdvance ? "active" : "alt"}
+              style={{ width: 84, height: 38, fontSize: 13 }}
+              title="Advance the cursor automatically after each new note (turn off to stack a chord on one step)"
+              onClick={() => setAutoAdvance(!autoAdvance)}
+            >
+              {autoAdvance ? "→ Auto" : "→ Hold"}
+            </Button>
+          )}
         </div>
       </div>
+      {mode === "live" && !liveRunning && (
+        <div style={{ fontSize: 12, color: "var(--pal-stop)", marginBottom: 8 }}>
+          This block isn't currently running in any lane — keys still sound, but nothing is being written. Start it (or arm/select
+          its slot) to record live.
+        </div>
+      )}
       <PianoKeys firstC={firstC} held={held} selected={notesAtCursor} onPress={press} onRelease={release} />
     </div>
   );

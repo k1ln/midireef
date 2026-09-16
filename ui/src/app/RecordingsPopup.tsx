@@ -1,13 +1,14 @@
-//! Interface-Auswahl + Aufnahmen-Verwaltung. Der eigentliche Inhalt
-//! (`AudioRecorderPanel`) lebt an zwei Stellen: als Popup, geöffnet über
-//! langes Halten des Aufnahme-Knopfs in der Transport-Leiste (s.
-//! Transport.tsx), UND als Karte im Projekte-Menü (s. ProjectSettings.tsx) —
-//! wer erst in Ruhe das richtige Interface sucht, muss dafür nicht auf den
-//! Sequencer-Screen wechseln. Aufnahmen liegen serverseitig als WAV unter
-//! `<data_dir>/recordings/` und werden über die normale HTTP-Route
-//! ausgeliefert (`main.rs`), landen hier also direkt als `<audio>`-Quelle
-//! bzw. Download-Link — kein eigener Datei-Server nötig, jedes Gerät im
-//! selben WLAN kann sie sich holen.
+//! Ein-/Ausgangs-Auswahl + Aufnahmen-Verwaltung. Der eigentliche Inhalt
+//! (`AudioRecorderPanel`) lebt an zwei Stellen: als Popup, geöffnet über den
+//! „RC"-Knopf in der Transport-Leiste (s. Transport.tsx), UND als Karte im
+//! Projekte-Menü (s. ProjectSettings.tsx) — wer erst in Ruhe das richtige
+//! Interface sucht, muss dafür nicht auf den Sequencer-Screen wechseln.
+//! Aufnahmen liegen serverseitig als WAV unter `<data_dir>/recordings/` und
+//! werden über die normale HTTP-Route ausgeliefert (`main.rs`), landen hier
+//! also direkt als `<audio>`-Quelle bzw. Download-Link — kein eigener Datei-
+//! Server nötig, jedes Gerät im selben WLAN kann sie sich holen. Wiedergabe
+//! über den 🔊-Knopf läuft dagegen über die echte Hardware des SERVERS (der
+//! gewählte Ausgang), nicht über den Browser, der diese Seite gerade zeigt.
 
 import { useEffect, useState } from "react";
 import { useNet, useSend } from "./store";
@@ -23,7 +24,10 @@ interface Recording {
 interface AudioState {
   inputs: string[];
   inputDevice: string | null;
+  outputs: string[];
+  outputDevice: string | null;
   recording: { file: string; device: string; elapsedMs: number } | null;
+  playing: { file: string; device: string } | null;
   recordings: Recording[];
 }
 
@@ -34,7 +38,15 @@ interface ProbeResult {
   error?: string;
 }
 
-const EMPTY: AudioState = { inputs: [], inputDevice: null, recording: null, recordings: [] };
+const EMPTY: AudioState = {
+  inputs: [],
+  inputDevice: null,
+  outputs: [],
+  outputDevice: null,
+  recording: null,
+  playing: null,
+  recordings: [],
+};
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -78,12 +90,20 @@ export function AudioRecorderPanel() {
         setAudio({
           inputs: evt.inputs ?? [],
           inputDevice: evt.inputDevice ?? null,
+          outputs: evt.outputs ?? [],
+          outputDevice: evt.outputDevice ?? null,
           recording: evt.recording ?? null,
+          playing: evt.playing ?? null,
           recordings: evt.recordings ?? [],
         });
         setError(null);
       } else if (evt.t === "audio.recordings") {
         setAudio((a) => ({ ...a, recordings: evt.recordings ?? [] }));
+      } else if (evt.t === "audio.playbackDone") {
+        // Server clears its side lazily (next play/stop) — clear the UI's
+        // "currently playing" indicator right away instead of waiting for
+        // another audio.state round trip.
+        setAudio((a) => (a.playing?.file === evt.file ? { ...a, playing: null } : a));
       } else if (evt.t === "audio.error") {
         setError(typeof evt.message === "string" ? evt.message : "Recording failed");
       } else if (evt.t === "audio.probeStart") {
@@ -106,7 +126,9 @@ export function AudioRecorderPanel() {
     <>
       <div className="popup-title">Audio recorder</div>
       <div className="popup-subtitle">
-        Choose the input interface below, then record from the ⏺ button in the transport bar.
+        Record from the ⏺ button in the transport bar. Choose an input below to record from, an
+        output to play recordings through the Pi's own speakers/interface, or use the ↓/🔊 buttons
+        below to download or play a recording directly.
       </div>
 
       {error && (
@@ -183,6 +205,29 @@ export function AudioRecorderPanel() {
         )}
       </div>
 
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 12, color: "var(--pal-text-dim)", marginBottom: 6 }}>
+          Output interface — for playing recordings through the Pi's own hardware
+        </div>
+        {audio.outputs.length === 0 ? (
+          <div style={{ color: "var(--pal-text-dim)", fontSize: 14 }}>No audio output found</div>
+        ) : (
+          audio.outputs.map((name) => {
+            const active = audio.outputDevice ? audio.outputDevice === name : name === audio.outputs[0];
+            return (
+              <Button
+                key={name}
+                variant={active ? "active" : "default"}
+                className="popup-row"
+                onClick={() => send({ t: "audio.setOutput", device: name })}
+              >
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</span>
+              </Button>
+            );
+          })
+        )}
+      </div>
+
       <div style={{ fontSize: 12, color: "var(--pal-text-dim)", marginBottom: 6 }}>
         Recordings — reachable from any device on this Wi-Fi at {httpBase}/recordings/&lt;file&gt;
       </div>
@@ -218,6 +263,24 @@ export function AudioRecorderPanel() {
                     {formatBytes(r.size)} · {formatAge(r.createdAt)}
                   </div>
                 </div>
+                <Button
+                  variant={audio.playing?.file === r.file ? "active" : "default"}
+                  style={{ width: 44, height: 44, fontSize: 16 }}
+                  title={
+                    audio.playing?.file === r.file
+                      ? "Stop playback on the Pi"
+                      : "Play through the Pi's audio output"
+                  }
+                  onClick={() =>
+                    send(
+                      audio.playing?.file === r.file
+                        ? { t: "audio.play.stop" }
+                        : { t: "audio.play.start", file: r.file },
+                    )
+                  }
+                >
+                  {audio.playing?.file === r.file ? "■" : "🔊"}
+                </Button>
                 <a
                   className="btn"
                   style={{

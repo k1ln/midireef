@@ -90,6 +90,32 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+/** Wiedererkennungsfarbe einer Lane bzw. eines Geräts — dieselbe Palette für
+ *  beide, damit Lane- und Geräte-Farben in der dichten Übersicht (Flat-
+ *  Ansicht) unterscheidbar bleiben (s. `FlatOverview`). */
+export const SWATCH_COLORS = [
+  "#4fd1c5", "#f6ad55", "#63b3ed", "#b794f4", "#f687b3", "#68d391", "#76e4f7",
+  "#e06c75", "#61afef", "#98c379", "#d19a66", "#c678dd", "#56b6c2", "#e5c07b", "#be5046",
+];
+
+function ColorSwatchRow({ value, onChange }: { value?: string; onChange: (c: string) => void }) {
+  return (
+    <div className="settings-dock-swatches">
+      {SWATCH_COLORS.map((c) => (
+        <button
+          key={c}
+          type="button"
+          className={`settings-dock-swatch${value === c ? " selected" : ""}`}
+          style={{ background: c }}
+          title={c}
+          aria-label={`Color ${c}`}
+          onClick={() => onChange(c)}
+        />
+      ))}
+    </div>
+  );
+}
+
 function Toggle({ on, onLabel, offLabel, onToggle }: { on: boolean; onLabel: string; offLabel: string; onToggle: () => void }) {
   return (
     <Button variant={on ? "active" : "alt"} className="settings-dock-row" onClick={onToggle}>
@@ -222,6 +248,10 @@ export function LaneSettingsDock({ lane, onOpenCcTarget, onOpenChain, onOpenKeyt
         })
       }
     >
+      <Field label="Color">
+        <ColorSwatchRow value={lane.color} onChange={(c) => send({ t: "lane.setColor", laneId: lane.id, color: c })} />
+      </Field>
+
       <Field label="Channel">
         <SelectMenu
           variant="alt"
@@ -473,6 +503,10 @@ export function DeviceSettingsDock({ device, onOpenAddLane, onClose }: DeviceSet
       }
     >
       {!device.midiOutPort && <div className="settings-dock-warn">no MIDI port</div>}
+
+      <Field label="Color">
+        <ColorSwatchRow value={device.color} onChange={(c) => send({ t: "device.setColor", deviceId: device.id, color: c })} />
+      </Field>
 
       <Field label="State">
         <div className="settings-dock-grid">

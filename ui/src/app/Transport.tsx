@@ -22,7 +22,6 @@ import { FpsMeter } from "./FpsMeter";
 import { TRANSPORT_H } from "./layout";
 import { getBgConfig, BG_CONFIG_EVENT } from "./bgConfig";
 import { useWheelPicker } from "./widgets/WheelPicker";
-import { useLongPress } from "./useLongPress";
 import { RecordingsPopup } from "./RecordingsPopup";
 
 const BTN = 50;
@@ -98,11 +97,6 @@ export function Transport({ view, onNav, onAddDevice }: TransportProps) {
   };
   const nudgeBpm = (delta: number) => setBpm(bpmRef.current + delta);
 
-  const recordPress = useLongPress(
-    () => setShowRecordings(true),
-    () => send({ t: recording ? "audio.record.stop" : "audio.record.start" }),
-  );
-
   const posText = t ? `${t.bar} : ${t.beat}` : "1 : 1";
   const portText = ports.length > 0 ? `MIDI: ${ports.length} Out` : "MIDI: no ports";
 
@@ -141,16 +135,26 @@ export function Transport({ view, onNav, onAddDevice }: TransportProps) {
       >
         {t?.playing ? "■" : "▶"}
       </Button>
-      {/* Aufnahme: Tipp startet/stoppt (unabhängig von Play/Stop — Einspielen
-          bei laufendem Sequencer genauso wie im Leerlauf), langes Halten
-          öffnet Interface-Auswahl + Aufnahmen-Liste (RecordingsPopup). */}
+      {/* Aufnahme: unabhängig von Play/Stop (Einspielen bei laufendem
+          Sequencer genauso wie im Leerlauf) — startet/stoppt sofort. */}
       <Button
         className={recording ? "transport-record recording" : "transport-record"}
         style={{ width: BTN, height: BTN, fontSize: 20, marginRight: 6 }}
-        title={recording ? "Stop recording (hold for recordings)" : "Record (hold for recordings)"}
-        {...recordPress}
+        title={recording ? "Stop recording" : "Record"}
+        onClick={() => send({ t: recording ? "audio.record.stop" : "audio.record.start" })}
       >
         ●
+      </Button>
+      {/* "RC": Interface-Auswahl + Aufnahmen-Liste (RecordingsPopup) — ein
+          eigener kleiner Knopf statt eines versteckten Long-Press, damit die
+          Aufnahmen-Verwaltung genauso auffindbar ist wie SQ/DB/library/settings. */}
+      <Button
+        className="transport-nav"
+        style={{ width: NAV, height: NAV_H, fontSize: 14, marginRight: 10 }}
+        title="Recordings"
+        onClick={() => setShowRecordings(true)}
+      >
+        RC
       </Button>
       {/* Navigations-Tabs: eine Gruppe, eng gesetzt (gap 3) auf einer eigenen
           Fläche, damit sie nicht die halbe Leiste frisst. */}

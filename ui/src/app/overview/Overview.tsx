@@ -6,9 +6,11 @@
 import { useState } from "react";
 import type { Block, Device, Lane, Slot } from "../../state";
 import { useStoreValue } from "../store";
+import { useLocalPref } from "../useLocalPref";
 import { OVERVIEW_FS, OVERVIEW_GAP } from "../uiSizes";
 import { TRANSPORT_H } from "../layout";
 import { DevicePanel } from "./DevicePanel";
+import { FlatOverview } from "./FlatOverview";
 import { BlockDock } from "./BlockDock";
 import { LaneSettingsDock, DeviceSettingsDock } from "./SettingsDock";
 import {
@@ -56,6 +58,12 @@ export function Overview({ onOpenBlock }: OverviewProps) {
   const [sel, setSel] = useState<{ laneId: string; slotId: string } | null>(null);
   const [pinned, setPinned] = useState(false);
   const [settings, setSettings] = useState<SettingsState | null>(null);
+  const [flatPref, setFlatPref] = useLocalPref<"0" | "1">("overview.flat", "0");
+  const flat = flatPref === "1";
+  // Richtung der Flat-Ansicht — eigene Einstellung in ProjectSettings.tsx
+  // (Zahnrad), nicht hier als weiterer Knopf: hängt vom Bildschirm-Aufbau ab
+  // und ändert sich selten.
+  const [flatDirection] = useLocalPref<"row" | "column">("overview.flatDirection", "row");
   const closePopup = () => setPopup(null);
 
   const openLaneSettings = (laneId: string) => {
@@ -140,10 +148,32 @@ export function Overview({ onOpenBlock }: OverviewProps) {
           </div>
         )}
 
+        {devices.length > 0 && (
+          <button
+            type="button"
+            className="overview-flat-toggle"
+            title={flat ? "Show grouped by device" : "Show all lanes on one view"}
+            onClick={() => setFlatPref(flat ? "0" : "1")}
+          >
+            {flat ? "▦ Grouped" : "≡ All lanes"}
+          </button>
+        )}
+
         {devices.length === 0 ? (
           <div style={{ color: "var(--pal-text-dim)", fontSize: OVERVIEW_FS }}>
             {ports.length > 0 ? "No devices yet — tap “＋ Device” in the top bar." : ""}
           </div>
+        ) : flat ? (
+          <FlatOverview
+            devices={devices}
+            blocks={blocks}
+            direction={flatDirection}
+            selectedSlotId={sel?.slotId ?? null}
+            onSelectSlot={selectSlot}
+            onOpenBlock={onOpenBlock}
+            onOpenLaneSettings={openLaneSettings}
+            onOpenAddBlock={(laneId, deviceId) => setPopup({ kind: "addBlock", laneId, deviceId })}
+          />
         ) : (
           devices.map((dev) => (
             <DevicePanel

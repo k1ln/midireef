@@ -256,6 +256,7 @@ export interface Lane {
 export interface Device {
   id: string;
   name: string;
+  color?: string;
   midiOutPort: string;
   sendClock: boolean;
   muted?: boolean;

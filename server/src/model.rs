@@ -302,6 +302,17 @@ fn default_role_color(role: &str) -> &'static str {
     }
 }
 
+/// Rotierende Default-Farbe für neu angelegte Geräte (`device.create`) — rein
+/// zur Wiedererkennung in der dichten Übersicht (Flat-Ansicht), trägt keine
+/// eigene Bedeutung wie die rollenbasierten Lane-Farben.
+const DEVICE_COLORS: [&str; 8] = [
+    "#e06c75", "#61afef", "#98c379", "#d19a66", "#c678dd", "#56b6c2", "#e5c07b", "#be5046",
+];
+
+pub fn default_device_color(index: usize) -> &'static str {
+    DEVICE_COLORS[index % DEVICE_COLORS.len()]
+}
+
 /// Device (Instrument). Die Baustein-Bibliothek liegt seit der Projekt-Umstellung
 /// nicht mehr am Device, sondern an `Project.blocks` — ein Baustein ist reiner
 /// Inhalt und in jeder Lane jedes Geräts einsetzbar.
@@ -310,6 +321,10 @@ fn default_role_color(role: &str) -> &'static str {
 pub struct Device {
     pub id: Id,
     pub name: String,
+    /// Wiedererkennungsfarbe für die dichte Übersicht (Flat-Ansicht) — rein
+    /// visuell, s. `default_device_color`. `None` = aus einem Altprojekt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
     pub midi_out_port: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub midi_in_port: Option<String>,
@@ -341,6 +356,7 @@ impl Device {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             name,
+            color: None,
             midi_out_port,
             midi_in_port: None,
             legacy_channel: None,

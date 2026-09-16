@@ -165,6 +165,31 @@ export class RuntimeFeed {
       });
     }
 
+  /** Aktueller Step eines Bausteins, live berechnet — für das Live-Einspielen
+   *  (s. PlayIn.tsx `mode: "live"`): eine gespielte Note braucht ihre
+   *  Step-Position JETZT, beim Drücken/Loslassen, nicht erst beim nächsten
+   *  DOM-Write von `apply()`. Dieselbe Interpolation wie dort, nur auf Abruf
+   *  statt geschrieben. `null`, wenn der Baustein gerade in keiner Lane läuft
+   *  (gestoppt, gemutet, oder in keiner Lane eingehängt) — dann gibt es keine
+   *  Live-Position, an die man schreiben könnte. Läuft er in mehreren Lanes,
+   *  zählt (wie bei `paintBlock`) die erste gefundene. */
+  currentStep(blockId: string): number | null {
+    const now = performance.now();
+    for (const st of this.lanes.values()) {
+      if (st.blockId !== blockId || st.running === false) continue;
+      const pos = Math.min(st.len, st.pos + ((now - st.at) / 1000) * this.pulsesPerSec);
+      const frac = pos / st.len;
+      return Math.min(st.steps - 1, Math.floor(frac * st.steps));
+    }
+    return null;
+  }
+
+  /** Läuft der Transport gerade? (s. `currentStep` — Live-Einspielen startet
+   *  ihn selbst, wenn nicht.) */
+  isPlaying(): boolean {
+    return this.playing;
+  }
+
   /** ref-Callback-Ziel einer Slot-Kachel (`null` = Komponente unmountet). */
   setTile(laneId: string, slotId: string, el: HTMLElement | null) {
     const key = laneId + SEP + slotId;

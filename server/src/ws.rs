@@ -52,12 +52,14 @@ fn broadcast_display_state(state: &AppState) {
     let _ = state.events.send(display::state_event(&cfg));
 }
 
-/// Baut `audio.state` aus dem aktuellen `AppState` — Eingangsliste, gewählter
-/// Eingang, laufende Aufnahme (falls eine), gespeicherte Aufnahmen.
+/// Baut `audio.state` aus dem aktuellen `AppState` — Ein-/Ausgangsliste,
+/// gewählte Geräte, laufende Aufnahme/Wiedergabe (falls eine), gespeicherte
+/// Aufnahmen.
 fn audio_state_event(state: &AppState) -> serde_json::Value {
     let cfg = state.audio.lock().unwrap().clone();
     let active = state.audio_recording.lock().unwrap();
-    audio::state_event(&cfg, active.as_ref(), &state.data_dir)
+    let playing = state.audio_playback.lock().unwrap();
+    audio::state_event(&cfg, active.as_ref(), playing.as_ref(), &state.data_dir)
 }
 
 fn broadcast_audio_state(state: &AppState) {
@@ -293,14 +295,22 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 .to_string();
             {
                 let mut proj = state.project.lock().unwrap();
-                let n = name.unwrap_or_else(|| format!("Device {}", proj.devices.len() + 1));
-                proj.devices.push(Device::new(n, port));
+                let idx = proj.devices.len();
+                let n = name.unwrap_or_else(|| format!("Device {}", idx + 1));
+                let mut dev = Device::new(n, port);
+                dev.color = Some(crate::model::default_device_color(idx).to_string());
+                proj.devices.push(dev);
             }
             broadcast_snapshot(state);
         }
         "device.rename" => {
             if let (Some(id), Some(name)) = (str_field(&cmd, "deviceId"), str_field(&cmd, "name")) {
                 with_device(state, &id, |d| d.name = name.clone());
+            }
+        }
+        "device.setColor" => {
+            if let (Some(id), Some(color)) = (str_field(&cmd, "deviceId"), str_field(&cmd, "color")) {
+                with_device(state, &id, |d| d.color = Some(color.clone()));
             }
         }
         "device.delete" => {
@@ -2427,7 +2437,7 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 });
             }
         }
-        // ── Audio-Aufnahme (Transport → 🎙) ──────────────────────────────────
+        // ── Audio-Aufnahme + -Wiedergabe (Transport → RC) ────────────────────
         "audio.getState" => broadcast_audio_state(state),
         "audio.setInput" => {
             let device = cmd
@@ -2435,7 +2445,22 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 .and_then(|v| v.as_str())
                 .map(str::to_string)
                 .filter(|s| !s.is_empty());
-            let cfg = audio::AudioConfig { input_device: device };
+            let mut cfg = state.audio.lock().unwrap().clone();
+            cfg.input_device = device;
+            if let Err(e) = audio::save(&state.data_dir, &cfg) {
+                tracing::warn!("audio.json speichern fehlgeschlagen: {e}");
+            }
+            *state.audio.lock().unwrap() = cfg;
+            broadcast_audio_state(state);
+        }
+        "audio.setOutput" => {
+            let device = cmd
+                .get("device")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .filter(|s| !s.is_empty());
+            let mut cfg = state.audio.lock().unwrap().clone();
+            cfg.output_device = device;
             if let Err(e) = audio::save(&state.data_dir, &cfg) {
                 tracing::warn!("audio.json speichern fehlgeschlagen: {e}");
             }
@@ -2454,6 +2479,7 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 let events = state.events.clone();
                 let data_dir = state.data_dir.clone();
                 let audio_recording = state.audio_recording.clone();
+                let audio_playback = state.audio_playback.clone();
                 let audio_cfg = state.audio.clone();
                 tokio::spawn(async move {
                     let events_blocking = events.clone();
@@ -2473,7 +2499,8 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                     }
                     let cfg = audio_cfg.lock().unwrap().clone();
                     let active = audio_recording.lock().unwrap();
-                    let _ = events.send(audio::state_event(&cfg, active.as_ref(), &data_dir));
+                    let playing = audio_playback.lock().unwrap();
+                    let _ = events.send(audio::state_event(&cfg, active.as_ref(), playing.as_ref(), &data_dir));
                 });
             }
         }
@@ -2482,6 +2509,52 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
         // und blendet die laufende Aufnahme sofort aus der UI aus.
         "audio.record.stop" => {
             let stopped = state.audio_recording.lock().unwrap().take();
+            if let Some(active) = stopped {
+                active.stop();
+            }
+            broadcast_audio_state(state);
+        }
+        // Spielt eine gespeicherte Aufnahme über den gewählten (oder System-
+        // Standard-)Ausgang des SERVERS ab — echte Hardware-Wiedergabe, anders
+        // als der `<audio>`-Player im Browser (s. RecordingsPopup.tsx in der
+        // UI). Läuft schon eine Wiedergabe, wird sie zuerst gestoppt: nur EINE
+        // gleichzeitig, wie bei der Aufnahme.
+        "audio.play.start" => {
+            let Some(file) = str_field(&cmd, "file") else { return };
+            if let Some(active) = state.audio_playback.lock().unwrap().take() {
+                active.stop();
+            }
+            let device = state.audio.lock().unwrap().output_device.clone();
+            let events = state.events.clone();
+            let data_dir = state.data_dir.clone();
+            let audio_recording = state.audio_recording.clone();
+            let audio_playback = state.audio_playback.clone();
+            let audio_cfg = state.audio.clone();
+            tokio::spawn(async move {
+                let events_blocking = events.clone();
+                let data_dir_blocking = data_dir.clone();
+                let file_blocking = file.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    audio::start_playback(file_blocking, device, data_dir_blocking, events_blocking)
+                })
+                .await
+                .unwrap_or_else(|e| Err(format!("Task abgebrochen: {e}")));
+                match result {
+                    Ok(active) => {
+                        *audio_playback.lock().unwrap() = Some(active);
+                    }
+                    Err(msg) => {
+                        let _ = events.send(serde_json::json!({ "t": "audio.error", "message": msg }));
+                    }
+                }
+                let cfg = audio_cfg.lock().unwrap().clone();
+                let active = audio_recording.lock().unwrap();
+                let playing = audio_playback.lock().unwrap();
+                let _ = events.send(audio::state_event(&cfg, active.as_ref(), playing.as_ref(), &data_dir));
+            });
+        }
+        "audio.play.stop" => {
+            let stopped = state.audio_playback.lock().unwrap().take();
             if let Some(active) = stopped {
                 active.stop();
             }

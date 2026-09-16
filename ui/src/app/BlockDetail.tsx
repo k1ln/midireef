@@ -9,7 +9,7 @@ import { useTouchKeyboard } from "./TouchKeyboard";
 import { Button } from "./widgets/Button";
 import { TRANSPORT_H } from "./layout";
 import { BeatEditor, ChordEditor, ArpEditor, ProgramChangeEditor, PatternShiftEditor } from "./blockdetail/editors";
-import { MelodyEditor, MelodyToolbar, PaintToolbar, type MelodyLayout, type PaintTool } from "./blockdetail/MelodyEditor";
+import { MelodyEditor, MelodyToolbar, PaintToolbar, type MelodyLayout, type PaintTool, type PlayInMode } from "./blockdetail/MelodyEditor";
 import type { StepFlow } from "./blockdetail/StepGrid";
 import { useLocalPref } from "./useLocalPref";
 import { CcEditor } from "./blockdetail/CcEditor";
@@ -190,6 +190,9 @@ function BlockDetailBody({
   // MIDI-Eingang und blendet die Klaviatur ein — beim nächsten Öffnen eines
   // Bausteins stünde man sonst ungefragt in einem Aufnahme-Modus.
   const [playIn, setPlayIn] = useState(false);
+  // Ebenfalls keine gemerkte Vorliebe (s. `playIn` oben) — jedes Einschalten
+  // fragt in `MelodyToolbar` neu, Step oder Live.
+  const [playInMode, setPlayInMode] = useState<PlayInMode>("step");
   // Paint-Werkzeug der Piano-Rolle: liegt hier (statt in MelodyGrid), damit
   // seine Farb-Leiste in DERSELBEN Kopfzeile wie Play/Clear/Delete steht,
   // nicht mehr in einer eigenen Zeile darunter (s. Nutzer-Feedback: alles in
@@ -252,6 +255,7 @@ function BlockDetailBody({
             setLayout={setMelodyLayout}
             playIn={playIn}
             setPlayIn={setPlayIn}
+            setPlayInMode={setPlayInMode}
           />
         )}
 
@@ -361,7 +365,14 @@ function BlockDetailBody({
       )}
 
       {block.type === "melody" && (
-        <MelodyEditor block={block} flow={flow} layout={melodyLayout} playIn={playIn && melodyLayout === "grid"} paint={paint} />
+        <MelodyEditor
+          block={block}
+          flow={flow}
+          layout={melodyLayout}
+          playIn={playIn && melodyLayout === "grid"}
+          playInMode={playInMode}
+          paint={paint}
+        />
       )}
       {block.type === "beat" && <BeatEditor block={block} flow={flow} />}
       {block.type === "chord" && <ChordEditor block={block} flow={flow} />}

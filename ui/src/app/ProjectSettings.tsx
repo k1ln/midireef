@@ -29,6 +29,7 @@ import {
 } from "./bgConfig";
 import { GrooveRow } from "./overview/SettingsDock";
 import { AudioRecorderPanel } from "./RecordingsPopup";
+import { useLocalPref } from "./useLocalPref";
 
 /** Spiegelt `ProjectSummary` aus shared/model.ts (`updatedAt` in Unix-Sekunden). */
 interface ProjectSummary {
@@ -71,6 +72,7 @@ export function ProjectSettings({ onClose }: { onClose: () => void }) {
   };
   const changeSize = (key: SizeKey, next: number) => SIZE_SETTER[key](setSize(key, next));
   const changeMotion = (next: Motion) => setMotionState(setMotion(next));
+  const [flatDirection, setFlatDirection] = useLocalPref<"row" | "column">("overview.flatDirection", "row");
   const applyBg = (next: BgConfig) => setBg(setBgConfig(next));
   const bgOff = bg.preset === "off";
 
@@ -290,6 +292,31 @@ export function ProjectSettings({ onClose }: { onClose: () => void }) {
                 {m === "full" ? "On" : "Off"}
               </Button>
             ))}
+          </div>
+        </section>
+
+        {/* ── Sequencer-Übersicht: Richtung der „Alle Lanes"-Ansicht (Overview.tsx
+             → FlatOverview.tsx) — packt sie Lanes nebeneinander (bricht nach
+             unten um) oder listet sie rein senkrecht untereinander. Eine
+             seltene Vorliebe (hängt vom Bildschirm/Aufbau ab), deshalb hier im
+             Menü statt als weiterer Knopf in der Übersicht selbst. ── */}
+        <section className="settings-card">
+          <div className="popup-subtitle">Sequencer “All lanes” view — layout direction</div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <Button
+              variant={flatDirection === "row" ? undefined : "alt"}
+              style={{ flex: 1, height: 48, fontSize: 15 }}
+              onClick={() => setFlatDirection("row")}
+            >
+              → Right
+            </Button>
+            <Button
+              variant={flatDirection === "column" ? undefined : "alt"}
+              style={{ flex: 1, height: 48, fontSize: 15 }}
+              onClick={() => setFlatDirection("column")}
+            >
+              ↓ Down
+            </Button>
           </div>
         </section>
 

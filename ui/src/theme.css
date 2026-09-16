@@ -678,6 +678,84 @@ textarea {
   animation: lane-pulse 260ms ease-out;
 }
 
+/* ── Flat-Übersicht — alle Lanes aller Geräte, dicht gepackt. ──
+   Ein einziger `flex-wrap`-Strom statt einer Zeile pro Lane: Lane-Zeilen
+   packen sich nebeneinander, solange Platz ist, und brechen sonst normal um.
+   Zugehörigkeit zum selben Gerät zeigt allein der zusätzliche Abstand vor der
+   ersten Lane einer neuen Geräte-Gruppe (`groupStart`, inline gesetzt). */
+.overview-flat {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+/* „→ Right" (Standard): Lanes packen sich nebeneinander und brechen nach
+   unten um, sobald eine Zeile voll ist. */
+.overview-flat-row {
+  flex-flow: row wrap;
+}
+/* „↓ Down": reine senkrechte Liste — eine Lane pro Zeile, keine Nachbarn.
+   Umschaltbar in ProjectSettings.tsx → „Sequencer 'All lanes' view". */
+.overview-flat-column {
+  flex-flow: column nowrap;
+  align-items: stretch;
+}
+.flat-lane-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  flex: 0 0 auto;
+  max-width: 100%;
+}
+.overview-flat-column .flat-lane-row {
+  align-items: center;
+}
+/* Farbpunkt statt Namen: Ring = Gerätefarbe, Füllung = Lanefarbe. Ein Tipp
+   öffnet dasselbe Lane-Einstellungsmenü wie sonst der Namensknopf. */
+.flat-lane-chip {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  align-self: center;
+  border-radius: 50%;
+  border: 3px solid;
+  padding: 0;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+/* Kleinere Kacheln nur hier — mehr Lanes passen gleichzeitig aufs Display.
+   Die Schriftgrößen aus `.slot-tile` skalieren mit, sonst liefe die Badge-
+   Zeile bei 132px-Zielgröße über. */
+.overview-flat .slot-tile {
+  width: 88px;
+  height: 88px;
+}
+.overview-flat .slot-tile .slot-trigger {
+  font-size: 14px;
+}
+.overview-flat .slot-tile .slot-id-lead,
+.overview-flat .slot-tile .slot-badge {
+  font-size: 12px;
+}
+.overview-flat .slot-tile.slot-add {
+  font-size: 22px;
+}
+.overview-flat-toggle {
+  align-self: flex-start;
+  flex: 0 0 auto;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 16px;
+  border: 1.5px solid rgba(255, 255, 255, 0.25);
+  background: rgba(17, 17, 17, 0.55);
+  color: var(--pal-text);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
 /* Bewegung sparsam, wenn das System es so will — der Zustand bleibt sichtbar
    (Rahmen/Fortschritt), nur Blitze und Übergänge fallen weg. */
 @media (prefers-reduced-motion: reduce) {
@@ -1554,6 +1632,29 @@ textarea {
   font-size: 13px;
   font-weight: 700;
   color: var(--pal-warn, #f6ad55);
+}
+/* Farb-Swatches (Lane-/Geräte-Einstellungen) — Kreise zum Antippen, die
+   gewählte Farbe bekommt einen hellen Ring statt eines Häkchens (spart Platz,
+   bleibt aus der Ferne erkennbar). */
+.settings-dock-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.settings-dock-swatch {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  padding: 0;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+.settings-dock-swatch.selected {
+  border-color: var(--pal-text);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.5), 0 0 0 4px var(--pal-shimmer);
 }
 /* Größen-Schieber im Control-Dock (Dashboard) — nativer Range, nur groß genug
    für den Finger und in der Laufzeit-Farbe. */

@@ -73,6 +73,14 @@ export function useNet(): Net {
   return useAppCtx().net;
 }
 
+/** Raw RuntimeFeed instance, for imperative reads outside of render (e.g.
+ *  Live-Einspielen braucht die Step-Position genau im Moment einer gespielten
+ *  Note, s. PlayIn.tsx) — a subscribed value would re-render on every
+ *  snapshot, which nothing here needs. */
+export function useRuntime(): RuntimeFeed {
+  return useAppCtx().runtime;
+}
+
 /** Raw Store instance, for imperative calls (e.g. patching a single field
  *  from a WS event handler) outside of render — use useStoreValue() instead
  *  when you just need to read+subscribe to a value. */

@@ -22,18 +22,29 @@
 //! Touchdisplay ohne Mauszeiger nicht zu sehen, solange man ihn nicht bemerkt
 //! hat — und dann löscht der nächste Tipper etwas, das man setzen wollte. Das
 //! lange Drücken hängt dagegen an der Note selbst und kann nicht „anbleiben".
+//!
+//! In der Piano-Rolle kommt dazu, NUR dort: waagerechtes Ziehen auf einer
+//! Note oder ihrem Halte-Schweif verlängert/verkürzt sie live, direkt unter
+//! dem Finger — und zwar NOCH VOR dem Halte-Timer für den Editor, sobald die
+//! Bewegung eine kleine Schwelle überschreitet (s. `RollCell`). Ohne das
+//! bräuchte jede Längenänderung einen Umweg über den Editor oder das
+//! Grau-Werkzeug; ein Ziehen direkt an der Note trifft man auf dem
+//! Touchdisplay ohnehin am sichersten, weil Finger und Ziel dieselbe Stelle
+//! sind.
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { Block, MelodyNote } from "../../state";
-import { useSend } from "../store";
+import { useSend, useRuntime } from "../store";
 import { useNotePicker, noteName } from "../NotePicker";
 import { Button } from "../widgets/Button";
 import { Popup } from "../widgets/Popup";
-import { StepBars, StepCell, RollKey, ROLL_LOW_NOTE, ROLL_HIGH_NOTE, ROLL_KEY_W, isBlackKey, type StepFlow } from "./StepGrid";
+import { StepBars, StepCell, RollKey, ROLL_LOW_NOTE, ROLL_HIGH_NOTE, ROLL_KEY_W, HOLD_MS, isBlackKey, type StepFlow } from "./StepGrid";
 import { useLongPress } from "../useLongPress";
 import { useLocalPref } from "../useLocalPref";
 import { NoteEditorPopup, type NoteRef } from "./NoteEditor";
-import { usePlayIn, PlayInBar, type PlayIn } from "./PlayIn";
+import { usePlayIn, PlayInBar, type PlayIn, type PlayInMode } from "./PlayIn";
+
+export type { PlayInMode } from "./PlayIn";
 
 export type MelodyLayout = "stack" | "grid";
 
@@ -53,6 +64,7 @@ export function MelodyToolbar({
   setLayout,
   playIn,
   setPlayIn,
+  setPlayInMode,
 }: {
   block: Block;
   layout: MelodyLayout;
@@ -62,10 +74,26 @@ export function MelodyToolbar({
    *  unter dem Raster sitzt. */
   playIn: boolean;
   setPlayIn: (v: boolean) => void;
+  /** Nur zum EINSCHALTEN gebraucht — s. `armPlayIn` unten. Der aktuelle Modus
+   *  selbst braucht diese Leiste nicht (er steht nirgends in der Kopfzeile). */
+  setPlayInMode: (v: PlayInMode) => void;
 }) {
   const send = useSend();
+  const runtime = useRuntime();
   const [confirmClear, setConfirmClear] = useState(false);
+  const [pickMode, setPickMode] = useState(false);
   const noteCount = block.notes?.length ?? 0;
+
+  /** Startet "Live" — und mit ihm den Transport, falls er noch steht: der
+   *  Sinn des Modus ist ja gerade, dass der Baustein LÄUFT, während man
+   *  hineinspielt (s. PlayIn.tsx-Kopf). Steht er schon, ändert der Aufruf
+   *  nichts (`transport.play` ist keine Umschaltung). */
+  const armLive = () => {
+    setPlayInMode("live");
+    setPlayIn(true);
+    setPickMode(false);
+    if (!runtime.isPlaying()) send({ t: "transport.play" });
+  };
 
   return (
     <>
@@ -79,16 +107,43 @@ export function MelodyToolbar({
       {/* Nur in der Piano-Rolle: dort gibt es die Tonhöhen-Zeilen, an denen
           man den Cursor und das Eingespielte SIEHT. In der Spalten-Ansicht
           bliebe vom Einspielen nur eine wachsende Zahlenkolonne. Play-Zeichen
-          + "IN" statt "Play in" ausgeschrieben — an/aus zeigt schon die Farbe. */}
+          + "IN" statt "Play in" ausgeschrieben — an/aus zeigt schon die Farbe.
+          Einschalten fragt erst nach dem Modus (s. `pickMode`) — ausschalten
+          bleibt ein einzelner Tipper, ganz gleich, in welchem Modus man war. */}
       {layout === "grid" && (
         <Button
           variant={playIn ? "active" : "alt"}
           style={{ width: 56, height: 40, fontSize: 14 }}
           title="Play the melody in from a connected keyboard or the on-screen keys"
-          onClick={() => setPlayIn(!playIn)}
+          onClick={() => (playIn ? setPlayIn(false) : setPickMode(true))}
         >
           ▶ IN
         </Button>
+      )}
+      {pickMode && (
+        <Popup onClose={() => setPickMode(false)}>
+          <div className="popup-title">Play the melody in</div>
+          <div style={{ fontSize: 13, color: "var(--pal-text-dim)", marginBottom: 14 }}>
+            Step writes one step at a time, at your own pace — the transport doesn't need to run. Live loops this block and
+            records what you play right where the playhead is.
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <Button
+              variant="alt"
+              style={{ flex: 1, height: 56, fontSize: 15 }}
+              onClick={() => {
+                setPlayInMode("step");
+                setPlayIn(true);
+                setPickMode(false);
+              }}
+            >
+              ⎘ Step
+            </Button>
+            <Button variant="alt" style={{ flex: 1, height: 56, fontSize: 15 }} onClick={armLive}>
+              ● Live
+            </Button>
+          </div>
+        </Popup>
       )}
       {/* "∅" statt des Papierkorb-Emojis: das blieb auf dem Pi-Kiosk ohne
           Color-Emoji-Font leer (s. Nutzer-Feedback beim Delete-Knopf) — ∅ ist
@@ -135,12 +190,14 @@ export function MelodyEditor({
   flow,
   layout,
   playIn,
+  playInMode,
   paint,
 }: {
   block: Block;
   flow: StepFlow;
   layout: MelodyLayout;
   playIn: boolean;
+  playInMode: PlayInMode;
   /** Paint-Werkzeug lebt in BlockDetail (s. dort) und rendert die Farb-Leiste
    *  selbst, in derselben Kopfzeile wie Play/Clear/Delete — die Rolle hier
    *  braucht das armierte Werkzeug nur lesend, für Tipper auf die Zellen. */
@@ -149,7 +206,7 @@ export function MelodyEditor({
   return layout === "stack" ? (
     <MelodyStack block={block} flow={flow} />
   ) : (
-    <MelodyGrid block={block} flow={flow} playIn={playIn} paint={paint} />
+    <MelodyGrid block={block} flow={flow} playIn={playIn} playInMode={playInMode} paint={paint} />
   );
 }
 
@@ -585,11 +642,13 @@ function MelodyGrid({
   block,
   flow,
   playIn,
+  playInMode,
   paint,
 }: {
   block: Block;
   flow: StepFlow;
   playIn: boolean;
+  playInMode: PlayInMode;
   paint: PaintTool;
 }) {
   const send = useSend();
@@ -629,7 +688,7 @@ function MelodyGrid({
   // Einspielen: Schreib-Cursor + Tastatur-Eingang. Der Hook läuft immer mit
   // (Hooks dürfen nicht bedingt sein), armiert den Server aber nur, solange
   // `playIn` steht — s. PlayIn.tsx.
-  const play = usePlayIn(block, totalSteps, playIn);
+  const play = usePlayIn(block, totalSteps, playIn, playInMode);
 
   // Tonumfang: die volle MIDI-Skala von C0 bis G9. Kein Fenster um die
   // Grundnote mehr — jede Tonhöhe, die ein Gerät spielen kann, soll auch im
@@ -713,7 +772,10 @@ function MelodyGrid({
         flow={flow}
         fillHeight
         cursorStep={playIn ? play.cursor : undefined}
-        onPickStep={playIn ? play.setCursor : undefined}
+        // Live: der Cursor IST der laufende Playhead, nicht per Tipper auf
+        // das Lineal versetzbar (s. PlayIn.tsx `setCursor`, dort im
+        // Live-Modus eine No-op).
+        onPickStep={playIn && playInMode === "step" ? play.setCursor : undefined}
         leftGutter={ROLL_KEY_W}
       >
         {(steps) => (
@@ -721,6 +783,7 @@ function MelodyGrid({
             rows={rows}
             steps={steps}
             stepsPerBar={stepsPerBar}
+            totalSteps={totalSteps}
             block={block}
             playIn={playIn}
             play={play}
@@ -736,7 +799,12 @@ function MelodyGrid({
       </StepBars>
 
       <div style={{ marginTop: 6, fontSize: 12, color: "var(--pal-text-dim)", flexShrink: 0 }}>
-        {playIn ? (
+        {playIn && playInMode === "live" ? (
+          <>
+            Play a connected MIDI keyboard or the keys below — the block loops and each note lands right where the moving
+            playhead is, with the length you actually held it. Editing by tap still works.
+          </>
+        ) : playIn ? (
           <>
             Play a connected MIDI keyboard or the keys below — notes land on the marked step, held keys become one chord, and the
             cursor moves on when you let go. Tap the ruler to jump the cursor, "▶" leaves a rest. Editing by tap still works.
@@ -747,9 +815,10 @@ function MelodyGrid({
           <>{paint[0].toUpperCase() + paint.slice(1)} armed — tap a note to accent it, an empty cell to place a new one with it.</>
         ) : (
           <>
-            Tap an empty cell to place a note, tap the note again to remove it, tap its trail to end it there. Long-press a note
-            for pitch, length and velocity, or an empty cell to stack a chord there. Hold a key at either end of a row to hear
-            that pitch. Pick a paint color above to skip the editor for length/velocity — tap the color again to let go of it.
+            Tap an empty cell to place a note, tap the note again to remove it, tap its trail to end it there. Drag a note or its
+            trail sideways to lengthen or shorten it. Long-press a note for pitch, length and velocity, or an empty cell to stack
+            a chord there. Hold a key at either end of a row to hear that pitch. Pick a paint color above to skip the editor for
+            length/velocity — tap the color again to let go of it.
           </>
         )}
       </div>
@@ -836,6 +905,7 @@ function RollRows({
   rows,
   steps,
   stepsPerBar,
+  totalSteps,
   block,
   playIn,
   play,
@@ -851,6 +921,9 @@ function RollRows({
   steps: number[];
   /** Für die Takt-Trennlinien — s. `RollCell`s `barStart`. */
   stepsPerBar: number;
+  /** Obergrenze für die Ziehen-Geste — eine Note darf nicht über das Ende
+   *  des Bausteins hinaus wachsen, auch wenn der Finger weiter zieht. */
+  totalSteps: number;
   block: Block;
   playIn: boolean;
   play: PlayIn;
@@ -966,6 +1039,21 @@ function RollRows({
                       ? () => setEditing({ step: (noteStart ?? held)!.step, note })
                       : () => setChordPick({ step, note })
                   }
+                  // Waagerecht ziehen auf der Note oder ihrem Halte-Schweif
+                  // verlängert/verkürzt sie live — noch bevor der Halte-
+                  // Timer für den Editor auslöst (s. Datei-Kopf). `root`
+                  // bleibt immer der ANFANG der Note, egal ob der Finger auf
+                  // ihm oder irgendwo im Schweif aufgesetzt hat.
+                  onDragStep={
+                    noteStart || held
+                      ? (delta) => {
+                          const root = (noteStart ?? held)!;
+                          const target = step + delta;
+                          const newLength = Math.max(1, Math.min(totalSteps - root.step, target - root.step + 1));
+                          send({ t: "melody.setNoteLength", blockId: block.id, step: root.step, note, lengthSteps: newLength });
+                        }
+                      : undefined
+                  }
                 />
               );
             })}
@@ -989,14 +1077,23 @@ function RollRows({
   );
 }
 
-/** Eine Piano-Roll-Zelle. Eigene Komponente nur, weil `useLongPress` ein Hook
- *  ist und deshalb nicht in der Zellen-Schleife stehen darf. */
+/** Schwelle in Pixeln, ab der eine Bewegung überhaupt als Geste zählt statt
+ *  als Zittern — dieselbe Schwelle/Logik wie `VelocityBars`' `DIR_SLOP`:
+ *  die GRÖSSERE Achse gewinnt (waagerecht = Länge ziehen, senkrecht = die
+ *  Rolle scrollen lassen). */
+const DRAG_SLOP = 8;
+
+/** Eine Piano-Roll-Zelle. Eigene Komponente (statt der geteilten `StepCell`
+ *  bzw. `useLongPress`), weil sie DREI Gesten gegeneinander abwägen muss —
+ *  Tipper, langes Drücken UND waagerechtes Ziehen zur Längenänderung — und
+ *  genau diese Abwägung nur hier gebraucht wird (s. Datei-Kopf). */
 function RollCell({
   background,
   cursor,
   barStart,
   onTap,
   onLongPress,
+  onDragStep,
 }: {
   background: string;
   /** Liegt die Zelle auf dem Schreib-Cursor des Einspielens? */
@@ -1008,15 +1105,80 @@ function RollCell({
   /** RollRows liefert das immer — Note oder leere Zelle öffnen beide etwas
    *  (Editor bzw. Akkord-Auswahl), nur WAS unterscheidet sich. Bleibt
    *  trotzdem optional: ohne Halte-Ziel soll auch kein Halte-Timer laufen,
-   *  der sonst einen langsamen Tipper verschluckt (s. `useLongPress`). */
+   *  der sonst einen langsamen Tipper verschluckt. */
   onLongPress?: () => void;
+  /** Waagerechtes Ziehen auf einer Note oder ihrem Halte-Schweif — bekommt
+   *  das Delta in STEPS seit dem Drücken (nicht in Pixeln: die Zellbreite
+   *  ist schon eingerechnet), nur bei jeder tatsächlichen Änderung, nie bei
+   *  jedem Pixel. Fehlt bei leeren Zellen — da gibt es nichts zu ziehen. */
+  onDragStep?: (deltaSteps: number) => void;
 }) {
-  const press = useLongPress(onLongPress ?? (() => {}), onTap);
-  const handlers = onLongPress
-    ? // Quer-Wischen zum Scrollen darf weder als Tipper noch als langes
-      // Drücken enden (s. dieselbe Stelle in StepGrid's StepCell).
-      { ...press, onPointerCancel: press.onPointerLeave }
-    : { onClick: onTap };
+  const timer = useRef<number | undefined>(undefined);
+  const fired = useRef(false);
+  const gesture = useRef<{ x: number; y: number; mode: "idle" | "drag" | "pan"; lastDelta: number }>({
+    x: 0,
+    y: 0,
+    mode: "idle",
+    lastDelta: 0,
+  });
+
+  const cancelTimer = () => {
+    window.clearTimeout(timer.current);
+    timer.current = undefined;
+  };
+
+  const handlers = {
+    onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => {
+      // Pointer-Capture hält Move/Up an dieser Zelle fest, auch wenn der
+      // Finger beim Ziehen längst über Nachbarzellen steht (s. VelocityBars).
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+      fired.current = false;
+      gesture.current = { x: e.clientX, y: e.clientY, mode: "idle", lastDelta: 0 };
+      if (onLongPress) {
+        timer.current = window.setTimeout(() => {
+          fired.current = true;
+          onLongPress();
+        }, HOLD_MS);
+      }
+    },
+    onPointerMove: (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!onDragStep || fired.current) return;
+      const g = gesture.current;
+      if (g.mode === "idle") {
+        const dx = e.clientX - g.x;
+        const dy = e.clientY - g.y;
+        if (Math.max(Math.abs(dx), Math.abs(dy)) < DRAG_SLOP) return;
+        g.mode = Math.abs(dx) >= Math.abs(dy) ? "drag" : "pan";
+        // Ziehen gewinnt gegen den Halte-Timer — genau das war die Bitte:
+        // "vor" dem langen Drücken, nicht erst danach.
+        if (g.mode === "drag") cancelTimer();
+      }
+      if (g.mode !== "drag") return;
+      const delta = Math.round((e.clientX - g.x) / CELL_W);
+      if (delta !== g.lastDelta) {
+        g.lastDelta = delta;
+        onDragStep(delta);
+      }
+    },
+    onPointerUp: () => {
+      cancelTimer();
+      // Ein Ziehen zählt nicht zusätzlich als Tipper — sonst würde das
+      // Loslassen nach dem Verlängern dieselbe Zelle nochmal antippen.
+      if (gesture.current.mode === "drag") fired.current = true;
+      gesture.current.mode = "idle";
+      if (!fired.current) onTap();
+    },
+    onPointerLeave: cancelTimer,
+    // Quer-Wischen zum Scrollen darf weder als Tipper noch als langes
+    // Drücken enden (s. dieselbe Stelle in StepGrid's StepCell) — und bricht
+    // hier zusätzlich ein begonnenes Ziehen sauber ab, statt es beim
+    // nächsten Move mit einem neuen Startpunkt fortzusetzen.
+    onPointerCancel: () => {
+      cancelTimer();
+      gesture.current.mode = "idle";
+    },
+  };
+
   return (
     <div
       className={`step-cell${cursor ? " step-cursor" : ""}`}
@@ -1024,6 +1186,10 @@ function RollCell({
         width: CELL_W - 2,
         height: ROW_H,
         background,
+        // Waagerecht bleibt JS vorbehalten (das Ziehen), senkrecht darf der
+        // Browser nativ scrollen lassen — dieselbe Aufteilung wie
+        // VelocityBars' `touchAction: "pan-x"`, nur seitenverkehrt.
+        touchAction: onDragStep ? "pan-y" : "manipulation",
         ...(barStart ? { borderLeft: "3px solid var(--pal-text-dim)" } : undefined),
       }}
       {...handlers}

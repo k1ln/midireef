@@ -1,14 +1,18 @@
-//! Audio-Aufnahme über ein ausgewähltes Eingangs-Interface (cpal). Ein
-//! Vorgang läuft komplett auf einem eigenen OS-Thread (derselbe Grund wie bei
-//! `midi::MidiInManager`/`spawn_midi_learn`: der `cpal::Stream` ist auf
-//! manchen Plattformen nicht `Send`, muss also dort bleiben, wo er erzeugt
-//! wurde). Aufnahmen landen als WAV unter `<data_dir>/recordings/` und werden
-//! über die normale HTTP-Route ausgeliefert (s. `main.rs`), sodass sie sich
-//! direkt übers WLAN herunterladen lassen — kein eigener Datei-Server nötig.
+//! Audio-Aufnahme + -Wiedergabe über ausgewählte Ein-/Ausgangs-Interfaces
+//! (cpal). Ein Vorgang läuft komplett auf einem eigenen OS-Thread (derselbe
+//! Grund wie bei `midi::MidiInManager`/`spawn_midi_learn`: der `cpal::Stream`
+//! ist auf manchen Plattformen nicht `Send`, muss also dort bleiben, wo er
+//! erzeugt wurde). Aufnahmen landen als WAV unter `<data_dir>/recordings/`
+//! und werden über die normale HTTP-Route ausgeliefert (s. `main.rs`), sodass
+//! sie sich direkt übers WLAN herunterladen bzw. im Browser abspielen lassen
+//! — kein eigener Datei-Server nötig. Wiedergabe über die echte Hardware des
+//! Servers (statt nur im Browser) läuft über denselben `cpal`-Weg wie die
+//! Aufnahme, nur mit einem Ausgangs- statt Eingangs-Stream, s. `start_playback`.
 
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -16,11 +20,16 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Sample as _;
 use serde::{Deserialize, Serialize};
 
-/// Ausgewählter Audio-Eingang, persistiert wie `display.json`/`network.json`.
+/// Ausgewählter Audio-Ein-/Ausgang, persistiert wie `display.json`/`network.json`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioConfig {
     pub input_device: Option<String>,
+    /// Ausgang für die Wiedergabe gespeicherter Aufnahmen (`audio.play.start`)
+    /// — läuft über die echte Hardware des Servers (Interface-Ausgang,
+    /// Kopfhörerbuchse, HDMI, …), nicht über den Browser der Kiosk-Anzeige.
+    #[serde(default)]
+    pub output_device: Option<String>,
 }
 
 fn config_path(data_dir: &Path) -> PathBuf {
@@ -61,33 +70,45 @@ fn device_label(d: &cpal::Device) -> String {
 /// `midi::list_ports`. S. `dedupe_alsa_aliases` fürs Warum der Entdopplung.
 pub fn list_input_devices() -> Vec<String> {
     let host = cpal::default_host();
-    let Ok(devices) = host.input_devices() else {
-        return Vec::new();
-    };
+    host.input_devices().map(list_devices).unwrap_or_default()
+}
+
+/// Verfügbare Audio-Ausgänge — für die Wiedergabe einer Aufnahme über die
+/// echte Hardware des Servers (`audio.play.start`), s. `list_input_devices`.
+pub fn list_output_devices() -> Vec<String> {
+    let host = cpal::default_host();
+    host.output_devices().map(list_devices).unwrap_or_default()
+}
+
+fn list_devices(devices: impl Iterator<Item = cpal::Device>) -> Vec<String> {
     let entries: Vec<(String, String)> = devices
         .filter_map(|d| Some((d.id().ok()?.id().to_string(), device_label(&d))))
         .collect();
     dedupe_alsa_aliases(entries).into_iter().map(|(_, label)| label).collect()
 }
 
-/// Sucht ein Eingangsgerät per Namens-Substring — tolerant wie
+/// Sucht ein Ein-/Ausgangsgerät per Namens-Substring — tolerant wie
 /// `midi::find_port`, weil derselbe Name nach einem Replug/Neustart des
 /// Audio-Servers leicht anders lauten kann. Leerer/fehlender Name → `None`
-/// (der Aufrufer fällt dann auf den Standard-Eingang zurück).
+/// (der Aufrufer fällt dann auf Standard-Ein-/Ausgang zurück).
 ///
 /// Matcht ein Name mehrere ALSA-Aliasse derselben Karte (identische
 /// Beschreibung, s. `dedupe_alsa_aliases`), wird der am direktesten nutzbare
 /// genommen (`alsa_priority`) — nicht irgendeiner, den `Iterator::find` zuerst
 /// sieht, sonst öffnet ein Klick auf den EINEN Listeneintrag mal `front:…`,
 /// mal `dmix:…`, je nachdem, in welcher Reihenfolge `cpal` sie aufzählt.
-fn find_input_device(host: &cpal::platform::Host, needle: &str) -> Option<cpal::Device> {
-    let mut candidates: Vec<cpal::Device> = host
-        .input_devices()
-        .ok()?
-        .filter(|d| device_label(d).contains(needle))
-        .collect();
+fn find_device(devices: impl Iterator<Item = cpal::Device>, needle: &str) -> Option<cpal::Device> {
+    let mut candidates: Vec<cpal::Device> = devices.filter(|d| device_label(d).contains(needle)).collect();
     candidates.sort_by_key(|d| d.id().ok().map(|id| alsa_priority(id.id())).unwrap_or(u8::MAX));
     candidates.into_iter().next()
+}
+
+fn find_input_device(host: &cpal::platform::Host, needle: &str) -> Option<cpal::Device> {
+    find_device(host.input_devices().ok()?, needle)
+}
+
+fn find_output_device(host: &cpal::platform::Host, needle: &str) -> Option<cpal::Device> {
+    find_device(host.output_devices().ok()?, needle)
 }
 
 /// ALSA meldet eine einzelne physische Karte oft mehrfach unter
@@ -202,7 +223,60 @@ pub fn delete_recording(data_dir: &Path, file: &str) -> std::io::Result<()> {
     if file.contains('/') || file.contains("..") {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "ungültiger Dateiname"));
     }
-    std::fs::remove_file(recordings_dir(data_dir).join(file))
+    let result = std::fs::remove_file(recordings_dir(data_dir).join(file));
+    write_index(data_dir);
+    result
+}
+
+/// Schreibt `<recordings_dir>/index.html` mit einer simplen Liste aller
+/// Aufnahmen neu. `ServeDir` (s. `main.rs`s `/recordings`-Route) liefert eine
+/// vorhandene `index.html` automatisch aus, sobald der bloße Ordner-Pfad
+/// aufgerufen wird (dasselbe eingebaute Verhalten, das schon `ui_service()`
+/// für die SPA nutzt) — ohne diese Datei zeigt `http://<pi>:8787/recordings/`
+/// nichts an, obwohl die Dateien da sind (kein Verzeichnis-Listing ohne sie).
+/// Ein Handler dafür würde mit `nest_service`s eigener Route auf demselben
+/// Präfix kollidieren (Panik beim Router-Aufbau), daher der Umweg über eine
+/// echte Datei statt eines eigenen Endpunkts. Aufgerufen bei jeder Änderung
+/// der Liste (fertige Aufnahme, Löschen) sowie einmal beim Serverstart.
+pub fn write_index(data_dir: &Path) {
+    let recordings = list_recordings(data_dir);
+    let rows = if recordings.is_empty() {
+        "<li>No recordings yet.</li>".to_string()
+    } else {
+        recordings
+            .iter()
+            .filter_map(|r| {
+                let file = r.get("file")?.as_str()?;
+                let size = r.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+                let kb = size / 1024;
+                let escaped = file.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+                let encoded = urlencode(file);
+                Some(format!("<li><a href=\"{encoded}\">{escaped}</a> — {kb} KB</li>"))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let html = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>MidiReef recordings</title></head>\
+         <body style=\"font-family:system-ui,sans-serif;max-width:640px;margin:2rem auto;padding:0 1rem\">\
+         <h1>Recordings</h1><ul style=\"list-style:none;padding:0;line-height:2\">{rows}</ul></body></html>"
+    );
+    if let Err(e) = std::fs::write(recordings_dir(data_dir).join("index.html"), html) {
+        tracing::warn!("recordings/index.html ließ sich nicht schreiben: {e}");
+    }
+}
+
+/// Minimales Percent-Encoding für Dateinamen in `href` — unsere eigenen
+/// Dateinamen (`rec-<unix-sekunden>.wav`, s. `start_recording`) sind zwar
+/// immer ASCII-sauber, aber ein manuell in den Ordner kopierter Dateiname
+/// soll die Liste nicht mit einem kaputten Link zerlegen.
+fn urlencode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 /// Ein laufender Aufnahme-Vorgang. Der `cpal::Stream` selbst lebt auf seinem
@@ -246,6 +320,7 @@ pub fn start_recording(
         .name("midireef-audio-rec".into())
         .spawn(move || {
             run_recording(device_name, path, ready_tx, stop_rx);
+            write_index(&data_dir);
             let recordings = list_recordings(&data_dir);
             let _ = events.send(serde_json::json!({ "t": "audio.recordings", "recordings": recordings }));
         })
@@ -487,17 +562,251 @@ fn build_probe_stream(
     }
 }
 
-/// Baut das `audio.state`-Event: Eingangsliste, gewählter Eingang, laufende
-/// Aufnahme (falls eine), gespeicherte Aufnahmen.
-pub fn state_event(cfg: &AudioConfig, active: Option<&ActiveRecording>, data_dir: &Path) -> serde_json::Value {
+/// Eine laufende Wiedergabe (`audio.play.start`). Wie `ActiveRecording` lebt
+/// der `cpal::Stream` auf seinem eigenen Thread; hier nur, was der Rest des
+/// Servers braucht.
+pub struct ActivePlayback {
+    pub file: String,
+    pub device: String,
+    stop_tx: std::sync::mpsc::Sender<()>,
+    /// Von der Stream-Callback selbst gesetzt, sobald die Datei durchgelaufen
+    /// ist (s. `build_playback_stream`) — unabhängig davon, ob/wann jemand
+    /// `stop()` ruft. `state_event` liest ihn, um eine natürlich zu Ende
+    /// gespielte Aufnahme nicht mehr als „läuft" zu melden: der `Option`-Slot
+    /// in `AppState.audio_playback` selbst wird erst beim NÄCHSTEN
+    /// `audio.play.start`/`.stop` geräumt (s. dortiger Kommentar), ohne diesen
+    /// Flag bliebe die UI bis dahin fälschlich bei „spielt gerade".
+    finished: Arc<AtomicBool>,
+}
+
+impl ActivePlayback {
+    pub fn stop(&self) {
+        let _ = self.stop_tx.send(());
+    }
+}
+
+/// Spielt eine gespeicherte Aufnahme über die echte Hardware des Servers ab
+/// (nicht über den Browser der UI — dafür gibt es den `<audio>`-Player mit
+/// dem HTTP-Link, s. `main.rs`s `/recordings`-Route). Blockiert kurz (Timeout
+/// 3s), bis der Ausgangs-Stream wirklich läuft.
+pub fn start_playback(
+    file: String,
+    device_name: Option<String>,
+    data_dir: PathBuf,
+    events: tokio::sync::broadcast::Sender<serde_json::Value>,
+) -> Result<ActivePlayback, String> {
+    if file.contains('/') || file.contains("..") {
+        return Err("ungültiger Dateiname".into());
+    }
+    let path = recordings_dir(&data_dir).join(&file);
+    if !path.is_file() {
+        return Err("Aufnahme nicht gefunden".into());
+    }
+
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<String, String>>();
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+    let finished = Arc::new(AtomicBool::new(false));
+    let finished_thread = finished.clone();
+
+    let file_for_thread = file.clone();
+    std::thread::Builder::new()
+        .name("midireef-audio-play".into())
+        .spawn(move || {
+            run_playback(device_name, path, ready_tx, stop_rx, finished_thread);
+            let _ = events.send(serde_json::json!({ "t": "audio.playbackDone", "file": file_for_thread }));
+        })
+        .map_err(|e| e.to_string())?;
+
+    match ready_rx.recv_timeout(std::time::Duration::from_secs(3)) {
+        Ok(Ok(device)) => Ok(ActivePlayback { file, device, stop_tx, finished }),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err("Wiedergabe-Ausgang antwortet nicht".into()),
+    }
+}
+
+/// Läuft komplett auf dem Wiedergabe-Thread: Ausgang auflösen, WAV-Datei
+/// öffnen, Stream bauen + starten, warten bis entweder `stop_rx` feuert ODER
+/// die Datei zu Ende gespielt ist (`finished`, von der Stream-Callback selbst
+/// gesetzt), dann abbauen.
+fn run_playback(
+    device_name: Option<String>,
+    path: PathBuf,
+    ready_tx: std::sync::mpsc::Sender<Result<String, String>>,
+    stop_rx: std::sync::mpsc::Receiver<()>,
+    finished: Arc<AtomicBool>,
+) {
+    let host = cpal::default_host();
+    let device = match device_name.as_deref().filter(|n| !n.is_empty()) {
+        Some(name) => find_output_device(&host, name),
+        None => host.default_output_device(),
+    };
+    let Some(device) = device else {
+        let _ = ready_tx.send(Err("Audio-Ausgang nicht gefunden".into()));
+        return;
+    };
+    let label = device_label(&device);
+
+    let reader = match hound::WavReader::open(&path) {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = ready_tx.send(Err(format!("WAV-Datei ließ sich nicht öffnen: {e}")));
+            return;
+        }
+    };
+    let src_channels = reader.spec().channels as usize;
+    let src_rate = reader.spec().sample_rate;
+    // Aufnahmen sind IMMER 32-bit-Float-WAV (s. `run_recording`) — direktes
+    // Lesen als f32 ohne Formatverzweigung, unabhängig vom Ausgangsgerät.
+    let samples = reader.into_samples::<f32>();
+
+    let supported = match device.default_output_config() {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = ready_tx.send(Err(format!("Kein Ausgangs-Format verfügbar: {e}")));
+            return;
+        }
+    };
+    let out_format = supported.sample_format();
+    // Rate der Aufnahme erzwingen statt der Geräte-Vorgabe: die meisten Aus-
+    // gänge (v.a. `plughw:` unter ALSA, s. `alsa_priority`) rechnen intern um
+    // — sonst liefe die Wiedergabe in falscher Geschwindigkeit/Tonhöhe, weil
+    // dieselben Samples mit der (typischerweise abweichenden) Geräte-Rate
+    // ausgegeben würden.
+    let mut out_config = supported.config();
+    out_config.sample_rate = src_rate;
+
+    let stream = match build_playback_stream(&device, &out_config, out_format, src_channels, samples, finished.clone()) {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = ready_tx.send(Err(e));
+            return;
+        }
+    };
+    if let Err(e) = stream.play() {
+        let _ = ready_tx.send(Err(format!("Wiedergabe ließ sich nicht starten: {e}")));
+        return;
+    }
+    let _ = ready_tx.send(Ok(label));
+
+    // Wartet, bis entweder extern gestoppt wird ODER die Datei durchgelaufen
+    // ist — kurzes Poll-Intervall statt eines blockierenden `recv()`, weil
+    // NUR die Stream-Callback (nicht dieser Thread) weiß, wann die letzte
+    // Sample-Probe verbraucht ist.
+    loop {
+        if finished.load(Ordering::Relaxed) {
+            break;
+        }
+        match stop_rx.recv_timeout(std::time::Duration::from_millis(80)) {
+            Ok(()) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    drop(stream);
+}
+
+/// Baut den Output-Stream für die Wiedergabe: liest `samples` (immer f32,
+/// s. `run_playback`) framebasiert aus, mapt Quell- auf Ziel-Kanalzahl per
+/// Modulo (deckt die häufigen Fälle sauber ab — Mono-Aufnahme auf Stereo-
+/// Ausgang verdoppelt den einen Kanal, Stereo auf Mono-Ausgang nimmt den
+/// ersten; ein echter Downmix wäre für eine Performance-Aufnahme kein
+/// nennenswerter Zugewinn) und konvertiert jedes Sample über `dasp_sample`
+/// (von `cpal` reexportiert) ins Zielformat. Ist die Quelle erschöpft, setzt
+/// die Callback `finished` (der Wiedergabe-Thread beendet sich daraufhin von
+/// selbst) und füllt den Rest mit Stille.
+fn build_playback_stream(
+    device: &cpal::Device,
+    out_config: &cpal::StreamConfig,
+    out_format: cpal::SampleFormat,
+    src_channels: usize,
+    mut samples: impl Iterator<Item = Result<f32, hound::Error>> + Send + 'static,
+    finished: Arc<AtomicBool>,
+) -> Result<cpal::platform::Stream, String> {
+    let out_channels = out_config.channels.max(1) as usize;
+    let src_channels = src_channels.max(1);
+    let err_fn = |err: cpal::Error| tracing::warn!("Audio-Wiedergabe-Fehler: {err}");
+
+    macro_rules! build {
+        ($t:ty) => {{
+            let mut frame = vec![0f32; src_channels];
+            device
+                .build_output_stream(
+                    out_config.clone(),
+                    move |data: &mut [$t], _: &cpal::OutputCallbackInfo| {
+                        if finished.load(Ordering::Relaxed) {
+                            for s in data.iter_mut() {
+                                *s = <$t as cpal::Sample>::EQUILIBRIUM;
+                            }
+                            return;
+                        }
+                        for out_frame in data.chunks_mut(out_channels) {
+                            let mut have_frame = true;
+                            for slot in frame.iter_mut() {
+                                match samples.next() {
+                                    Some(Ok(v)) => *slot = v,
+                                    _ => {
+                                        have_frame = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if !have_frame {
+                                finished.store(true, Ordering::Relaxed);
+                                for s in out_frame.iter_mut() {
+                                    *s = <$t as cpal::Sample>::EQUILIBRIUM;
+                                }
+                                continue;
+                            }
+                            for (ch, slot) in out_frame.iter_mut().enumerate() {
+                                *slot = frame[ch % src_channels].to_sample::<$t>();
+                            }
+                        }
+                    },
+                    err_fn,
+                    None,
+                )
+                .map_err(|e| e.to_string())
+        }};
+    }
+
+    match out_format {
+        cpal::SampleFormat::F32 => build!(f32),
+        cpal::SampleFormat::F64 => build!(f64),
+        cpal::SampleFormat::I8 => build!(i8),
+        cpal::SampleFormat::I16 => build!(i16),
+        cpal::SampleFormat::I32 => build!(i32),
+        cpal::SampleFormat::U8 => build!(u8),
+        cpal::SampleFormat::U16 => build!(u16),
+        cpal::SampleFormat::U32 => build!(u32),
+        other => Err(format!("nicht unterstütztes Ausgangs-Format: {other:?}")),
+    }
+}
+
+/// Baut das `audio.state`-Event: Ein-/Ausgangsliste, gewählte Geräte, laufende
+/// Aufnahme/Wiedergabe (falls eine), gespeicherte Aufnahmen.
+pub fn state_event(
+    cfg: &AudioConfig,
+    active: Option<&ActiveRecording>,
+    playing: Option<&ActivePlayback>,
+    data_dir: &Path,
+) -> serde_json::Value {
     serde_json::json!({
         "t": "audio.state",
         "inputs": list_input_devices(),
         "inputDevice": cfg.input_device,
+        "outputs": list_output_devices(),
+        "outputDevice": cfg.output_device,
         "recording": active.map(|a| serde_json::json!({
             "file": a.file,
             "device": a.device,
             "elapsedMs": a.started_at.elapsed().as_millis() as u64,
+        })),
+        // `filter`: eine natürlich zu Ende gespielte Datei (s. `ActivePlayback::finished`)
+        // gilt nicht mehr als „läuft" — der `Option`-Slot in `AppState.audio_playback`
+        // wird sonst erst beim nächsten `audio.play.start`/`.stop` geräumt.
+        "playing": playing.filter(|p| !p.finished.load(Ordering::Relaxed)).map(|p| serde_json::json!({
+            "file": p.file,
+            "device": p.device,
         })),
         "recordings": list_recordings(data_dir),
     })
