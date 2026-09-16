@@ -2575,6 +2575,12 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
         // Pegel ausschlägt). Läuft auf einem eigenen Thread (blockiert
         // ~300ms PRO Eingang), der Command-Loop wartet nicht darauf.
         "audio.probeInputs" => audio::probe_inputs(state.events.clone()),
+        // Kurzer 440-Hz-Testton über den gewählten Ausgang — unabhängig von
+        // jeder Aufnahme, s. `audio::play_test_tone` fürs Warum.
+        "audio.testOutput" => {
+            let device = state.audio.lock().unwrap().output_device.clone();
+            audio::play_test_tone(device, state.events.clone());
+        }
         other => {
             // Noch nicht implementierte Commands werden geloggt, aber ignoriert.
             tracing::debug!("Command (noch) nicht behandelt: {other}");

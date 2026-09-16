@@ -585,6 +585,98 @@ impl ActivePlayback {
     }
 }
 
+/// Spielt kurz einen 440-Hz-Testton über den gewählten (oder System-Standard-)
+/// Ausgang ab — unabhängig von jeder Aufnahme. Zum Durchprobieren, welcher
+/// gelistete Ausgang tatsächlich am angeschlossenen Interface hängt bzw. ob
+/// der Ausgangs-Pfad überhaupt Ton produziert: hört man den Ton nicht, liegt
+/// es nicht an einer leisen/falsch aufgenommenen Datei, sondern am Ausgang
+/// selbst (falsches Gerät gewählt, System-Lautstärke, Verkabelung, …).
+pub fn play_test_tone(device_name: Option<String>, events: tokio::sync::broadcast::Sender<serde_json::Value>) {
+    std::thread::Builder::new()
+        .name("midireef-audio-tone".into())
+        .spawn(move || {
+            if let Err(e) = run_test_tone(device_name) {
+                let _ = events.send(serde_json::json!({ "t": "audio.error", "message": e }));
+            }
+        })
+        .ok();
+}
+
+fn run_test_tone(device_name: Option<String>) -> Result<(), String> {
+    let host = cpal::default_host();
+    let device = match device_name.as_deref().filter(|n| !n.is_empty()) {
+        Some(name) => find_output_device(&host, name),
+        None => host.default_output_device(),
+    };
+    let Some(device) = device else {
+        return Err("Audio-Ausgang nicht gefunden".into());
+    };
+    let supported = device
+        .default_output_config()
+        .map_err(|e| format!("Kein Ausgangs-Format verfügbar: {e}"))?;
+    let format = supported.sample_format();
+    let config = supported.config();
+    let sample_rate = config.sample_rate as f32;
+
+    let stream = build_tone_stream(&device, &config, format, sample_rate)?;
+    stream.play().map_err(|e| format!("Testton ließ sich nicht starten: {e}"))?;
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    drop(stream);
+    Ok(())
+}
+
+/// Baut den Output-Stream für den Testton: ein 440-Hz-Sinus (Kammerton A),
+/// gedämpft auf 30% Amplitude (Lautsprecher/Ohren schonen), auf allen
+/// Kanälen gleich. Kein externer Sample-Quelle nötig wie bei
+/// `build_playback_stream` — die Callback rechnet die Welle selbst aus einem
+/// laufenden Phasen-Zähler, den sie als `FnMut`-Zustand hält.
+fn build_tone_stream(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    format: cpal::SampleFormat,
+    sample_rate: f32,
+) -> Result<cpal::platform::Stream, String> {
+    const FREQ_HZ: f32 = 440.0;
+    const AMPLITUDE: f32 = 0.3;
+    let channels = config.channels.max(1) as usize;
+    let err_fn = |err: cpal::Error| tracing::warn!("Audio-Testton-Fehler: {err}");
+
+    macro_rules! build {
+        ($t:ty) => {{
+            let mut phase = 0f32;
+            device
+                .build_output_stream(
+                    config.clone(),
+                    move |data: &mut [$t], _: &cpal::OutputCallbackInfo| {
+                        for out_frame in data.chunks_mut(channels) {
+                            let sample = (phase * 2.0 * std::f32::consts::PI).sin() * AMPLITUDE;
+                            phase = (phase + FREQ_HZ / sample_rate).fract();
+                            let converted = sample.to_sample::<$t>();
+                            for slot in out_frame.iter_mut() {
+                                *slot = converted;
+                            }
+                        }
+                    },
+                    err_fn,
+                    None,
+                )
+                .map_err(|e| e.to_string())
+        }};
+    }
+
+    match format {
+        cpal::SampleFormat::F32 => build!(f32),
+        cpal::SampleFormat::F64 => build!(f64),
+        cpal::SampleFormat::I8 => build!(i8),
+        cpal::SampleFormat::I16 => build!(i16),
+        cpal::SampleFormat::I32 => build!(i32),
+        cpal::SampleFormat::U8 => build!(u8),
+        cpal::SampleFormat::U16 => build!(u16),
+        cpal::SampleFormat::U32 => build!(u32),
+        other => Err(format!("nicht unterstütztes Ausgangs-Format: {other:?}")),
+    }
+}
+
 /// Spielt eine gespeicherte Aufnahme über die echte Hardware des Servers ab
 /// (nicht über den Browser der UI — dafür gibt es den `<audio>`-Player mit
 /// dem HTTP-Link, s. `main.rs`s `/recordings`-Route). Blockiert kurz (Timeout

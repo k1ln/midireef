@@ -83,6 +83,10 @@ export function AudioRecorderPanel() {
    *  jetzt andere Einträge haben). */
   const [probe, setProbe] = useState<Record<string, ProbeResult>>({});
   const probing = Object.values(probe).some((p) => p.testing);
+  /** Rein optisch — der Server spielt den Ton unabhängig davon fest 1.2s lang
+   *  (s. `audio::play_test_tone`), dieser Timer blendet den Button nur so
+   *  lange als "läuft" ein. */
+  const [testingTone, setTestingTone] = useState(false);
 
   useEffect(() => {
     const off = net.onEvent((evt) => {
@@ -206,8 +210,27 @@ export function AudioRecorderPanel() {
       </div>
 
       <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 12, color: "var(--pal-text-dim)", marginBottom: 6 }}>
-          Output interface — for playing recordings through the Pi's own hardware
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+          <div style={{ flex: 1, fontSize: 12, color: "var(--pal-text-dim)" }}>
+            Output interface — for playing recordings through the Pi's own hardware
+          </div>
+          <Button
+            style={{ height: 32, padding: "0 12px", fontSize: 12 }}
+            disabled={testingTone || audio.outputs.length === 0}
+            onClick={() => {
+              setTestingTone(true);
+              send({ t: "audio.testOutput" });
+              window.setTimeout(() => setTestingTone(false), 1300);
+            }}
+          >
+            {testingTone ? "Playing…" : "🔔 Test tone"}
+          </Button>
+        </div>
+        <div className="popup-subtitle" style={{ marginTop: -2 }}>
+          Nothing audible when you press ▶/🔊 below? Tap “Test tone” — it plays a short beep
+          straight out of the selected output, no recording involved. If you don't hear that
+          either, the recording isn't the problem — check the output device, cabling, or the
+          Pi's system volume.
         </div>
         {audio.outputs.length === 0 ? (
           <div style={{ color: "var(--pal-text-dim)", fontSize: 14 }}>No audio output found</div>

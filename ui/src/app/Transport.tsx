@@ -22,6 +22,7 @@ import { FpsMeter } from "./FpsMeter";
 import { TRANSPORT_H } from "./layout";
 import { getBgConfig, BG_CONFIG_EVENT } from "./bgConfig";
 import { useWheelPicker } from "./widgets/WheelPicker";
+import { useLongPress } from "./useLongPress";
 import { RecordingsPopup } from "./RecordingsPopup";
 
 const BTN = 50;
@@ -97,6 +98,11 @@ export function Transport({ view, onNav, onAddDevice }: TransportProps) {
   };
   const nudgeBpm = (delta: number) => setBpm(bpmRef.current + delta);
 
+  const recordPress = useLongPress(
+    () => setShowRecordings(true),
+    () => send({ t: recording ? "audio.record.stop" : "audio.record.start" }),
+  );
+
   const posText = t ? `${t.bar} : ${t.beat}` : "1 : 1";
   const portText = ports.length > 0 ? `MIDI: ${ports.length} Out` : "MIDI: no ports";
 
@@ -135,13 +141,14 @@ export function Transport({ view, onNav, onAddDevice }: TransportProps) {
       >
         {t?.playing ? "■" : "▶"}
       </Button>
-      {/* Aufnahme: unabhängig von Play/Stop (Einspielen bei laufendem
-          Sequencer genauso wie im Leerlauf) — startet/stoppt sofort. */}
+      {/* Aufnahme: Tipp startet/stoppt sofort (unabhängig von Play/Stop —
+          Einspielen bei laufendem Sequencer genauso wie im Leerlauf), langes
+          Halten öffnet dieselbe Aufnahmen-Liste wie der RC-Knopf. */}
       <Button
         className={recording ? "transport-record recording" : "transport-record"}
         style={{ width: BTN, height: BTN, fontSize: 20, marginRight: 6 }}
-        title={recording ? "Stop recording" : "Record"}
-        onClick={() => send({ t: recording ? "audio.record.stop" : "audio.record.start" })}
+        title={recording ? "Stop recording (hold for recordings)" : "Record (hold for recordings)"}
+        {...recordPress}
       >
         ●
       </Button>
