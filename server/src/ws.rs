@@ -2467,6 +2467,19 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
             *state.audio.lock().unwrap() = cfg;
             broadcast_audio_state(state);
         }
+        // Lautstärke der Wiedergabe (`audio.play.start`) — nicht am Testton
+        // beteiligt, der bleibt bewusst eine feste Referenzlautstärke.
+        "audio.setPlaybackGain" => {
+            if let Some(gain) = cmd.get("gain").and_then(|v| v.as_f64()) {
+                let mut cfg = state.audio.lock().unwrap().clone();
+                cfg.playback_gain = (gain as f32).clamp(audio::PLAYBACK_GAIN_MIN, audio::PLAYBACK_GAIN_MAX);
+                if let Err(e) = audio::save(&state.data_dir, &cfg) {
+                    tracing::warn!("audio.json speichern fehlgeschlagen: {e}");
+                }
+                *state.audio.lock().unwrap() = cfg;
+                broadcast_audio_state(state);
+            }
+        }
         // Startet die Aufnahme auf einem eigenen Thread (blockierend, bis der
         // Stream wirklich läuft — daher `spawn_blocking`, damit der Command-
         // Loop währenddessen weiterläuft). No-op, wenn schon eine Aufnahme
@@ -2524,7 +2537,10 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
             if let Some(active) = state.audio_playback.lock().unwrap().take() {
                 active.stop();
             }
-            let device = state.audio.lock().unwrap().output_device.clone();
+            let (device, gain) = {
+                let cfg = state.audio.lock().unwrap();
+                (cfg.output_device.clone(), cfg.playback_gain)
+            };
             let events = state.events.clone();
             let data_dir = state.data_dir.clone();
             let audio_recording = state.audio_recording.clone();
@@ -2535,7 +2551,7 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 let data_dir_blocking = data_dir.clone();
                 let file_blocking = file.clone();
                 let result = tokio::task::spawn_blocking(move || {
-                    audio::start_playback(file_blocking, device, data_dir_blocking, events_blocking)
+                    audio::start_playback(file_blocking, device, gain, data_dir_blocking, events_blocking)
                 })
                 .await
                 .unwrap_or_else(|e| Err(format!("Task abgebrochen: {e}")));

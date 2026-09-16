@@ -361,6 +361,43 @@ body {
   text-align: left;
   font-size: 16px;
 }
+
+/* ── Audio player (RecordingsPopup.tsx) — scoped, not global: `.popup-row`
+   above is shared by many other pickers, so the size bump and section cards
+   live only under `.audio-panel` instead of changing every popup in the app. ── */
+.audio-panel .popup-title {
+  font-size: 28px;
+  margin-bottom: 14px;
+}
+.audio-panel .popup-subtitle {
+  font-size: 14px;
+  margin-bottom: 10px;
+}
+.audio-panel .popup-row {
+  height: 76px;
+  font-size: 21px;
+  margin-bottom: 10px;
+}
+.audio-section {
+  border: 1.5px solid rgba(255, 255, 255, 0.16);
+  border-radius: 16px;
+  padding: 16px;
+  margin-bottom: 18px;
+}
+.audio-section:last-child {
+  margin-bottom: 0;
+}
+.audio-section-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+.audio-section-title {
+  flex: 1;
+  font-size: 19px;
+  font-weight: 800;
+}
 .popup-row:last-child {
   margin-bottom: 0;
 }

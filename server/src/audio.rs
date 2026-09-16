@@ -21,7 +21,7 @@ use cpal::Sample as _;
 use serde::{Deserialize, Serialize};
 
 /// Ausgewählter Audio-Ein-/Ausgang, persistiert wie `display.json`/`network.json`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioConfig {
     pub input_device: Option<String>,
@@ -30,7 +30,32 @@ pub struct AudioConfig {
     /// Kopfhörerbuchse, HDMI, …), nicht über den Browser der Kiosk-Anzeige.
     #[serde(default)]
     pub output_device: Option<String>,
+    /// Verstärkung der Wiedergabe (`audio.play.start`) — Multiplikator auf
+    /// jedes Sample, geclampt auf `PLAYBACK_GAIN_MIN..=PLAYBACK_GAIN_MAX`
+    /// (s. `audio.setPlaybackGain`). Nicht am Testton beteiligt (der bleibt
+    /// bewusst eine feste, bekannte Referenzlautstärke). Altprojekte ohne das
+    /// Feld starten mit `default_playback_gain()` — demselben Wert, mit dem
+    /// die Wiedergabe schon vor dieser Einstellung lief.
+    #[serde(default = "default_playback_gain")]
+    pub playback_gain: f32,
 }
+
+fn default_playback_gain() -> f32 {
+    2.0
+}
+
+// Handgeschrieben statt `#[derive(Default)]`: `playback_gain` braucht 2.0 als
+// Default (die Lautstärke, mit der die Wiedergabe schon vor dieser Einstellung
+// lief), nicht das `f32::default()` von 0.0 — das derive kennt den
+// `#[serde(default = "…")]`-Pfad nicht, der wirkt nur beim Deserialisieren.
+impl Default for AudioConfig {
+    fn default() -> Self {
+        Self { input_device: None, output_device: None, playback_gain: default_playback_gain() }
+    }
+}
+
+pub const PLAYBACK_GAIN_MIN: f32 = 0.25;
+pub const PLAYBACK_GAIN_MAX: f32 = 4.0;
 
 fn config_path(data_dir: &Path) -> PathBuf {
     data_dir.join("audio.json")
@@ -730,6 +755,7 @@ fn build_tone_stream(
 pub fn start_playback(
     file: String,
     device_name: Option<String>,
+    gain: f32,
     data_dir: PathBuf,
     events: tokio::sync::broadcast::Sender<serde_json::Value>,
 ) -> Result<ActivePlayback, String> {
@@ -750,7 +776,7 @@ pub fn start_playback(
     std::thread::Builder::new()
         .name("midireef-audio-play".into())
         .spawn(move || {
-            run_playback(device_name, path, ready_tx, stop_rx, finished_thread);
+            run_playback(device_name, path, gain, ready_tx, stop_rx, finished_thread);
             let _ = events.send(serde_json::json!({ "t": "audio.playbackDone", "file": file_for_thread }));
         })
         .map_err(|e| e.to_string())?;
@@ -769,6 +795,7 @@ pub fn start_playback(
 fn run_playback(
     device_name: Option<String>,
     path: PathBuf,
+    gain: f32,
     ready_tx: std::sync::mpsc::Sender<Result<String, String>>,
     stop_rx: std::sync::mpsc::Receiver<()>,
     finished: Arc<AtomicBool>,
@@ -810,7 +837,7 @@ fn run_playback(
     let mut out_config = supported.config();
     out_config.sample_rate = src_rate;
 
-    let stream = match build_playback_stream(&device, &out_config, out_format, src_channels, samples, finished.clone()) {
+    let stream = match build_playback_stream(&device, &out_config, out_format, src_channels, gain, samples, finished.clone()) {
         Ok(s) => s,
         Err(e) => {
             let _ = ready_tx.send(Err(e));
@@ -849,11 +876,18 @@ fn run_playback(
 /// (von `cpal` reexportiert) ins Zielformat. Ist die Quelle erschöpft, setzt
 /// die Callback `finished` (der Wiedergabe-Thread beendet sich daraufhin von
 /// selbst) und füllt den Rest mit Stille.
+///
+/// `gain`: Verstärkung der Wiedergabe (`AudioConfig::playback_gain`,
+/// einstellbar über `audio.setPlaybackGain`) — Aufnahmen kommen oft mit
+/// Eingangs-Headroom rein und klingen sonst leiser als erwartet. Geclampt auf
+/// ±1.0, damit ein bereits lauter Ausschnitt nicht hart verzerrt statt nur
+/// früher an die Decke zu stoßen.
 fn build_playback_stream(
     device: &cpal::Device,
     out_config: &cpal::StreamConfig,
     out_format: cpal::SampleFormat,
     src_channels: usize,
+    gain: f32,
     mut samples: impl Iterator<Item = Result<f32, hound::Error>> + Send + 'static,
     finished: Arc<AtomicBool>,
 ) -> Result<cpal::platform::Stream, String> {
@@ -878,7 +912,7 @@ fn build_playback_stream(
                             let mut have_frame = true;
                             for slot in frame.iter_mut() {
                                 match samples.next() {
-                                    Some(Ok(v)) => *slot = v,
+                                    Some(Ok(v)) => *slot = (v * gain).clamp(-1.0, 1.0),
                                     _ => {
                                         have_frame = false;
                                         break;
@@ -931,6 +965,7 @@ pub fn state_event(
         "inputDevice": cfg.input_device,
         "outputs": list_output_devices(),
         "outputDevice": cfg.output_device,
+        "playbackGain": cfg.playback_gain,
         "recording": active.map(|a| serde_json::json!({
             "file": a.file,
             "device": a.device,
