@@ -23,7 +23,6 @@ import { TRANSPORT_H } from "./layout";
 import { getBgConfig, BG_CONFIG_EVENT } from "./bgConfig";
 import { useWheelPicker } from "./widgets/WheelPicker";
 import { useLongPress } from "./useLongPress";
-import { RecordingsPopup } from "./RecordingsPopup";
 
 const BTN = 50;
 /** Navigations-„Tabs" — enger gesetzt als die Transport-Tasten und in einer
@@ -34,7 +33,7 @@ const NAV_H = 46;
 /** BPM-Wippe: kleiner als die Transport-Tasten, aber noch fingerbreit. */
 const NUDGE = 46;
 
-export type TransportView = "start" | "seq" | "library" | "settings";
+export type TransportView = "start" | "seq" | "library" | "settings" | "audio";
 
 export interface TransportProps {
   /** Which top-level page is showing — every one of them is reached from
@@ -53,10 +52,9 @@ export function Transport({ view, onNav, onAddDevice }: TransportProps) {
   const wheel = useWheelPicker();
   const [t, setT] = useState<TransportState | null>(null);
   const [ports, setPorts] = useState<string[]>([]);
-  /** Laufende Audio-Aufnahme (s. RecordingsPopup) — nur der Ein/Aus-Zustand
-   *  interessiert hier fürs Knopf-Leuchten, der Rest lebt im Popup. */
+  /** Laufende Audio-Aufnahme (s. Audio.tsx) — nur der Ein/Aus-Zustand
+   *  interessiert hier fürs Knopf-Leuchten, der Rest lebt im Audio-Screen. */
   const [recording, setRecording] = useState(false);
-  const [showRecordings, setShowRecordings] = useState(false);
   const bpmRef = useRef(120);
   const [bpmDisplay, setBpmDisplay] = useState(120);
   /** Optionale FPS-Anzeige (⚙ → Background scene). Nur der Schalter landet
@@ -99,7 +97,7 @@ export function Transport({ view, onNav, onAddDevice }: TransportProps) {
   const nudgeBpm = (delta: number) => setBpm(bpmRef.current + delta);
 
   const recordPress = useLongPress(
-    () => setShowRecordings(true),
+    () => onNav("audio"),
     () => send({ t: recording ? "audio.record.stop" : "audio.record.start" }),
   );
 
@@ -107,7 +105,6 @@ export function Transport({ view, onNav, onAddDevice }: TransportProps) {
   const portText = ports.length > 0 ? `MIDI: ${ports.length} Out` : "MIDI: no ports";
 
   return (
-    <>
     <div
       className="hifi-rail"
       style={{
@@ -152,14 +149,14 @@ export function Transport({ view, onNav, onAddDevice }: TransportProps) {
       >
         ●
       </Button>
-      {/* "RC": Interface-Auswahl + Aufnahmen-Liste (RecordingsPopup) — ein
-          eigener kleiner Knopf statt eines versteckten Long-Press, damit die
-          Aufnahmen-Verwaltung genauso auffindbar ist wie SQ/DB/library/settings. */}
+      {/* "RC": eigener Vollbild-Screen (Audio.tsx) — ein eigener kleiner Knopf
+          statt eines versteckten Long-Press, damit die Aufnahmen-Verwaltung
+          genauso auffindbar ist wie SQ/DB/library/settings. */}
       <Button
-        className="transport-nav"
+        className={view === "audio" ? "transport-nav on" : "transport-nav"}
         style={{ width: NAV, height: NAV_H, fontSize: 14, marginRight: 10 }}
-        title="Recordings"
-        onClick={() => setShowRecordings(true)}
+        title="Audio"
+        onClick={() => onNav("audio")}
       >
         RC
       </Button>
@@ -278,8 +275,6 @@ export function Transport({ view, onNav, onAddDevice }: TransportProps) {
         <span>REEF</span>
       </div>
     </div>
-    {showRecordings && <RecordingsPopup onClose={() => setShowRecordings(false)} />}
-    </>
   );
 }
 

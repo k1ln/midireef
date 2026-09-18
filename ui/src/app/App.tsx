@@ -18,16 +18,17 @@ import { BlockDetail } from "./BlockDetail";
 import { BlockLibrary } from "./BlockLibrary";
 import { LaneControls } from "./LaneControls";
 import { Dashboard } from "./Dashboard";
+import { Audio } from "./Audio";
 import { ProjectSettings } from "./ProjectSettings";
 import { applyUiScale, getUiScale } from "./uiScale";
 import { applyMotion, getMotion } from "./motionConfig";
 import { applyAllSizes } from "./uiSizes";
 
 /** Top-level pages, all reached from the transport bar — no back button, no
- *  modal. Dashboard, Sequencer, Block library and Project settings are peers;
- *  `blockDetail` / `laneControls` are the only real drill-ins (they overlay
- *  whichever page opened them). */
-type View = "start" | "seq" | "library" | "settings";
+ *  modal. Dashboard, Sequencer, Block library, Audio and Project settings are
+ *  peers; `blockDetail` / `laneControls` are the only real drill-ins (they
+ *  overlay whichever page opened them). */
+type View = "start" | "seq" | "library" | "settings" | "audio";
 
 type SubScreen =
   | { kind: "blockDetail"; blockId: string }
@@ -134,6 +135,8 @@ export function App() {
           )}
 
           {view === "settings" && <ProjectSettings onClose={() => navigate("seq")} />}
+
+          {view === "audio" && <Audio />}
 
           {sub?.kind === "blockDetail" && (
             <BlockDetail

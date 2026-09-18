@@ -28,7 +28,6 @@ import {
   type BgCountField,
 } from "./bgConfig";
 import { GrooveRow } from "./overview/SettingsDock";
-import { AudioRecorderPanel } from "./RecordingsPopup";
 import { useLocalPref } from "./useLocalPref";
 
 /** Spiegelt `ProjectSummary` aus shared/model.ts (`updatedAt` in Unix-Sekunden). */
@@ -498,22 +497,8 @@ export function ProjectSettings({ onClose }: { onClose: () => void }) {
       <WifiApCard />
       <DisplayCard />
       <GithubBackupCard />
-      <AudioRecorderCard />
       </div>
     </div>
-  );
-}
-
-/** „Audio recording" — dieselbe Interface-Auswahl + Aufnahmen-Liste wie das
- *  RecordingsPopup (langes Halten des ⏺-Knopfs in der Transport-Leiste),
- *  hier zusätzlich fest im Projekte-Menü verankert: wer erst in Ruhe das
- *  richtige Interface heraussuchen will (mehrdeutig benannte Einträge,
- *  s. AudioRecorderPanel), muss dafür nicht auf den Sequencer-Screen. */
-function AudioRecorderCard() {
-  return (
-    <section className="settings-card">
-      <AudioRecorderPanel />
-    </section>
   );
 }
 
