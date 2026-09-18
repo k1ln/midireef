@@ -2318,8 +2318,12 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
         // ── Display-Drehung ──────────────────────────────────────────────────
         "display.getState" => broadcast_display_state(state),
         "display.setRotation" => {
-            let rotated = cmd.get("rotated").and_then(|v| v.as_bool()).unwrap_or(false);
-            let cfg = display::DisplayConfig { rotated };
+            let rotation = cmd.get("rotation").and_then(|v| v.as_u64()).unwrap_or(0);
+            let rotation = match rotation {
+                0 | 90 | 180 | 270 => rotation as u16,
+                _ => 0,
+            };
+            let cfg = display::DisplayConfig { rotation };
 
             if !display::supported() {
                 let _ = state.events.send(serde_json::json!({

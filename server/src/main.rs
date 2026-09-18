@@ -188,10 +188,7 @@ async fn main() {
         let cfg = *display_cfg.lock().unwrap();
         if display::supported() {
             tokio::task::spawn_blocking(move || match display::apply(&cfg) {
-                Ok(()) => tracing::info!(
-                    "Display-Drehung angewendet: {}°",
-                    if cfg.rotated { 180 } else { 0 }
-                ),
+                Ok(()) => tracing::info!("Display-Drehung angewendet: {}°", cfg.rotation),
                 Err(e) => tracing::warn!("Display-Drehung beim Start fehlgeschlagen: {e}"),
             });
         }

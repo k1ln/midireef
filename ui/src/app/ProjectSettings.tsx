@@ -870,11 +870,16 @@ function WifiApCard() {
   );
 }
 
-/** „Display" — Kiosk-Bildschirm um 180° drehen (Touchscreen sitzt bei manchen
- *  Gehäusen kopfüber im Gehäuse). Schickt sofort `display.setRotation`; der
- *  Server dreht den Output live über `deploy/bin/midireef-display` (kein
- *  Chromium-Neustart nötig). Auf dem Mac-Dev-Rechner fehlt der Helfer →
- *  `supported:false`, die Karte ist dann deaktiviert. */
+const ROTATION_OPTIONS = [0, 90, 180, 270] as const;
+
+/** „Display" — Kiosk-Bildschirm in 90°-Schritten drehen (Touchscreen sitzt
+ *  bei manchen Gehäusen quer oder kopfüber im Gehäuse). Schickt sofort
+ *  `display.setRotation`; der Server dreht den Output live über
+ *  `deploy/bin/midireef-display` (kein Chromium-Neustart nötig) und
+ *  persistiert die Wahl in `display.json`, sodass sie auch einen Neustart des
+ *  Pi übersteht (`kiosk.sh` liest sie beim Boot erneut). Auf dem
+ *  Mac-Dev-Rechner fehlt der Helfer → `supported:false`, die Karte ist dann
+ *  deaktiviert. */
 function DisplayCard() {
   const net = useNet();
   const send = useSend();
@@ -896,11 +901,11 @@ function DisplayCard() {
   }, [net, send]);
 
   const supported = display?.supported ?? false;
-  const flipped = display?.rotated ?? false;
+  const rotation = display?.rotation ?? 0;
 
   return (
     <section className="settings-card">
-      <div className="popup-subtitle">Display — flip the kiosk screen 180°</div>
+      <div className="popup-subtitle">Display — rotate the kiosk screen in 90° steps</div>
 
       {!supported && (
         <div style={{ color: "var(--pal-text-dim)", fontSize: 14, marginBottom: 12 }}>
@@ -909,19 +914,19 @@ function DisplayCard() {
       )}
 
       <div style={{ display: "flex", gap: 6, opacity: supported ? 1 : 0.4 }}>
-        {([false, true] as boolean[]).map((on) => (
+        {ROTATION_OPTIONS.map((deg) => (
           <Button
-            key={String(on)}
-            variant={flipped === on ? (on ? "active" : undefined) : "alt"}
+            key={deg}
+            variant={rotation === deg ? (deg === 0 ? undefined : "active") : "alt"}
             style={{ flex: 1, height: 48, fontSize: 15 }}
             disabled={!supported || pending}
             onClick={() => {
               setError(null);
               setPending(true);
-              send({ t: "display.setRotation", rotated: on });
+              send({ t: "display.setRotation", rotation: deg });
             }}
           >
-            {on ? "Flipped 180°" : "Normal"}
+            {deg === 0 ? "Normal" : `${deg}°`}
           </Button>
         ))}
       </div>

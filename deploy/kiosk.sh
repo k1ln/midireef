@@ -60,8 +60,8 @@ fi
 # Nach einem Reboot, bevor der Server läuft, gilt hier erstmal der zuletzt
 # gespeicherte Wert aus der Datei, die der Server bei jeder Umschaltung schreibt.
 ROTATION="$(cat "$HOME/.config/midireef/kiosk-rotation" 2>/dev/null || echo 0)"
-if [[ "$ROTATION" == "180" ]]; then
-  "$(dirname "$0")/midireef-display" 180 2>/dev/null || true
+if [[ "$ROTATION" != "0" ]]; then
+  "$(dirname "$0")/midireef-display" "$ROTATION" 2>/dev/null || true
 fi
 
 CHROMIUM="$(command -v chromium-browser || command -v chromium)"

@@ -15,9 +15,43 @@ use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
+/// Kiosk-Drehung in Grad, im Uhrzeigersinn relativ zur Grundausrichtung des
+/// Panels (siehe `deploy/bin/midireef-display`). Nur diese vier Werte sind
+/// gültig — `normalize` fängt alles andere (z.B. ein von Hand verbogenes
+/// `display.json`) auf 0 ab.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 pub struct DisplayConfig {
-    pub rotated: bool,
+    #[serde(default, alias = "rotated", deserialize_with = "deserialize_rotation")]
+    pub rotation: u16,
+}
+
+/// Akzeptiert sowohl das neue Feld (`rotation: 0|90|180|270`) als auch das
+/// alte boolsche `rotated` aus vor dieser Änderung gespeicherten
+/// `display.json`-Dateien (`false` → 0°, `true` → 180°).
+fn deserialize_rotation<'de, D>(de: D) -> Result<u16, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum RotationOrFlag {
+        Degrees(u16),
+        Flipped(bool),
+    }
+    Ok(match RotationOrFlag::deserialize(de)? {
+        RotationOrFlag::Degrees(deg) => normalize(deg),
+        RotationOrFlag::Flipped(true) => 180,
+        RotationOrFlag::Flipped(false) => 0,
+    })
+}
+
+/// Klemmt auf den nächsten gültigen Wert (0/90/180/270) — alles andere fällt
+/// auf 0 zurück.
+fn normalize(deg: u16) -> u16 {
+    match deg {
+        0 | 90 | 180 | 270 => deg,
+        _ => 0,
+    }
 }
 
 fn config_path(data_dir: &Path) -> PathBuf {
@@ -63,9 +97,8 @@ pub fn apply(cfg: &DisplayConfig) -> Result<(), String> {
     if !helper.is_file() {
         return Err(format!("Display-Helfer nicht gefunden: {}", helper.display()));
     }
-    let angle = if cfg.rotated { "180" } else { "0" };
     let out = Command::new(&helper)
-        .arg(angle)
+        .arg(normalize(cfg.rotation).to_string())
         .output()
         .map_err(|e| format!("{} ließ sich nicht starten: {e}", helper.display()))?;
     if out.status.success() {
@@ -85,6 +118,6 @@ pub fn state_event(cfg: &DisplayConfig) -> serde_json::Value {
     serde_json::json!({
         "t": "display.state",
         "supported": supported(),
-        "rotated": cfg.rotated,
+        "rotation": normalize(cfg.rotation),
     })
 }

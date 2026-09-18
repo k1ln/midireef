@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Dreht das Kiosk-Display um 180° RELATIV zu seiner Grundausrichtung (oder
-# zurück auf die Grundausrichtung) — ohne Chromium neu zu starten. Braucht
-# anders als midireef-net kein sudo: das Drehen eines eigenen Wayland-/
-# X11-Outputs ist eine normale Aktion der Desktop-Sitzung, keine
-# System-Änderung.
+# Dreht das Kiosk-Display um 0/90/180/270° RELATIV zu seiner Grundausrichtung
+# — ohne Chromium neu zu starten. Braucht anders als midireef-net kein sudo:
+# das Drehen eines eigenen Wayland-/X11-Outputs ist eine normale Aktion der
+# Desktop-Sitzung, keine System-Änderung.
 #
 # „Grundausrichtung" ist die Drehung, die der Compositor für dieses Panel
 # schon einstellt, bevor dieses Skript je gelaufen ist — z.B. ein
@@ -17,7 +16,7 @@
 # „180" immer als Grundausrichtung + 180° (mod 360), „0" als reine
 # Grundausrichtung.
 #
-# Aufruf: midireef-display 0|180
+# Aufruf: midireef-display 0|90|180|270
 #
 # Wird sowohl vom Server (Einstellungen → „Display drehen", server/src/display.rs)
 # als auch von kiosk.sh selbst beim Start aufgerufen (letzteres, damit die
@@ -25,10 +24,10 @@
 # Einstellung erneut anfasst).
 set -uo pipefail
 
-ROTATION="${1:?Nutzung: midireef-display 0|180}"
+ROTATION="${1:?Nutzung: midireef-display 0|90|180|270}"
 case "$ROTATION" in
-  0|180) ;;
-  *) echo "midireef-display: ungültige Drehung: $ROTATION (erlaubt: 0, 180)" >&2; exit 1 ;;
+  0|90|180|270) ;;
+  *) echo "midireef-display: ungültige Drehung: $ROTATION (erlaubt: 0, 90, 180, 270)" >&2; exit 1 ;;
 esac
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
@@ -80,7 +79,12 @@ if [[ -n "${WAYLAND_DISPLAY:-}" ]] && command -v wlr-randr >/dev/null 2>&1; then
   [[ "$ok" == "1" ]] || { echo "midireef-display: wlr-randr fehlgeschlagen" >&2; exit 1; }
 elif [[ -n "${DISPLAY:-}" || -e /tmp/.X11-unix/X0 ]] && command -v xrandr >/dev/null 2>&1; then
   export DISPLAY="${DISPLAY:-:0}"
-  ORIENT=normal; [[ "$ROTATION" == "180" ]] && ORIENT=inverted
+  case "$ROTATION" in
+    90) ORIENT=right ;;
+    180) ORIENT=inverted ;;
+    270) ORIENT=left ;;
+    *) ORIENT=normal ;;
+  esac
   xrandr --orientation "$ORIENT" 2>/dev/null || { echo "midireef-display: xrandr fehlgeschlagen" >&2; exit 1; }
 else
   echo "midireef-display: kein Compositor gefunden (weder Wayland noch X11)" >&2

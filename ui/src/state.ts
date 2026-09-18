@@ -357,7 +357,7 @@ export interface NetworkState {
  *  fehlt (Mac-Dev) — die Karte ist dann deaktiviert. */
 export interface DisplayState {
   supported: boolean;
-  rotated: boolean;
+  rotation: 0 | 90 | 180 | 270;
 }
 
 /** Zustand der GitHub-Backup-Verbindung (Einstellungen → „GitHub backup").
