@@ -3,7 +3,15 @@
 
 import type { TransportState } from "./net";
 
-export type BlockType = "melody" | "beat" | "cc" | "programChange" | "patternShift" | "chord" | "arp";
+export type BlockType =
+  | "melody"
+  | "beat"
+  | "cc"
+  | "programChange"
+  | "patternShift"
+  | "chord"
+  | "arp"
+  | "walker";
 
 export interface Slot {
   id: string;
@@ -66,6 +74,15 @@ export type CcLayer = {
   smooth?: boolean; // random
 };
 
+export interface WalkerNode {
+  id: string;
+  startNote: number;
+  stepSemitones: number; // 1 (Halbton) | 2 (Ganzton)
+  intervalBars: number; // bewegt sich alle N Takte
+  mode: string; // "sequential" | "random"
+  startDirection: string; // "up" | "down", nur bei "sequential"
+}
+
 export interface ProgramChangeEvent {
   atStep: number;
   program: number;
@@ -108,6 +125,10 @@ export interface Block {
   velocity?: number; // arp
   driftIndex?: number; // arp: which note of one pass through the pool drifts (0-based)
   driftAmount?: number; // arp: steps that note shifts per loop (wraps within the block)
+  borderLow?: number; // walker: fixed lower cage wall
+  borderHigh?: number; // walker: fixed upper cage wall
+  nodes?: WalkerNode[]; // walker
+  style?: string; // walker: "up"|"down"|"upDown"|"downUp"|"random"|"asPlayed"|"chord"|"rollUp"|"rollDown"
   outMin?: number; // cc
   outMax?: number; // cc
   destructive?: boolean; // cc: false/undef = Ziel kehrt am Blockende zur Ruhelage zurück

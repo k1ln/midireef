@@ -17,7 +17,7 @@
 import { useEffect, useRef } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import type { Lane, Block, Slot } from "../../state";
-import { useRuntimeTile, useSend } from "../store";
+import { useRuntime, useRuntimeTile, useSend } from "../store";
 import { useLongPress } from "../useLongPress";
 
 function loopBadge(slot: Slot): string | null {
@@ -39,6 +39,7 @@ export interface SlotTileProps {
 
 export function SlotTile({ lane, slot, blk, locked, selected, onSelect, onOpenBlock }: SlotTileProps) {
   const send = useSend();
+  const runtime = useRuntime();
   const runtimeRef = useRuntimeTile(lane.id, slot.id);
   // Auf dem GANZEN Körper, nicht nur dem kleinen ID-Label — sonst landet ein
   // langer Druck daneben als normaler Tipp und es öffnet nur das Dock rechts.
@@ -66,6 +67,20 @@ export function SlotTile({ lane, slot, blk, locked, selected, onSelect, onOpenBl
       release();
     }
   };
+  // "manual": die Trigger-Leiste ist ein Play/Stop-Schalter pro Kachel statt
+  // eines reinen Neustarts — Tippen auf die gerade KLINGENDE Kachel stoppt die
+  // ganze Lane, Tippen bei stehender Lane (oder auf eine andere Kachel) startet
+  // sie dort. Läuft über dasselbe `lane.enabled` wie der ▶/■-Knopf in
+  // LaneRow, statt einen zweiten, unsichtbaren An/Aus-Zustand mitzuführen, der
+  // sonst gegen die Kachel-Anzeige und den Lane-Knopf auseinanderlaufen könnte.
+  const triggerManual = () => {
+    if (lane.enabled && runtime.isPlayingSlot(lane.id, slot.id)) {
+      send({ t: "lane.setEnabled", laneId: lane.id, enabled: false });
+      return;
+    }
+    if (!lane.enabled) send({ t: "lane.setEnabled", laneId: lane.id, enabled: true });
+    send({ t: "block.trigger", laneId: lane.id, slotId: slot.id });
+  };
   const triggerProps = gated
     ? {
         // Pointer-Capture wie bei `useLongPress`: ohne das beendet ein
@@ -81,7 +96,11 @@ export function SlotTile({ lane, slot, blk, locked, selected, onSelect, onOpenBl
         onPointerCancel: isHold ? endHold : undefined,
         onPointerLeave: isHold ? endHold : undefined,
       }
-    : { onClick: () => send({ t: "block.trigger", laneId: lane.id, slotId: slot.id }) };
+    : {
+        onClick: lane.playMode === "manual"
+          ? triggerManual
+          : () => send({ t: "block.trigger", laneId: lane.id, slotId: slot.id }),
+      };
 
   const idLabel = blk?.slot ? `${blk.slot.row}-${blk.slot.col}` : "?";
   const loop = loopBadge(slot);

@@ -8,7 +8,7 @@ import { useNet, useSend, useStoreValue, useRuntimeBlock } from "./store";
 import { useTouchKeyboard } from "./TouchKeyboard";
 import { Button } from "./widgets/Button";
 import { TRANSPORT_H } from "./layout";
-import { BeatEditor, ChordEditor, ArpEditor, ProgramChangeEditor, PatternShiftEditor } from "./blockdetail/editors";
+import { BeatEditor, ChordEditor, ArpEditor, WalkerEditor, ProgramChangeEditor, PatternShiftEditor } from "./blockdetail/editors";
 import { MelodyEditor, MelodyToolbar, PaintToolbar, type MelodyLayout, type PaintTool, type PlayInMode } from "./blockdetail/MelodyEditor";
 import type { StepFlow } from "./blockdetail/StepGrid";
 import { useLocalPref } from "./useLocalPref";
@@ -377,6 +377,7 @@ function BlockDetailBody({
       {block.type === "beat" && <BeatEditor block={block} flow={flow} />}
       {block.type === "chord" && <ChordEditor block={block} flow={flow} />}
       {block.type === "arp" && <ArpEditor block={block} />}
+      {block.type === "walker" && <WalkerEditor block={block} />}
       {block.type === "cc" && <CcEditor block={block} flow={flow} />}
       {block.type === "programChange" && <ProgramChangeEditor block={block} flow={flow} />}
       {block.type === "patternShift" && <PatternShiftEditor block={block} flow={flow} />}

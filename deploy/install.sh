@@ -142,16 +142,33 @@ sudo raspi-config nonint do_blanking 1 2>/dev/null || warn "raspi-config unavail
 # but swipes don't scroll and there's no multi-touch — labwc never forwards a
 # real TouchEvent to Chromium. Flip it off (rc.xml), no session restart needed
 # (labwc reloads rc.xml on SIGHUP).
-log "Enabling real touch input (disabling labwc mouse emulation)"
+#
+# Also strip any `mapToOutput` pin: DSI output names (DSI-1/DSI-2) have been
+# observed to change across boots/kernel updates, and a stale pin leaves
+# touch unbound to any real output — labwc then never applies the output's
+# rotation to touch at all. Left empty, it auto-binds to whichever output
+# exists (fine for this kiosk's single panel).
+log "Enabling real touch input (disabling labwc mouse emulation, unpinning output)"
 RC="$HOME/.config/labwc/rc.xml"
-if [[ -f "$RC" ]] && grep -q 'mouseEmulation="yes"' "$RC"; then
+if [[ -f "$RC" ]] && grep -Eq 'mouseEmulation="yes"|mapToOutput="[^"]+"' "$RC"; then
   cp "$RC" "$RC.bak"
-  sed -i 's/mouseEmulation="yes"/mouseEmulation="no"/' "$RC"
+  sed -i -e 's/mouseEmulation="yes"/mouseEmulation="no"/' -e 's/mapToOutput="[^"]*"/mapToOutput=""/' "$RC"
   killall -HUP labwc 2>/dev/null || true
   ok "Touch input enabled (backup: $RC.bak)"
 else
-  log "Nothing to change (already off, or no labwc config yet — reboot once and re-run if needed)"
+  log "Nothing to change (already off/unpinned, or no labwc config yet — reboot once and re-run if needed)"
 fi
+
+# The touchscreen's own digitizer is wired 180° rotated relative to the
+# panel's normal orientation (found by capturing raw `libinput debug-events`
+# taps on all four corners) — independent of, and needed on top of, the
+# mapToOutput fix above. Without it, touch only ever lines up with one
+# specific Settings → Display rotation by accident.
+log "Installing touch calibration udev rule"
+sudo install -m 644 "$SRC_DIR/deploy/systemd/99-midireef-touch-calibration.rules" \
+  /etc/udev/rules.d/99-midireef-touch-calibration.rules
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=input --action=change
 
 echo
 ok "MidiReef installed."

@@ -13,7 +13,7 @@ import { noteName, useNotePicker } from "../NotePicker";
 import { Button } from "../widgets/Button";
 import { Popup } from "../widgets/Popup";
 import { StepScroller, StepBars, StepCell, ROLL_LOW_NOTE, ROLL_HIGH_NOTE, type StepFlow } from "./StepGrid";
-import { useNumberEditor, useSetField } from "../useNumberEditor";
+import { useNumberEditor, useSetField, useSetWalkerNodeField } from "../useNumberEditor";
 import { useWheelPicker } from "../widgets/WheelPicker";
 import { useLongPress } from "../useLongPress";
 import { useTouchKeyboard } from "../TouchKeyboard";
@@ -25,6 +25,7 @@ const BEAT_CELL = 64;
 
 const DIRECTIONS = ["up", "down", "upDown", "random", "asPlayed"];
 const MSG_KINDS = ["programChange", "cc", "note"];
+const WALKER_STYLES = ["up", "down", "upDown", "downUp", "random", "asPlayed", "chord", "rollUp", "rollDown"];
 
 // ── Beat: Step-Grid pro Line ────────────────────────────────────────────────
 
@@ -104,7 +105,12 @@ function BeatLineLabel({
 }) {
   const openKeyboard = useTouchKeyboard();
   const press = useLongPress(
-    () => openNotePicker(line.note, (n) => send({ t: "beat.setLineNote", blockId: block.id, lineId: line.id, note: n })),
+    () =>
+      openNotePicker(
+        line.note,
+        (n) => send({ t: "beat.setLineNote", blockId: block.id, lineId: line.id, note: n }),
+        block.id,
+      ),
     () =>
       openKeyboard(line.name, 16, (v) => {
         if (v) send({ t: "beat.setLineName", blockId: block.id, lineId: line.id, name: v });
@@ -308,6 +314,179 @@ export function ArpEditor({ block }: { block: Block }) {
           Drift {driftAmount === 0 ? "off" : `${driftAmount > 0 ? "+" : ""}${driftAmount}/loop`}
         </Button>
       </div>
+    </div>
+  );
+}
+
+// ── Walker: Käfig-Wände + wandernde Nodes ───────────────────────────────────
+//
+// Nodes wandern takt-weise in Halb-/Ganztonschritten und können weder
+// einander noch die festen Käfig-Wände überspringen. Start-Tonhöhen und
+// Wände werden hier client-seitig auf die Lücke zwischen ihren jeweiligen
+// Nachbarn geklemmt (`lowBound`/`highBound`), damit sich die Reihenfolge nie
+// per Editor selbst verletzen lässt — die Engine sortiert Nodes beim
+// Kompilieren zusätzlich noch einmal nach aktueller Tonhöhe.
+
+export function WalkerEditor({ block }: { block: Block }) {
+  const send = useSend();
+  const wheel = useWheelPicker();
+  const setField = useSetField();
+  const setNodeField = useSetWalkerNodeField();
+  const borderLow = block.borderLow ?? 48;
+  const borderHigh = block.borderHigh ?? 72;
+  const style = block.style ?? "up";
+  const gateSteps = block.gateSteps ?? 1;
+  const rateSteps = block.rateSteps ?? 1;
+  const velocity = block.velocity ?? 100;
+  const nodes = [...(block.nodes ?? [])].sort((a, b) => a.startNote - b.startNote);
+
+  return (
+    <div>
+      <div style={{ fontSize: 13, color: "var(--pal-text-dim)", marginBottom: 8 }}>Cage — fixed walls the outer nodes can never cross:</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 20 }}>
+        <Button
+          style={{ width: 150, height: 34, fontSize: 14 }}
+          onClick={() =>
+            wheel({
+              title: "Low wall",
+              min: 0,
+              max: (nodes[0]?.startNote ?? borderHigh + 1) - 1,
+              value: borderLow,
+              format: (v) => `${noteName(v)} (${v})`,
+              onPick: (n) => send({ t: "walker.setBorder", blockId: block.id, which: "low", note: n }),
+            })
+          }
+        >
+          Low {noteName(borderLow)}
+        </Button>
+        <Button
+          style={{ width: 150, height: 34, fontSize: 14 }}
+          onClick={() =>
+            wheel({
+              title: "High wall",
+              min: (nodes[nodes.length - 1]?.startNote ?? borderLow - 1) + 1,
+              max: 127,
+              value: borderHigh,
+              format: (v) => `${noteName(v)} (${v})`,
+              onPick: (n) => send({ t: "walker.setBorder", blockId: block.id, which: "high", note: n }),
+            })
+          }
+        >
+          High {noteName(borderHigh)}
+        </Button>
+      </div>
+
+      <div style={{ fontSize: 13, color: "var(--pal-text-dim)", marginBottom: 8 }}>
+        Nodes — each wanders on its own schedule, and bounces off its neighbors and the walls:
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 }}>
+        {nodes.map((node, i) => {
+          const lowBound = (i === 0 ? borderLow : nodes[i - 1].startNote) + 1;
+          const highBound = (i + 1 < nodes.length ? nodes[i + 1].startNote : borderHigh) - 1;
+          const stepSemitones = node.stepSemitones ?? 1;
+          const intervalBars = node.intervalBars ?? 1;
+          const mode = node.mode ?? "sequential";
+          const startDirection = node.startDirection ?? "up";
+          return (
+            <div
+              key={node.id}
+              style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, padding: 8, background: "rgba(255,255,255,0.04)", borderRadius: 8 }}
+            >
+              <Button
+                style={{ width: 130, height: 32, fontSize: 13 }}
+                onClick={() =>
+                  wheel({
+                    title: "Start note",
+                    min: Math.min(lowBound, highBound),
+                    max: Math.max(lowBound, highBound),
+                    value: node.startNote,
+                    format: (v) => `${noteName(v)} (${v})`,
+                    onPick: (n) => setNodeField(block.id, node.id, "startNote", n),
+                  })
+                }
+              >
+                {noteName(node.startNote)}
+              </Button>
+              <Button style={{ width: 70, height: 32, fontSize: 13 }} onClick={() => setNodeField(block.id, node.id, "stepSemitones", stepSemitones === 1 ? 2 : 1)}>
+                {stepSemitones === 1 ? "Half" : "Whole"}
+              </Button>
+              <Button
+                style={{ width: 110, height: 32, fontSize: 13 }}
+                onClick={() => wheel({ title: "Move every", min: 1, max: 64, unit: " bar(s)", value: intervalBars, onPick: (n) => setNodeField(block.id, node.id, "intervalBars", n) })}
+              >
+                /{intervalBars} bar{intervalBars === 1 ? "" : "s"}
+              </Button>
+              <Button style={{ width: 100, height: 32, fontSize: 13 }} onClick={() => setNodeField(block.id, node.id, "mode", mode === "sequential" ? "random" : "sequential")}>
+                {mode}
+              </Button>
+              {mode === "sequential" && (
+                <Button style={{ width: 60, height: 32, fontSize: 13 }} onClick={() => setNodeField(block.id, node.id, "startDirection", startDirection === "up" ? "down" : "up")}>
+                  {startDirection === "up" ? "↑" : "↓"}
+                </Button>
+              )}
+              <Button
+                style={{ width: 32, height: 32, fontSize: 13, marginLeft: "auto" }}
+                onClick={() => send({ t: "walker.removeNode", blockId: block.id, nodeId: node.id })}
+              >
+                ×
+              </Button>
+            </div>
+          );
+        })}
+      </div>
+      <Button
+        style={{ height: 32, fontSize: 13 }}
+        onClick={() => {
+          // In der größten Lücke platzieren, damit ein neuer Node nicht
+          // sofort an einer Wand/einem Nachbarn klemmt.
+          const bounds = [borderLow, ...nodes.map((n) => n.startNote), borderHigh];
+          let bestGapStart = borderLow;
+          let bestGapSize = -1;
+          for (let i = 0; i < bounds.length - 1; i++) {
+            const size = bounds[i + 1] - bounds[i];
+            if (size > bestGapSize) {
+              bestGapSize = size;
+              bestGapStart = bounds[i];
+            }
+          }
+          send({ t: "walker.addNode", blockId: block.id, startNote: Math.round(bestGapStart + bestGapSize / 2) });
+        }}
+      >
+        + Add node
+      </Button>
+
+      <div style={{ fontSize: 13, color: "var(--pal-text-dim)", marginTop: 20, marginBottom: 8 }}>Playback style — how the current node pitches actually sound:</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+        <Button
+          style={{ width: 170, height: 34, fontSize: 14 }}
+          onClick={() => setField(block.id, "style", WALKER_STYLES[(WALKER_STYLES.indexOf(style) + 1) % WALKER_STYLES.length])}
+        >
+          Style: {style}
+        </Button>
+        <Button
+          style={{ width: 120, height: 34, fontSize: 14 }}
+          onClick={() => wheel({ title: "Gate", min: 1, max: 64, unit: " step(s)", value: gateSteps, onPick: (n) => setField(block.id, "gateSteps", n) })}
+        >
+          Gate {gateSteps}
+        </Button>
+        <Button
+          style={{ width: 120, height: 34, fontSize: 14 }}
+          onClick={() => wheel({ title: "Rate", min: 1, max: 64, unit: " step(s)", value: rateSteps, onPick: (n) => setField(block.id, "rateSteps", n) })}
+        >
+          Rate {rateSteps}
+        </Button>
+        <Button
+          style={{ width: 120, height: 34, fontSize: 14 }}
+          onClick={() => wheel({ title: "Velocity", min: 1, max: 127, value: velocity, onPick: (n) => setField(block.id, "velocity", n) })}
+        >
+          Vel {velocity}
+        </Button>
+      </div>
+      {gateSteps > rateSteps && (
+        <div style={{ fontSize: 12, color: "var(--pal-text-dim)", marginTop: 8 }}>
+          Gate &gt; Rate — notes overlap and ring together (a "broken chord" effect) instead of cutting each other off.
+        </div>
+      )}
     </div>
   );
 }

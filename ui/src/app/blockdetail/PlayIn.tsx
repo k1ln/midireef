@@ -59,7 +59,7 @@ const VELOCITIES = [20, 40, 60, 80, 100, 110, 127];
 
 /** Anschlag, den ein Gerät ohne eigene Velocity meldet (sollte praktisch nie
  *  vorkommen, ist aber ein sinnvoller Nullwert). */
-const DEFAULT_VELOCITY = 100;
+export const DEFAULT_VELOCITY = 100;
 
 export interface PlayIn {
   mode: PlayInMode;
@@ -501,18 +501,19 @@ const BLACK_AFTER = [0, 1, 3, 4, 5];
  *  einer Hand braucht; für alles andere gibt es ±8ve. */
 const OCTAVES = 2;
 
-function clampFirstC(c: number): number {
+export function clampFirstC(c: number): number {
   // Untere Grenze wie die Piano-Rolle (C0); oben so, dass die letzte Taste
   // der rechten Oktave noch existiert.
   return Math.max(12, Math.min(c, 127 - 12 * OCTAVES));
 }
 
-function PianoKeys({
+export function PianoKeys({
   firstC,
   held,
   selected,
   onPress,
   onRelease,
+  octaves = OCTAVES,
 }: {
   firstC: number;
   held: readonly number[];
@@ -520,11 +521,15 @@ function PianoKeys({
   selected: readonly number[];
   onPress: (note: number) => void;
   onRelease: (note: number) => void;
+  /** Sichtbare Oktaven — Default wie im Play-In-Streifen. Kleinere Picker
+   *  (s. NotePicker.tsx) zeigen nur eine, damit die Tasten in einem
+   *  schmalen Popup noch fingerbreit bleiben. */
+  octaves?: number;
 }) {
   const whites: number[] = [];
-  for (let o = 0; o < OCTAVES; o++) for (const s of WHITE_SEMIS) whites.push(firstC + 12 * o + s);
+  for (let o = 0; o < octaves; o++) for (const s of WHITE_SEMIS) whites.push(firstC + 12 * o + s);
   const blacks: { note: number; index: number }[] = [];
-  for (let o = 0; o < OCTAVES; o++)
+  for (let o = 0; o < octaves; o++)
     for (const i of BLACK_AFTER) blacks.push({ note: firstC + 12 * o + WHITE_SEMIS[i] + 1, index: o * 7 + i });
 
   return (

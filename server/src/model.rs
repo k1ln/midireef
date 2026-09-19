@@ -298,6 +298,7 @@ fn default_role_color(role: &str) -> &'static str {
         "patternShift" => "#f687b3",
         "chord" => "#68d391",
         "arp" => "#76e4f7",
+        "walker" => "#f6e05e",
         _ => "#9ff0ff",
     }
 }

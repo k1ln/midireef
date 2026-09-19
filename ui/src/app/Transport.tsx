@@ -16,7 +16,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { TransportState } from "../net";
-import { useNet, useSend } from "./store";
+import { useNet, useSend, useStoreValue } from "./store";
+import { useLocalPref } from "./useLocalPref";
 import { Button } from "./widgets/Button";
 import { FpsMeter } from "./FpsMeter";
 import { TRANSPORT_H } from "./layout";
@@ -50,6 +51,9 @@ export function Transport({ view, onNav, onAddDevice }: TransportProps) {
   const net = useNet();
   const send = useSend();
   const wheel = useWheelPicker();
+  const deviceCount = useStoreValue((s) => s.project?.devices.length ?? 0);
+  const [flatPref, setFlatPref] = useLocalPref<"0" | "1">("overview.flat", "0");
+  const flat = flatPref === "1";
   const [t, setT] = useState<TransportState | null>(null);
   const [ports, setPorts] = useState<string[]>([]);
   /** Laufende Audio-Aufnahme (s. Audio.tsx) — nur der Ein/Aus-Zustand
@@ -214,6 +218,22 @@ export function Transport({ view, onNav, onAddDevice }: TransportProps) {
           onClick={onAddDevice}
         >
           ＋ Device
+        </Button>
+      )}
+
+      {/* All-Lanes-Umschalter: nur im Sequencer sinnvoll (dort lebt auch die
+          Ansicht, die er umschaltet) und nur, wenn es überhaupt Geräte gibt.
+          Bewusst groß (wie die Nav-Tabs, nicht das kleine 32px-Schwester-
+          Element von früher) — steht jetzt in der Leiste statt klein im
+          Übersichts-Body, soll also genauso zuverlässig treffbar sein. */}
+      {view === "seq" && deviceCount > 0 && (
+        <Button
+          className={flat ? "transport-nav on" : "transport-nav"}
+          style={{ height: BTN, padding: "0 14px", fontSize: 14, fontWeight: 700, marginRight: 8 }}
+          title={flat ? "Show grouped by device" : "Show all lanes on one view"}
+          onClick={() => setFlatPref(flat ? "0" : "1")}
+        >
+          {flat ? "▦ Grouped" : "≡ All lanes"}
         </Button>
       )}
 

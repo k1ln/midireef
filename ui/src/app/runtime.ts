@@ -190,6 +190,15 @@ export class RuntimeFeed {
     return this.playing;
   }
 
+  /** Ist GENAU diese Kachel gerade die leuchtende (laufende) einer Lane? Für
+   *  "manual"-Lanes entscheidet das, ob ein Tipp auf die Trigger-Leiste die
+   *  Lane stoppen (aktive Kachel erneut getippt) oder starten soll (s.
+   *  `SlotTile`s Trigger-Leiste) — reicht dafür `this.lit` direkt durch statt
+   *  denselben Stand aus einem Snapshot neu herzuleiten. */
+  isPlayingSlot(laneId: string, slotId: string): boolean {
+    return this.lit.get(laneId) === slotId;
+  }
+
   /** ref-Callback-Ziel einer Slot-Kachel (`null` = Komponente unmountet). */
   setTile(laneId: string, slotId: string, el: HTMLElement | null) {
     const key = laneId + SEP + slotId;

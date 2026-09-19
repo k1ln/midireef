@@ -16,7 +16,7 @@ import { useRuntimeBlockStatus, useStoreValue } from "../store";
  *  engine.rs — alles andere fällt dort raus und taucht nie im Runtime-Feed
  *  auf). Ohne diesen Hinweis stünde der Editor eines solchen Bausteins bei
  *  laufendem Transport auf „idle" und man suchte den Fehler bei sich. */
-export const PLAYABLE = ["melody", "beat", "cc", "chord", "arp"];
+export const PLAYABLE = ["melody", "beat", "cc", "chord", "arp", "walker"];
 
 export function BlockRuntimeStatus({
   block,

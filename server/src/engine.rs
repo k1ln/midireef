@@ -75,7 +75,7 @@ struct StepMod {
     /// weiterschiebt, modulo der Blocklänge in Steps — 0 = kein Drift, klingt
     /// exakt wie zuvor. Erzeugt einen sich über die Bars verschiebenden
     /// Einzel-Hit (Phasing), aktuell nur vom Arp-Baustein gesetzt
-    /// (s. `build_arp`).
+    /// (s. `build_note_sequence`).
     drift_steps: i32,
 }
 
@@ -388,6 +388,60 @@ enum CKind {
     /// Arpeggio: aus dem Notenvorrat vorab erzeugte Einzelnoten. Spielt wie
     /// `Melody` (s. `Chord`).
     Arp(Vec<CNote>),
+    /// Walker: mehrere Nodes wandern bar-weise durch einen Käfig (s.
+    /// `WalkerRuntime`). `.notes` spielt wie `Arp`, wird aber von
+    /// `Engine::advance_walkers` bei jeder Bewegung neu gebacken statt einmal
+    /// beim Compile zu erstarren.
+    Walker(WalkerRuntime),
+}
+
+/// Bewegungsmodus einer Walker-Node — `Sequential` läuft bis zur Wand/zum
+/// Nachbarn und kehrt dort um ("Ball"), `Random` würfelt bei jeder fälligen
+/// Bewegung neu, welche Richtung versucht wird.
+#[derive(Clone, Copy, PartialEq)]
+enum WalkerMode {
+    Sequential,
+    Random,
+}
+
+/// Laufender Zustand EINER Walker-Node. Lebt in `WalkerRuntime.nodes`
+/// (Engine-eigene, NICHT im Projekt-JSON persistierte Laufzeit-Position —
+/// vgl. `Playback`), wird von `Engine::advance_walkers` bar-weise
+/// fortgeschrieben und bei jedem Baustein-Rebuild über `block_id` aus dem
+/// vorherigen `self.lanes` übernommen (s. `Engine::rebuild`).
+#[derive(Clone)]
+struct WalkerNodeState {
+    id: String,
+    current_pitch: i32,
+    /// Aktuelle Wanderrichtung: +1 (aufwärts) / -1 (abwärts). Bei `Sequential`
+    /// die tatsächlich gültige Erinnerung (nach einem Anprall gespiegelt); bei
+    /// `Random` nur der zuletzt versuchte Wert, ohne Bedeutung fürs nächste Mal.
+    direction: i8,
+    /// Absoluter Takt-Index (`global_pulse / ppb`), ab dem die nächste
+    /// Bewegung fällig ist.
+    next_move_bar: u64,
+    step_semitones: i32,
+    interval_bars: u32,
+    mode: WalkerMode,
+}
+
+/// Statischer Käfig + Playback-Settings eines Walker-Bausteins, plus der
+/// aktuell wandernden Nodes und dem daraus gebackenen Playback-Muster.
+struct WalkerRuntime {
+    border_low: i32,
+    border_high: i32,
+    /// Stets aufsteigend nach `current_pitch` sortiert — die Reihenfolge IST
+    /// die Nachbarschaft für die Kollisionsprüfung.
+    nodes: Vec<WalkerNodeState>,
+    style: String,
+    gate_steps: u32,
+    rate_steps: u32,
+    velocity: u8,
+    total_steps: u32,
+    /// Aktuell gebackenes Playback-Muster aus den Node-Tonhöhen — wie `Arp`s
+    /// Vorrat, aber neu erzeugt bei jeder tatsächlichen Node-Bewegung statt
+    /// einmalig beim Compile.
+    notes: Vec<CNote>,
 }
 
 struct CBlock {
@@ -1165,6 +1219,28 @@ impl Engine {
         // mit ein (s. unten). Grundlage für den Realignment-Fall gleich danach.
         let prev_enabled: std::collections::HashMap<String, bool> =
             self.lanes.iter().map(|l| (l.id.clone(), l.enabled)).collect();
+        // Bisherige Walker-Node-Positionen je (Baustein-Id, Node-Id) merken —
+        // sonst würde JEDE Projekt-Änderung (auch an einem ganz anderen
+        // Baustein, oder am eigenen Gate/Rate/Style) jeden Walker zurück auf
+        // seine Start-Tonhöhe zwingen, weil `compile_block` Nodes immer
+        // frisch aus `startNote` aufbaut. Nur die LAUFENDEN Felder
+        // (Tonhöhe/Richtung/Fälligkeit) werden unten übernommen — Config-
+        // Felder (Intervall, Schrittgröße, Modus) kommen bewusst aus dem
+        // frischen Compile, damit ein Edit an ihnen sofort wirkt.
+        let prev_walker: std::collections::HashMap<(String, String), WalkerNodeState> = self
+            .lanes
+            .iter()
+            .flat_map(|l| l.blocks.iter())
+            .filter_map(|b| match &b.kind {
+                CKind::Walker(w) => Some((b.block_id.clone(), w)),
+                _ => None,
+            })
+            .flat_map(|(block_id, w)| {
+                w.nodes
+                    .iter()
+                    .map(move |n| ((block_id.clone(), n.id.clone()), n.clone()))
+            })
+            .collect();
 
         let mut clock_ports = Vec::new();
         for dev in &project.devices {
@@ -1310,6 +1386,33 @@ impl Engine {
             .collect();
         self.cc_send_state.retain(|k, _| active_slot_ids.contains(k.as_str()));
 
+        // Übernommene Walker-Positionen einsetzen (s. `prev_walker` oben) —
+        // erst NACH dem kompletten Lane-Aufbau, damit alle `block_id`s feststehen.
+        for lane in lanes.iter_mut() {
+            for block in lane.blocks.iter_mut() {
+                let CKind::Walker(w) = &mut block.kind else { continue };
+                let mut changed = false;
+                for node in w.nodes.iter_mut() {
+                    if let Some(prev) = prev_walker.get(&(block.block_id.clone(), node.id.clone())) {
+                        node.current_pitch = prev.current_pitch.clamp(w.border_low, w.border_high);
+                        node.direction = prev.direction;
+                        node.next_move_bar = prev.next_move_bar;
+                        changed = true;
+                    }
+                }
+                if changed {
+                    // Nachbarschaft könnte sich durch übernommene Positionen
+                    // verschoben haben (z.B. neue Node dazwischen eingefügt)
+                    // — Sortier-Invariante wiederherstellen, dann neu backen.
+                    w.nodes.sort_by_key(|n| n.current_pitch);
+                    let pool: Vec<u8> = w.nodes.iter().map(|n| n.current_pitch as u8).collect();
+                    w.notes = build_note_sequence(
+                        &pool, &w.style, w.rate_steps, w.gate_steps, w.velocity, w.total_steps, None, 0,
+                    );
+                }
+            }
+        }
+
         self.lanes = lanes;
     }
 
@@ -1318,6 +1421,7 @@ impl Engine {
     /// treibt `elapsed_secs`, die Zeitbasis frei laufender (Hz-)LFOs.
     pub fn on_pulse(&mut self, global_pulse: u64, dt_secs: f64) {
         self.elapsed_secs += dt_secs;
+        self.advance_walkers(global_pulse);
 
         // Fällige Note-Offs: pro Ziel-Port zu EINEM Puffer zusammenfassen und in
         // einem einzigen `send()` (= ein CoreMIDI-Packet) rausschicken, statt pro
@@ -1538,6 +1642,75 @@ impl Engine {
         self.restore_cc_targets(true);
     }
 
+    /// Rückt alle Walker-Bausteine bar-weise vor. Für jede Node, deren
+    /// `next_move_bar` erreicht ist, wird EIN Bewegungsversuch unternommen:
+    /// Anprall an der Nachbar-Node (oder Käfig-Wand) kehrt die Richtung
+    /// sofort um ("Ball") und versucht die Bewegung auf der neuen Seite
+    /// erneut; bleibt die Node dabei eingeklemmt, passiert diesen Zyklus
+    /// nichts (Richtung bleibt umgekehrt, nächster Versuch beim nächsten
+    /// fälligen Intervall). Bewegte sich mindestens eine Node, wird das
+    /// Playback-Muster des Bausteins aus den neuen Tonhöhen neu gebacken.
+    ///
+    /// Arbeitet direkt gegen `self.lanes` — kein Full-Project-`rebuild()`
+    /// nötig, weil sich hier nur Node-Positionen ändern, nie die statische
+    /// Konfiguration (Käfig, Stil, Gate/Rate), die weiterhin nur über einen
+    /// Projekt-Edit + `rebuild()` verändert wird.
+    fn advance_walkers(&mut self, global_pulse: u64) {
+        for lane in self.lanes.iter_mut() {
+            for block in lane.blocks.iter_mut() {
+                let CKind::Walker(w) = &mut block.kind else { continue };
+                let bar = global_pulse / block.ppb.max(1) as u64;
+                let mut moved = false;
+                let n = w.nodes.len();
+                for i in 0..n {
+                    if bar < w.nodes[i].next_move_bar {
+                        continue;
+                    }
+                    let low = if i == 0 { w.border_low } else { w.nodes[i - 1].current_pitch };
+                    let high = if i + 1 < n { w.nodes[i + 1].current_pitch } else { w.border_high };
+                    let interval = w.nodes[i].interval_bars.max(1) as u64;
+                    let step_size = w.nodes[i].step_semitones.max(1);
+
+                    let mut dir = match w.nodes[i].mode {
+                        WalkerMode::Sequential => w.nodes[i].direction,
+                        WalkerMode::Random => {
+                            // Aus (Puls, Node-Index) abgeleitet statt aus
+                            // einem Thread-RNG — deterministisch, wie
+                            // `build_note_sequence`s "random"-Order.
+                            let h = pseudo_rand(
+                                global_pulse
+                                    .wrapping_mul(2654435761)
+                                    .wrapping_add(i as u64),
+                            );
+                            if h < 0.5 { -1 } else { 1 }
+                        }
+                    };
+                    let mut target = w.nodes[i].current_pitch + dir as i32 * step_size;
+                    let mut blocked = if dir > 0 { target >= high } else { target <= low };
+                    if blocked {
+                        // Anprall: Richtung umkehren und auf der anderen
+                        // Seite erneut versuchen (Ball an der Wand).
+                        dir = -dir;
+                        target = w.nodes[i].current_pitch + dir as i32 * step_size;
+                        blocked = if dir > 0 { target >= high } else { target <= low };
+                    }
+                    w.nodes[i].direction = dir;
+                    if !blocked {
+                        w.nodes[i].current_pitch = target;
+                        moved = true;
+                    }
+                    w.nodes[i].next_move_bar = bar + interval;
+                }
+                if moved {
+                    let pool: Vec<u8> = w.nodes.iter().map(|n| n.current_pitch as u8).collect();
+                    w.notes = build_note_sequence(
+                        &pool, &w.style, w.rate_steps, w.gate_steps, w.velocity, w.total_steps, None, 0,
+                    );
+                }
+            }
+        }
+    }
+
     fn fire_step(&mut self, lane_idx: usize, slot: usize, step: u32, global_pulse: u64) {
         struct Hit {
             note: u8,
@@ -1562,13 +1735,29 @@ impl Engine {
 
         // Step-Inhalt einsammeln, dann senden (Borrow-Konflikt vermeiden).
         let mut raw: Vec<Hit> = Vec::new();
-        let is_notey = matches!(block.kind, CKind::Melody(_) | CKind::Chord(_) | CKind::Arp(_));
+        let is_notey =
+            matches!(block.kind, CKind::Melody(_) | CKind::Chord(_) | CKind::Arp(_) | CKind::Walker(_));
         match &block.kind {
             CKind::Melody(notes) | CKind::Chord(notes) | CKind::Arp(notes) => {
                 let total_steps = (block.len_pulses / block.pulses_per_step.max(1)).max(1);
                 for n in notes {
                     let eff_step = drifted_step(n.step, n.m.drift_steps, loops_done, total_steps);
                     if eff_step == step {
+                        raw.push(Hit {
+                            note: n.note,
+                            vel: n.vel,
+                            len_pulses: (n.len_steps.max(1) as u64) * pps,
+                            m: n.m,
+                            choke_group: None,
+                        });
+                    }
+                }
+            }
+            CKind::Walker(w) => {
+                // Kein Drift beim Walker — die Bewegung selbst übernimmt
+                // dessen Rolle, s. `Engine::advance_walkers`.
+                for n in &w.notes {
+                    if n.step == step {
                         raw.push(Hit {
                             note: n.note,
                             vel: n.vel,
@@ -1829,6 +2018,7 @@ impl Engine {
                 CKind::Beat(_) => ("beat", None, None),
                 CKind::Chord(_) => ("chord", None, None),
                 CKind::Arp(_) => ("arp", None, None),
+                CKind::Walker(_) => ("walker", None, None),
                 CKind::Cc(auto) => (
                     "cc",
                     auto.target.as_ref().map(|t| t.cc_number),
@@ -2035,6 +2225,18 @@ impl Engine {
                 CKind::Melody(notes) | CKind::Chord(notes) | CKind::Arp(notes) => {
                     let mut on_bytes = Vec::new();
                     for n in notes {
+                        if n.step == step {
+                            on_bytes.extend_from_slice(&[0x90 | (ch - 1), n.note, n.vel]);
+                            p.pending.push((ch, n.note, global_pulse + (n.len_steps.max(1) * pps) as u64));
+                        }
+                    }
+                    if !on_bytes.is_empty() {
+                        self.midi.send(&p.port, &on_bytes);
+                    }
+                }
+                CKind::Walker(w) => {
+                    let mut on_bytes = Vec::new();
+                    for n in &w.notes {
                         if n.step == step {
                             on_bytes.extend_from_slice(&[0x90 | (ch - 1), n.note, n.vel]);
                             p.pending.push((ch, n.note, global_pulse + (n.len_steps.max(1) * pps) as u64));
@@ -2303,6 +2505,49 @@ struct BlockJson {
     /// Steps Verschiebung pro Loop für die Drift-Note, s. `StepMod.drift_steps`.
     #[serde(rename = "driftAmount", default)]
     drift_amount: i32,
+    // ── Walker ──
+    #[serde(rename = "borderLow", default = "walker_border_low_default")]
+    border_low: i32,
+    #[serde(rename = "borderHigh", default = "walker_border_high_default")]
+    border_high: i32,
+    #[serde(default)]
+    nodes: Vec<WalkerNodeJson>,
+    /// Walker-Playback-Stil — eigenes Feld statt `direction`, weil er auch
+    /// reine Akkord-/Strum-Varianten kennt (s. `WalkerBlock.style` in
+    /// `shared/model.ts`).
+    #[serde(default = "arp_up")]
+    style: String,
+}
+
+#[derive(Deserialize, Clone)]
+struct WalkerNodeJson {
+    id: String,
+    #[serde(rename = "startNote")]
+    start_note: i32,
+    #[serde(rename = "stepSemitones", default = "one_i32")]
+    step_semitones: i32,
+    #[serde(rename = "intervalBars", default = "one_u32")]
+    interval_bars: u32,
+    #[serde(default = "walker_mode_sequential")]
+    mode: String,
+    #[serde(rename = "startDirection", default = "walker_dir_up")]
+    start_direction: String,
+}
+
+fn walker_border_low_default() -> i32 {
+    48
+}
+fn walker_border_high_default() -> i32 {
+    72
+}
+fn walker_mode_sequential() -> String {
+    "sequential".to_string()
+}
+fn walker_dir_up() -> String {
+    "up".to_string()
+}
+fn one_i32() -> i32 {
+    1
 }
 
 fn one_u32() -> u32 {
@@ -2497,7 +2742,7 @@ fn compile_block(
                 .iter()
                 .map(|n| (n + transpose).clamp(0, 127) as u8)
                 .collect();
-            CKind::Arp(build_arp(
+            CKind::Arp(build_note_sequence(
                 &pool,
                 &b.direction,
                 b.rate_steps.max(1),
@@ -2507,6 +2752,57 @@ fn compile_block(
                 b.drift_index.map(|v| v as usize),
                 b.drift_amount,
             ))
+        }
+        // Walker: Nodes aus der JSON in Laufzeit-Zustand wandeln (Positionen
+        // starten an `startNote` — echte Wanderung/Übernahme aus einem
+        // vorherigen Rebuild passiert erst in `Engine::rebuild`, das diese
+        // frisch kompilierten Nodes ggf. durch die alten ersetzt), dann wie
+        // beim Arp einmal zu einem Playback-Muster backen.
+        "walker" => {
+            let border_low = (b.border_low + transpose).clamp(0, 127);
+            let border_high = (b.border_high + transpose).clamp(0, 127);
+            let mut nodes: Vec<WalkerNodeState> = b
+                .nodes
+                .iter()
+                .map(|n| WalkerNodeState {
+                    id: n.id.clone(),
+                    current_pitch: (n.start_note + transpose).clamp(border_low, border_high),
+                    direction: if n.start_direction == "down" { -1 } else { 1 },
+                    // Erst nach einem vollen Intervall die erste Bewegung
+                    // versuchen (nicht sofort bei Bar 0) — bei einer
+                    // laufenden Lane übernimmt `Engine::rebuild` ohnehin den
+                    // echten Fortschritt der vorherigen Kompilierung.
+                    next_move_bar: n.interval_bars.max(1) as u64,
+                    step_semitones: n.step_semitones.max(1),
+                    interval_bars: n.interval_bars.max(1),
+                    mode: if n.mode == "random" { WalkerMode::Random } else { WalkerMode::Sequential },
+                })
+                .collect();
+            // Aufsteigend halten — die Reihenfolge IST die Nachbarschaft für
+            // die Kollisionsprüfung in `advance_walkers`.
+            nodes.sort_by_key(|n| n.current_pitch);
+            let pool: Vec<u8> = nodes.iter().map(|n| n.current_pitch as u8).collect();
+            let notes = build_note_sequence(
+                &pool,
+                &b.style,
+                b.rate_steps.max(1),
+                b.gate_steps.max(1),
+                b.velocity.clamp(1, 127),
+                total_steps,
+                None,
+                0,
+            );
+            CKind::Walker(WalkerRuntime {
+                border_low,
+                border_high,
+                nodes,
+                style: b.style.clone(),
+                gate_steps: b.gate_steps.max(1),
+                rate_steps: b.rate_steps.max(1),
+                velocity: b.velocity.clamp(1, 127),
+                total_steps,
+                notes,
+            })
         }
         _ => return None,
     };
@@ -2541,7 +2837,7 @@ fn resolve_and_compile_preview(
         .find(|b| b.get("id").and_then(|v| v.as_str()) == Some(block_id))
         .ok_or_else(|| "This block no longer exists.".to_string())?;
     let block_type = block_json.get("type").and_then(|v| v.as_str()).unwrap_or("");
-    if !matches!(block_type, "melody" | "beat" | "cc" | "chord" | "arp") {
+    if !matches!(block_type, "melody" | "beat" | "cc" | "chord" | "arp" | "walker") {
         return Err(format!("Preview isn't supported for {block_type} blocks yet."));
     }
 
@@ -2611,18 +2907,22 @@ fn drifted_step(step: u32, drift_steps: i32, loops_done: u32, total_steps: u32) 
     shifted.rem_euclid(total) as u32
 }
 
-/// Rollt den Notenvorrat eines Arp-Bausteins in eine feste Einzelnoten-Folge
-/// aus: alle `rate_steps` Steps die nächste Note laut `direction`, je
-/// `gate_steps` lang, bis `total_steps` voll ist. Vorab statt zur Laufzeit,
-/// damit der Rest der Engine ihn wie eine gewöhnliche Melodie behandelt.
+/// Rollt einen Notenvorrat (Arp-Notenvorrat ODER die aktuellen Tonhöhen eines
+/// Walker-Bausteins) in eine feste Einzelnoten-Folge aus: alle `rate_steps`
+/// Steps die nächste Note laut `style`, je `gate_steps` lang, bis
+/// `total_steps` voll ist. Vorab statt zur Laufzeit, damit der Rest der
+/// Engine sie wie eine gewöhnliche Melodie behandelt. `"chord"`/`"rollUp"`/
+/// `"rollDown"` delegieren an `build_chord_sequence` (mehrere Noten pro Step
+/// statt einer Folge).
 ///
-/// `drift_index`/`drift_amount`: die `drift_index`-te Note JEDES Durchlaufs
-/// durch den Vorrat (0-basiert) bekommt `drift_amount` Steps Drift
-/// (s. `StepMod.drift_steps`) — sie wandert dadurch Loop für Loop über das
-/// Stepraster, während der Rest des Arps stehen bleibt ("crooked" Phasing).
-fn build_arp(
+/// `drift_index`/`drift_amount` (nur Arp, Walker übergibt `None`/`0`): die
+/// `drift_index`-te Note JEDES Durchlaufs durch den Vorrat (0-basiert)
+/// bekommt `drift_amount` Steps Drift (s. `StepMod.drift_steps`) — sie
+/// wandert dadurch Loop für Loop über das Stepraster, während der Rest
+/// stehen bleibt ("crooked" Phasing).
+fn build_note_sequence(
     pool: &[u8],
-    direction: &str,
+    style: &str,
     rate_steps: u32,
     gate_steps: u32,
     vel: u8,
@@ -2633,9 +2933,17 @@ fn build_arp(
     if pool.is_empty() {
         return Vec::new();
     }
+    if matches!(style, "chord" | "rollUp" | "rollDown") {
+        return build_chord_sequence(pool, style, rate_steps, gate_steps, vel, total_steps);
+    }
     // Index-Reihenfolge EINES Durchlaufs durch den Vorrat.
-    let order: Vec<usize> = match direction {
+    let order: Vec<usize> = match style {
         "down" => (0..pool.len()).rev().collect(),
+        "downUp" if pool.len() > 2 => (0..pool.len())
+            .rev()
+            .chain(1..pool.len() - 1)
+            .collect(),
+        "downUp" => (0..pool.len()).rev().collect(),
         "upDown" if pool.len() > 2 => (0..pool.len())
             .chain((1..pool.len() - 1).rev())
             .collect(),
@@ -2644,7 +2952,7 @@ fn build_arp(
         // Sequencer-Baustein kein Live-Anschlagen gibt.
         _ => (0..pool.len()).collect(),
     };
-    let random = direction == "random";
+    let random = style == "random";
     let mut out = Vec::new();
     let mut i = 0usize;
     let mut step = 0u32;
@@ -2670,6 +2978,42 @@ fn build_arp(
             m: StepMod { drift_steps, ..StepMod::default() },
         });
         i += 1;
+        step += rate_steps;
+    }
+    out
+}
+
+/// `"chord"`/`"rollUp"`/`"rollDown"`: statt einer Einzelnoten-Folge klingen
+/// pro `rate_steps`-Fenster ALLE Noten des Vorrats zusammen — bei den
+/// Roll-Varianten leicht gegeneinander versetzt (Strum) über
+/// `StepMod.micro_timing` statt echtem Step-Versatz, damit sie trotzdem im
+/// selben Gate-Fenster liegen und gemeinsam als EIN Anschlag zählen.
+fn build_chord_sequence(
+    pool: &[u8],
+    style: &str,
+    rate_steps: u32,
+    gate_steps: u32,
+    vel: u8,
+    total_steps: u32,
+) -> Vec<CNote> {
+    let n = pool.len().max(1);
+    let mut out = Vec::new();
+    let mut step = 0u32;
+    while step < total_steps {
+        for (i, &note) in pool.iter().enumerate() {
+            let micro_timing = match style {
+                "rollUp" => (i as f32 / n as f32) * 0.5,
+                "rollDown" => ((n - 1 - i) as f32 / n as f32) * 0.5,
+                _ => 0.0,
+            };
+            out.push(CNote {
+                step,
+                len_steps: gate_steps,
+                note,
+                vel,
+                m: StepMod { micro_timing, ..StepMod::default() },
+            });
+        }
         step += rate_steps;
     }
     out
@@ -3042,15 +3386,15 @@ mod groove_tests {
         assert_eq!(drifted_step(1, -1, 2, 16), 15);
     }
 
-    /// `build_arp` darf nur die per `drift_index` ausgewählte Note EINES
-    /// Durchlaufs mit Drift versehen — alle anderen bleiben bei 0, sonst
-    /// würde das ganze Arp statt eines einzelnen Nodes wandern.
+    /// `build_note_sequence` darf nur die per `drift_index` ausgewählte Note
+    /// EINES Durchlaufs mit Drift versehen — alle anderen bleiben bei 0,
+    /// sonst würde das ganze Arp statt eines einzelnen Nodes wandern.
     #[test]
     fn build_arp_drifts_only_the_selected_note_in_each_pass() {
         // Pool aus 3 Noten, up, rate 1, gate 1 -> 3 Noten pro Durchlauf, 2
         // Durchläufe über 6 Steps. drift_index=1 -> die 2. Note jedes
         // Durchlaufs (Steps 1 und 4) driftet, die anderen nicht.
-        let notes = build_arp(&[60, 64, 67], "up", 1, 1, 100, 6, Some(1), 2);
+        let notes = build_note_sequence(&[60, 64, 67], "up", 1, 1, 100, 6, Some(1), 2);
         assert_eq!(notes.len(), 6);
         for n in &notes {
             let expected = if n.step == 1 || n.step == 4 { 2 } else { 0 };
@@ -3062,8 +3406,27 @@ mod groove_tests {
     /// lassen — Bausteine ohne Drift-Konfiguration klingen wie vorher.
     #[test]
     fn build_arp_without_drift_index_drifts_nothing() {
-        let notes = build_arp(&[60, 64, 67], "up", 1, 1, 100, 6, None, 5);
+        let notes = build_note_sequence(&[60, 64, 67], "up", 1, 1, 100, 6, None, 5);
         assert!(notes.iter().all(|n| n.m.drift_steps == 0));
+    }
+
+    /// `downUp` ist der Spiegel von `upDown`: startet oben, geht runter, dann
+    /// wieder rauf (ohne die Enden zu wiederholen).
+    #[test]
+    fn build_note_sequence_down_up_mirrors_up_down() {
+        let notes = build_note_sequence(&[60, 64, 67, 71], "downUp", 1, 1, 100, 6, None, 0);
+        let seq: Vec<u8> = notes.iter().map(|n| n.note).collect();
+        assert_eq!(seq, vec![71, 67, 64, 60, 64, 67]);
+    }
+
+    /// `"chord"` spielt den ganzen Vorrat gleichzeitig statt einer Folge —
+    /// alle Noten teilen sich denselben Step.
+    #[test]
+    fn build_note_sequence_chord_stacks_all_notes_on_one_step() {
+        let notes = build_note_sequence(&[60, 64, 67], "chord", 2, 2, 100, 4, None, 0);
+        assert_eq!(notes.len(), 6); // 3 Noten x 2 Durchläufe (Steps 0 und 2)
+        assert!(notes.iter().filter(|n| n.step == 0).count() == 3);
+        assert!(notes.iter().filter(|n| n.step == 2).count() == 3);
     }
 
     /// `TrigCondition` ist ein String-oder-Objekt-Union in TS — die manuelle
@@ -3086,5 +3449,136 @@ mod groove_tests {
             Some(TrigCondition::Probability(p)) => assert!((p - 0.5).abs() < 1e-6),
             other => panic!("expected Probability(0.5), got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod walker_tests {
+    use super::*;
+
+    /// Baut ein Mini-Projekt mit einer einzelnen Walker-Lane in einem
+    /// gegebenen Käfig — `nodes` ist das rohe `WalkerNode[]`-JSON.
+    fn project_with_walker(nodes: serde_json::Value, border_low: i32, border_high: i32) -> (Project, String) {
+        let mut project = Project::new("t");
+        let mut device = Device::new("dev".to_string(), "port".to_string());
+        let mut lane = Lane::new("walker", "Walker".to_string());
+        lane.slots = serde_json::json!([{ "id": "ws1", "blockId": "wb" }]);
+        let lane_id = lane.id.clone();
+        device.lanes.push(lane);
+        project.devices.push(device);
+        project.blocks = serde_json::json!([{
+            "id": "wb",
+            "type": "walker",
+            "lengthBars": 1,
+            "stepsPerBar": 16,
+            "timeSignature": "4/4",
+            "borderLow": border_low,
+            "borderHigh": border_high,
+            "nodes": nodes,
+            "style": "up",
+            "gateSteps": 1,
+            "rateSteps": 1,
+            "velocity": 100,
+        }]);
+        (project, lane_id)
+    }
+
+    fn walker_pitches(engine: &Engine, lane_id: &str) -> Vec<i32> {
+        let lane = engine.lanes.iter().find(|l| l.id == lane_id).unwrap();
+        let CKind::Walker(w) = &lane.blocks[0].kind else { panic!("expected a walker block") };
+        w.nodes.iter().map(|n| n.current_pitch).collect()
+    }
+
+    /// Zwei sequenzielle Nodes in einem engen Käfig (60..64) dürfen einander
+    /// UND die Wände über viele Bars hinweg nie erreichen oder überspringen —
+    /// die zentrale Garantie von `advance_walkers`s Anprall-Umkehr ("Ball an
+    /// der Wand").
+    #[test]
+    fn nodes_never_cross_neighbors_or_borders_over_many_bars() {
+        let (project, lane_id) = project_with_walker(
+            serde_json::json!([
+                { "id": "a", "startNote": 61, "stepSemitones": 1, "intervalBars": 1, "mode": "sequential", "startDirection": "up" },
+                { "id": "b", "startNote": 63, "stepSemitones": 1, "intervalBars": 1, "mode": "sequential", "startDirection": "down" },
+            ]),
+            60,
+            64,
+        );
+        let mut engine = Engine::new();
+        engine.rebuild_if_needed(&project, 1);
+
+        for pulse in 0..(96 * 30) {
+            engine.on_pulse(pulse, 0.02);
+            let pitches = walker_pitches(&engine, &lane_id);
+            assert!(pitches[0] > 60 && pitches[0] < 64, "node a left the cage: {}", pitches[0]);
+            assert!(pitches[1] > 60 && pitches[1] < 64, "node b left the cage: {}", pitches[1]);
+            assert!(pitches[0] < pitches[1], "nodes crossed at pulse {pulse}: {:?}", pitches);
+        }
+    }
+
+    /// Ein einzelner Node pendelt zwischen seinen eigenen Käfig-Wänden, ohne
+    /// sie je zu berühren (striktes ≥1-Halbton-Gap), bewegt sich aber
+    /// tatsächlich hin und her statt an einer Wand steckenzubleiben.
+    #[test]
+    fn single_node_bounces_between_borders_without_touching_them() {
+        let (project, lane_id) = project_with_walker(
+            serde_json::json!([
+                { "id": "a", "startNote": 62, "stepSemitones": 2, "intervalBars": 1, "mode": "sequential", "startDirection": "up" },
+            ]),
+            60,
+            64,
+        );
+        let mut engine = Engine::new();
+        engine.rebuild_if_needed(&project, 1);
+
+        let mut seen_high = false;
+        let mut seen_low = false;
+        for pulse in 0..(96 * 30) {
+            engine.on_pulse(pulse, 0.02);
+            let pitch = walker_pitches(&engine, &lane_id)[0];
+            assert!(pitch > 60 && pitch < 64, "node left the cage: {pitch}");
+            if pitch >= 62 {
+                seen_high = true;
+            }
+            if pitch <= 62 {
+                seen_low = true;
+            }
+        }
+        assert!(seen_high && seen_low, "node should wander across the cage, not sit still");
+    }
+
+    /// Editiert ein UNBETEILIGTES Feld (Velocity) mitten in der Wanderung —
+    /// simuliert einen Projekt-Edit während des Transports (`rebuild()`s
+    /// `prev_walker`-Übernahme). Die Node-Position darf dadurch NICHT auf
+    /// `startNote` zurückspringen.
+    #[test]
+    fn rebuild_from_an_unrelated_edit_keeps_the_walker_position() {
+        let (mut project, lane_id) = project_with_walker(
+            serde_json::json!([
+                { "id": "a", "startNote": 61, "stepSemitones": 1, "intervalBars": 1, "mode": "sequential", "startDirection": "up" },
+            ]),
+            60,
+            64,
+        );
+        let mut engine = Engine::new();
+        engine.rebuild_if_needed(&project, 1);
+        // Erste Bewegung ist erst nach einem vollen Intervall fällig (s.
+        // `next_move_bar`-Kommentar in `compile_block`s "walker"-Arm) — bis
+        // Bar 1 (Puls 96) durchlaufen, nicht nur bis kurz davor.
+        for pulse in 0..97 {
+            engine.on_pulse(pulse, 0.02);
+        }
+        let moved_pitch = walker_pitches(&engine, &lane_id)[0];
+        assert_ne!(moved_pitch, 61, "node should have moved off its start note by now");
+
+        // Unbeteiligtes Feld ändern (kein Node/Border-Feld) und rebuilden —
+        // wie ein Live-Edit an einem ANDEREN Baustein, das trotzdem jeden
+        // Walker im Projekt neu kompiliert.
+        project.blocks[0]["velocity"] = serde_json::json!(80);
+        engine.rebuild_if_needed(&project, 2);
+        assert_eq!(
+            walker_pitches(&engine, &lane_id)[0],
+            moved_pitch,
+            "an unrelated rebuild must not reset the walker's live position"
+        );
     }
 }

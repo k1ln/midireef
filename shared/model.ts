@@ -66,6 +66,7 @@ export type BlockType =
   | "patternShift" // Pattern-Wechsel (z.B. Roland Aira) via PC/CC
   | "chord" // Akkorde
   | "arp" // Arpeggio
+  | "walker" // Walker: Stimmen wandern in Halb-/Ganztonschritten in einem Käfig
   | "programChange"; // Program-Change-Sequenzen
 
 /** Baustein-ID im 9×9-Raster: row 1–9, col 1–9. */
@@ -398,6 +399,52 @@ export interface ArpBlock extends BlockBase {
   scale?: Scale;
 }
 
+// ── Walker ───────────────────────────────────────────────────────────────
+//
+// Mehrere Stimmen ("Nodes") wandern unabhängig voneinander in Halb-/
+// Ganztonschritten innerhalb eines festen Käfigs (`borderLow`..`borderHigh`)
+// nach oben/unten. Sie können einander und die Käfig-Wände nicht überspringen
+// — blockiert eine Nachbar-Stimme oder Wand die nächste Bewegung, kehrt die
+// Stimme (in "sequential") sofort um ("Ball an der Wand"). Die aktuellen
+// Tonhöhen aller Nodes werden laut `style` abgespielt (genau wie der
+// Notenvorrat eines Arp-Bausteins, plus reine Akkord-/Strum-Varianten).
+
+export type WalkerStepSize = 1 | 2; // Halbton / Ganzton
+export type WalkerMode = "sequential" | "random";
+export type WalkerStartDirection = "up" | "down";
+
+export interface WalkerNode {
+  id: Id;
+  startNote: MidiNote; // Startposition, muss streng zwischen Nachbarn/Wänden liegen
+  stepSemitones: WalkerStepSize;
+  intervalBars: number; // bewegt sich alle N Takte (>= 1); pro Node einstellbar für unterschiedliches Tempo
+  mode: WalkerMode;
+  /** Nur bei "sequential" relevant — "random" würfelt bei jeder Bewegung neu. */
+  startDirection: WalkerStartDirection;
+}
+
+export type WalkerStyle =
+  | "up"
+  | "down"
+  | "upDown"
+  | "downUp"
+  | "random"
+  | "asPlayed"
+  | "chord"
+  | "rollUp"
+  | "rollDown";
+
+export interface WalkerBlock extends BlockBase {
+  type: "walker";
+  borderLow: MidiNote; // feste untere Käfig-Wand, bewegt sich nie
+  borderHigh: MidiNote; // feste obere Käfig-Wand, bewegt sich nie
+  nodes: WalkerNode[];
+  style: WalkerStyle;
+  gateSteps: number;
+  rateSteps: number;
+  velocity: Midi7Bit;
+}
+
 export interface ProgramChangeEvent {
   atStep: number;
   program: number; // 0–127
@@ -418,6 +465,7 @@ export type Block =
   | PatternShiftBlock
   | ChordBlock
   | ArpBlock
+  | WalkerBlock
   | ProgramChangeBlock;
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1054,6 +1102,10 @@ export type Command =
   | { t: "beat.toggleStep"; blockId: Id; lineId: Id; step: number } // Baustein-Detail: Step an/aus
   | { t: "chord.toggleNote"; blockId: Id; step: number; note: MidiNote } // Baustein-Detail: Note im Akkord an Step an/aus
   | { t: "arp.toggleNote"; blockId: Id; note: MidiNote } // Baustein-Detail: Note im Notenvorrat an/aus
+  | { t: "walker.setBorder"; blockId: Id; which: "low" | "high"; note: MidiNote }
+  | { t: "walker.addNode"; blockId: Id; startNote: MidiNote } // fügt zwischen bestehenden Nodes/Wänden ein (nach Tonhöhe sortiert)
+  | { t: "walker.removeNode"; blockId: Id; nodeId: Id }
+  | { t: "walker.setNodeField"; blockId: Id; nodeId: Id; field: string; value: unknown } // startNote/stepSemitones/intervalBars/mode/startDirection
   // CC-Layer-Verwaltung (mehrere Layer pro Block — LFO/Envelope/Ramp/Random/Stepped).
   | { t: "cc.addLayer"; blockId: Id; kind: CcLayerKind; steps?: number } // steps = Länge einer neuen Stepped-Layer
   | { t: "cc.removeLayer"; blockId: Id; layerId: Id }

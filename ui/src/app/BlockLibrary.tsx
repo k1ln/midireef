@@ -21,6 +21,7 @@ const TYPES: { type: BlockType; label: string }[] = [
   { type: "patternShift", label: "Pattern" },
   { type: "chord", label: "Chord" },
   { type: "arp", label: "Arp" },
+  { type: "walker", label: "Walker" },
 ];
 
 const EMPTY_BLOCKS: Block[] = [];

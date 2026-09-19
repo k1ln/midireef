@@ -1670,6 +1670,94 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 broadcast_snapshot(state);
             }
         }
+        // Walker-Detail: welche Wand (unten/oben) des Käfigs verschieben.
+        "walker.setBorder" => {
+            if let (Some(id), Some(which), Some(note)) = (
+                str_field(&cmd, "blockId"),
+                str_field(&cmd, "which"),
+                cmd.get("note").and_then(|v| v.as_u64()),
+            ) {
+                let field = if which == "high" { "borderHigh" } else { "borderLow" };
+                let mut proj = state.project.lock().unwrap();
+                if let Some(b) = find_block_mut(&mut proj, &id) {
+                    b[field] = serde_json::json!(note);
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        // Walker-Detail: neue Node hinzufügen — Reihenfolge/Abstand zu
+        // Nachbarn/Wänden stellt der Editor beim Setzen von `startNote` her
+        // (s. `WalkerEditor`); die Engine sortiert Nodes beim Kompilieren
+        // ohnehin nach aktueller Tonhöhe.
+        "walker.addNode" => {
+            if let (Some(id), Some(start_note)) = (
+                str_field(&cmd, "blockId"),
+                cmd.get("startNote").and_then(|v| v.as_u64()),
+            ) {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(b) = find_block_mut(&mut proj, &id) {
+                    if !b["nodes"].is_array() {
+                        b["nodes"] = serde_json::json!([]);
+                    }
+                    if let Some(arr) = b["nodes"].as_array_mut() {
+                        arr.push(serde_json::json!({
+                            "id": uuid::Uuid::new_v4().to_string(),
+                            "startNote": start_note,
+                            "stepSemitones": 1,
+                            "intervalBars": 1,
+                            "mode": "sequential",
+                            "startDirection": "up",
+                        }));
+                    }
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        "walker.removeNode" => {
+            if let (Some(id), Some(node_id)) = (str_field(&cmd, "blockId"), str_field(&cmd, "nodeId")) {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(b) = find_block_mut(&mut proj, &id) {
+                    if let Some(arr) = b["nodes"].as_array_mut() {
+                        arr.retain(|n| n.get("id").and_then(|v| v.as_str()) != Some(node_id.as_str()));
+                    }
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        // Generischer Feld-Setter EINER Node (startNote/stepSemitones/
+        // intervalBars/mode/startDirection) — spiegelt `block.setField`, nur
+        // adressiert über (blockId, nodeId) statt nur blockId.
+        "walker.setNodeField" => {
+            if let (Some(id), Some(node_id), Some(field)) = (
+                str_field(&cmd, "blockId"),
+                str_field(&cmd, "nodeId"),
+                str_field(&cmd, "field"),
+            ) {
+                let mut proj = state.project.lock().unwrap();
+                if let Some(b) = find_block_mut(&mut proj, &id) {
+                    if let Some(arr) = b["nodes"].as_array_mut() {
+                        if let Some(n) = arr
+                            .iter_mut()
+                            .find(|n| n.get("id").and_then(|v| v.as_str()) == Some(node_id.as_str()))
+                        {
+                            match cmd.get("value") {
+                                Some(serde_json::Value::Null) | None => {
+                                    if let Some(obj) = n.as_object_mut() {
+                                        obj.remove(&field);
+                                    }
+                                }
+                                Some(v) => n[field] = v.clone(),
+                            }
+                        }
+                    }
+                }
+                drop(proj);
+                broadcast_snapshot_throttled(state);
+            }
+        }
         // CC-Detail: Layer-Verwaltung (mehrere Layer, "von unten nach oben
         // kombiniert" — LFO/Envelope/Ramp/Random/Stepped, siehe CcLayer im
         // Modell). Werte in Layern sind IMMER 0..1 normiert (nicht 0-127) —
@@ -3452,6 +3540,7 @@ fn default_block_for(role: &str) -> Option<serde_json::Value> {
         "cc" => Some(default_cc_block()),
         "chord" => Some(default_chord_block()),
         "arp" => Some(default_arp_block()),
+        "walker" => Some(default_walker_block()),
         "programChange" => Some(default_program_change_block()),
         "patternShift" => Some(default_pattern_shift_block()),
         _ => None,
@@ -3549,6 +3638,35 @@ fn default_arp_block() -> serde_json::Value {
         "baseNote": 60,
         "chordNotes": [],
         "direction": "up",
+        "gateSteps": 1,
+        "rateSteps": 1,
+        "velocity": 100,
+    })
+}
+
+/// Ein neuer Walker startet mit einem Käfig aus einer Oktave (C3..C5) und
+/// einer Node in der Mitte, die takt-weise einen Halbton nach oben wandert —
+/// hörbar direkt nach dem Anlegen, ohne dass erst ein Käfig konfiguriert
+/// werden muss.
+fn default_walker_block() -> serde_json::Value {
+    serde_json::json!({
+        "id": uuid::Uuid::new_v4().to_string(),
+        "type": "walker",
+        "name": "Walk",
+        "lengthBars": 1,
+        "timeSignature": "4/4",
+        "stepsPerBar": 16,
+        "borderLow": 48,
+        "borderHigh": 72,
+        "nodes": [{
+            "id": uuid::Uuid::new_v4().to_string(),
+            "startNote": 60,
+            "stepSemitones": 1,
+            "intervalBars": 1,
+            "mode": "sequential",
+            "startDirection": "up",
+        }],
+        "style": "up",
         "gateSteps": 1,
         "rateSteps": 1,
         "velocity": 100,

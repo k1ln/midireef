@@ -10,6 +10,12 @@ export function useSetField() {
   return (blockId: string, field: string, value: unknown) => send({ t: "block.setField", blockId, field, value });
 }
 
+export function useSetWalkerNodeField() {
+  const send = useSend();
+  return (blockId: string, nodeId: string, field: string, value: unknown) =>
+    send({ t: "walker.setNodeField", blockId, nodeId, field, value });
+}
+
 export function useNumberEditor() {
   const openKeyboard = useTouchKeyboard();
   return (current: number, min: number, max: number, onSet: (n: number) => void, maxLen = 4) => {

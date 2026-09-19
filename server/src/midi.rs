@@ -109,11 +109,28 @@ impl MidiOutManager {
     }
 
     /// Versucht einmal zu senden — über die (ggf. gecachte) Verbindung.
+    ///
+    /// `bytes` kann MEHRERE MIDI-Nachrichten enthalten (z.B. zwei Note-Ons
+    /// eines Akkords, in einem Puffer gebündelt, damit sie ohne IPC-Jitter
+    /// gleichzeitig ankommen — s. `Engine::trigger_step`). `midir`s ALSA-
+    /// Backend akzeptiert pro `send()`-Aufruf aber nur EINE Nachricht: es
+    /// dekodiert die erste vollständige Message aus dem Puffer zu einem ALSA-
+    /// Sequencer-Event und verwirft den Rest still (kein Fehler) — anders als
+    /// CoreMIDI auf macOS, das den ganzen Puffer als ein Paket akzeptiert.
+    /// Ungeteilt sendet, würde auf dem Pi (ALSA) jede zweite Note eines
+    /// Akkords/gleichzeitigen Hits kommentarlos verschluckt. Deshalb hier
+    /// immer in einzelne Nachrichten zerlegt senden — auf CoreMIDI ein
+    /// No-op-Umweg (Puffer enthält dort meist ohnehin nur eine Message),
+    /// auf ALSA der eigentliche Fix.
     fn try_send(&mut self, port: &str, bytes: &[u8]) -> bool {
-        match self.conn_for(port) {
-            Some(c) => c.send(bytes).is_ok(),
-            None => false,
+        let Some(c) = self.conn_for(port) else { return false };
+        let mut ok = true;
+        for msg in split_midi_messages(bytes) {
+            if c.send(msg).is_err() {
+                ok = false;
+            }
         }
+        ok
     }
 
     /// Prüft periodisch, ob ein gecachter Port noch dieselbe System-ID hat wie
@@ -196,6 +213,41 @@ impl MidiOutManager {
             self.broadcast(&[0xB0 | ch, 120, 0]);
         }
     }
+}
+
+/// Länge (in Bytes) EINER MIDI-Nachricht, deren Statusbyte `status` ist —
+/// für den Splitter in `MidiOutManager::try_send`. Deckt nur ab, was diese
+/// Codebasis tatsächlich sendet (Channel-Voice-Messages, System-Realtime,
+/// Sysex); kein Running Status (jede Nachricht hier trägt ihr eigenes
+/// Statusbyte, s. `Engine::trigger_step`s `on_bytes`).
+fn midi_message_len(status: u8, rest: &[u8]) -> usize {
+    match status {
+        0x80..=0xBF | 0xE0..=0xEF => 3, // Note off/on, Poly AT, CC, Pitch Bend
+        0xC0..=0xDF => 2,               // Program Change, Channel Pressure
+        0xF0 => rest.iter().position(|&b| b == 0xF7).map(|i| i + 1).unwrap_or(rest.len()), // Sysex bis 0xF7
+        0xF2 => 3,                      // Song Position Pointer
+        0xF1 | 0xF3 => 2,               // MTC Quarter Frame, Song Select
+        _ => 1,                         // Tune Request + System Realtime (Clock/Start/Stop/...)
+    }
+}
+
+/// Zerlegt einen Puffer mit einer ODER MEHREREN aneinandergereihten MIDI-
+/// Nachrichten (s. `Engine::trigger_step`: mehrere gleichzeitige Note-Ons
+/// eines Akkords landen für ein gemeinsames Timing in EINEM Puffer) in
+/// einzelne vollständige Nachrichten — s. Doc-Kommentar an `try_send`, wo das
+/// gebraucht wird, weil `midir`s ALSA-Backend pro `send()` nur die erste
+/// Message eines Puffers überträgt und den Rest still verwirft.
+fn split_midi_messages(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let mut i = 0;
+    std::iter::from_fn(move || {
+        if i >= bytes.len() {
+            return None;
+        }
+        let len = midi_message_len(bytes[i], &bytes[i..]).max(1).min(bytes.len() - i);
+        let msg = &bytes[i..i + len];
+        i += len;
+        Some(msg)
+    })
 }
 
 /// Sucht unter den aktuell sichtbaren Ausgängen von `out` den zu `needle`

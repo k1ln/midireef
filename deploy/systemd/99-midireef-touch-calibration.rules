@@ -1,0 +1,24 @@
+# The Goodix touchscreen on the MidiReef kiosk panel delivers raw touch
+# coordinates rotated 90° clockwise relative to the DSI output's own
+# "normal" (0°) framebuffer orientation — confirmed empirically by attaching
+# Chromium's remote debugger and comparing physical corner taps against the
+# clientX/clientY it actually received (see git history for the calibration
+# session). Without this, the compositor's own per-output rotation
+# (Settings → Display, server/src/display.rs → deploy/bin/midireef-display)
+# only ever lines touch up with ONE specific rotation by accident; any other
+# choice shows touch off by 90/180/270° from what's on screen.
+#
+# This calibration matrix (a 270°/-90° rotation) corrects raw touch
+# coordinates back into the output's normal orientation, so labwc's own
+# automatic touch-to-output transform (see `<touch mapToOutput="">` in
+# rc.xml, deliberately left empty to auto-bind to whichever output actually
+# exists — output names like "DSI-1"/"DSI-2" have been observed to change
+# across boots) then applies any of 0/90/180/270 correctly on top.
+#
+# Matched by capability rather than device name/path, since both have been
+# observed to change; safe because this kiosk only ever has one touchscreen.
+#
+# NOTE: labwc/libinput only reads this when the touch device is (re)opened —
+# it does NOT pick up a live change for a device it already has open.
+# Reboot (or otherwise restart the compositor) after ever changing this.
+SUBSYSTEM=="input", ENV{ID_INPUT_TOUCHSCREEN}=="1", ENV{LIBINPUT_CALIBRATION_MATRIX}="0 1 0 -1 0 1"

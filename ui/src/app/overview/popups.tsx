@@ -22,6 +22,7 @@ export const ROLES: { role: string; label: string }[] = [
   { role: "patternShift", label: "Pattern" },
   { role: "chord", label: "Chord" },
   { role: "arp", label: "Arp" },
+  { role: "walker", label: "Walker" },
 ];
 
 export function roleLabel(role: string): string {

@@ -716,25 +716,53 @@ textarea {
 }
 
 /* ── Flat-Übersicht — alle Lanes aller Geräte, dicht gepackt. ──
-   Ein einziger `flex-wrap`-Strom statt einer Zeile pro Lane: Lane-Zeilen
-   packen sich nebeneinander, solange Platz ist, und brechen sonst normal um.
-   Zugehörigkeit zum selben Gerät zeigt allein der zusätzliche Abstand vor der
-   ersten Lane einer neuen Geräte-Gruppe (`groupStart`, inline gesetzt). */
+   Jedes Gerät ist eine eigene umrandete Box (`.flat-device-group`, Rahmen-
+   farbe = Gerätefarbe) mit einem senkrechten Namens-Reiter links, dieselbe
+   Bauart wie in der gruppierten Ansicht (`.overview-name-wrap.device`). Die
+   Boxen selbst packen sich nebeneinander/untereinander und brechen als GANZES
+   um — eine Geräte-Gruppe wird nie mitten in einer Umbruchzeile zerrissen.
+   Passt eine Box nicht mehr in die verbleibende Breite der aktuellen Zeile,
+   brechen innerhalb der Box zusätzlich ihre eigenen Lanes um. */
 .overview-flat {
   display: flex;
   align-items: flex-start;
-  gap: 6px;
+  gap: 10px;
 }
-/* „→ Right" (Standard): Lanes packen sich nebeneinander und brechen nach
-   unten um, sobald eine Zeile voll ist. */
+/* „→ Right" (Standard): Geräte-Boxen packen sich nebeneinander und brechen
+   nach unten um, sobald eine Zeile voll ist. */
 .overview-flat-row {
   flex-flow: row wrap;
 }
-/* „↓ Down": reine senkrechte Liste — eine Lane pro Zeile, keine Nachbarn.
-   Umschaltbar in ProjectSettings.tsx → „Sequencer 'All lanes' view". */
+/* „↓ Down": reine senkrechte Liste — eine Geräte-Box pro Zeile, keine
+   Nachbarn. Umschaltbar in ProjectSettings.tsx → „Sequencer 'All lanes' view". */
 .overview-flat-column {
   flex-flow: column nowrap;
   align-items: stretch;
+}
+.flat-device-group {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 14px;
+  background: rgba(17, 17, 17, 0.35);
+  border: 2px solid;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+.flat-device-lanes {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: 4px;
+}
+.overview-flat-row .flat-device-lanes {
+  flex-flow: row wrap;
+  align-content: flex-start;
+}
+.overview-flat-column .flat-device-lanes {
+  flex-flow: column nowrap;
 }
 .flat-lane-row {
   display: flex;
@@ -746,15 +774,16 @@ textarea {
 .overview-flat-column .flat-lane-row {
   align-items: center;
 }
-/* Farbpunkt statt Namen: Ring = Gerätefarbe, Füllung = Lanefarbe. Ein Tipp
-   öffnet dasselbe Lane-Einstellungsmenü wie sonst der Namensknopf. */
+/* Farbpunkt statt Namen: Füllung = Lanefarbe (das Gerät zeigt schon der
+   Rahmen der umgebenden `.flat-device-group`). Ein Tipp öffnet dasselbe
+   Lane-Einstellungsmenü wie sonst der Namensknopf. */
 .flat-lane-chip {
   width: 26px;
   height: 26px;
   flex: 0 0 auto;
   align-self: center;
   border-radius: 50%;
-  border: 3px solid;
+  border: 1.5px solid rgba(255, 255, 255, 0.3);
   padding: 0;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
@@ -777,22 +806,6 @@ textarea {
 .overview-flat .slot-tile.slot-add {
   font-size: 22px;
 }
-.overview-flat-toggle {
-  align-self: flex-start;
-  flex: 0 0 auto;
-  height: 32px;
-  padding: 0 12px;
-  border-radius: 16px;
-  border: 1.5px solid rgba(255, 255, 255, 0.25);
-  background: rgba(17, 17, 17, 0.55);
-  color: var(--pal-text);
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-  touch-action: manipulation;
-}
-
 /* Bewegung sparsam, wenn das System es so will — der Zustand bleibt sichtbar
    (Rahmen/Fortschritt), nur Blitze und Übergänge fallen weg. */
 @media (prefers-reduced-motion: reduce) {

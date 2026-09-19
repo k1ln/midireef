@@ -58,7 +58,7 @@ export function Overview({ onOpenBlock }: OverviewProps) {
   const [sel, setSel] = useState<{ laneId: string; slotId: string } | null>(null);
   const [pinned, setPinned] = useState(false);
   const [settings, setSettings] = useState<SettingsState | null>(null);
-  const [flatPref, setFlatPref] = useLocalPref<"0" | "1">("overview.flat", "0");
+  const [flatPref] = useLocalPref<"0" | "1">("overview.flat", "0");
   const flat = flatPref === "1";
   // Richtung der Flat-Ansicht — eigene Einstellung in ProjectSettings.tsx
   // (Zahnrad), nicht hier als weiterer Knopf: hängt vom Bildschirm-Aufbau ab
@@ -148,17 +148,6 @@ export function Overview({ onOpenBlock }: OverviewProps) {
           </div>
         )}
 
-        {devices.length > 0 && (
-          <button
-            type="button"
-            className="overview-flat-toggle"
-            title={flat ? "Show grouped by device" : "Show all lanes on one view"}
-            onClick={() => setFlatPref(flat ? "0" : "1")}
-          >
-            {flat ? "▦ Grouped" : "≡ All lanes"}
-          </button>
-        )}
-
         {devices.length === 0 ? (
           <div style={{ color: "var(--pal-text-dim)", fontSize: OVERVIEW_FS }}>
             {ports.length > 0 ? "No devices yet — tap “＋ Device” in the top bar." : ""}
@@ -172,6 +161,7 @@ export function Overview({ onOpenBlock }: OverviewProps) {
             onSelectSlot={selectSlot}
             onOpenBlock={onOpenBlock}
             onOpenLaneSettings={openLaneSettings}
+            onOpenDeviceSettings={openDeviceSettings}
             onOpenAddBlock={(laneId, deviceId) => setPopup({ kind: "addBlock", laneId, deviceId })}
           />
         ) : (

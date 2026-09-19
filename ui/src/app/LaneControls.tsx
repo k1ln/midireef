@@ -84,6 +84,7 @@ export function LaneControls({ laneId, onClose }: LaneControlsProps) {
           {(found.lane.role === "melody" ||
             found.lane.role === "chord" ||
             found.lane.role === "arp" ||
+            found.lane.role === "walker" ||
             found.lane.role === "beat") && <LiveFxRow lane={found.lane} />}
 
           <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
@@ -390,6 +391,7 @@ function AddControlPicker({
     case "melody":
     case "chord":
     case "arp":
+    case "walker":
       rows.push({
         text: "Add note",
         onTap: () => {
@@ -490,7 +492,7 @@ function AddControlPicker({
   // Beat-repeat/stutter: hold to loop the last N steps of whatever's playing
   // on this lane. Makes sense for anything with steppable note content —
   // not for cc/programChange/patternShift, which have no "steps" to loop.
-  if (lane.role === "melody" || lane.role === "chord" || lane.role === "arp" || lane.role === "beat") {
+  if (lane.role === "melody" || lane.role === "chord" || lane.role === "arp" || lane.role === "walker" || lane.role === "beat") {
     rows.push({
       text: "Beat repeat",
       onTap: () => {
