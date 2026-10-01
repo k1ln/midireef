@@ -3489,6 +3489,40 @@ mod walker_tests {
         w.nodes.iter().map(|n| n.current_pitch).collect()
     }
 
+    /// TEMP diagnostic: 3 nodes, all defaulting to "up"/interval 1 (matching
+    /// what the UI's default block + "+ Add node" actually produce), in a
+    /// realistic 2-octave cage. Prints how many distinct positions each node
+    /// visits over 200 bars, to check for permanent jamming.
+    #[test]
+    fn diagnose_multi_node_movement_with_ui_defaults() {
+        let (project, lane_id) = project_with_walker(
+            serde_json::json!([
+                { "id": "a", "startNote": 54, "stepSemitones": 1, "intervalBars": 1, "mode": "sequential", "startDirection": "up" },
+                { "id": "b", "startNote": 60, "stepSemitones": 1, "intervalBars": 1, "mode": "sequential", "startDirection": "up" },
+                { "id": "c", "startNote": 66, "stepSemitones": 1, "intervalBars": 1, "mode": "sequential", "startDirection": "up" },
+            ]),
+            48,
+            72,
+        );
+        let mut engine = Engine::new();
+        engine.rebuild_if_needed(&project, 1);
+        let mut seen: [std::collections::HashSet<i32>; 3] = Default::default();
+        for pulse in 0..(96 * 200) {
+            engine.on_pulse(pulse, 0.02);
+            let pitches = walker_pitches(&engine, &lane_id);
+            for i in 0..3 {
+                seen[i].insert(pitches[i]);
+            }
+        }
+        println!(
+            "distinct positions visited over 200 bars: a={} b={} c={}",
+            seen[0].len(),
+            seen[1].len(),
+            seen[2].len()
+        );
+        println!("final positions: {:?}", walker_pitches(&engine, &lane_id));
+    }
+
     /// Zwei sequenzielle Nodes in einem engen Käfig (60..64) dürfen einander
     /// UND die Wände über viele Bars hinweg nie erreichen oder überspringen —
     /// die zentrale Garantie von `advance_walkers`s Anprall-Umkehr ("Ball an
