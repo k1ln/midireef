@@ -568,6 +568,10 @@ struct Playback {
     /// stehen — auch über Rebuilds/Transport-Neustart (Playback wird per Lane-ID
     /// übernommen).
     live_transpose: i32,
+    /// „Stay in scale": statt `live_transpose` wandern die Noten um
+    /// `(Stufen, Grundton-Pitchclass, Skalen-Intervalle)` Skalenstufen und
+    /// bleiben dadurch in der Tonleiter. `Some` verdrängt `live_transpose`.
+    live_scale_shift: Option<(i32, u8, &'static [u8])>,
     /// Beat-Repeat/Stutter (`press_repeat`/`release_repeat`): `Some` friert
     /// `pos` ein und loopt stattdessen ein kurzes Fenster der jüngsten
     /// Vergangenheit, bis losgelassen wird — s. `RepeatState`.
@@ -1026,6 +1030,16 @@ impl Engine {
     pub fn set_live_transpose(&mut self, lane_id: &str, semitones: i32) {
         if let Some(idx) = self.lanes.iter().position(|l| l.id == lane_id) {
             self.playback[idx].live_transpose = semitones.clamp(-48, 48);
+            self.playback[idx].live_scale_shift = None;
+        }
+    }
+
+    /// Wie `set_live_transpose`, aber um Skalenstufen („Stay in scale") —
+    /// die Melodie bleibt in der Tonleiter, nur ihre Lage wandert.
+    pub fn set_live_scale_shift(&mut self, lane_id: &str, degrees: i32, root_pc: u8, scale: &'static [u8]) {
+        if let Some(idx) = self.lanes.iter().position(|l| l.id == lane_id) {
+            self.playback[idx].live_transpose = 0;
+            self.playback[idx].live_scale_shift = Some((degrees.clamp(-48, 48), root_pc, scale));
         }
     }
 
@@ -1344,6 +1358,7 @@ impl Engine {
                         queued: None,
                         trigger_note: None,
                         live_transpose: 0,
+                        live_scale_shift: None,
                         repeat: None,
                         scatter: false,
                         pending_realign: false,
@@ -1753,7 +1768,11 @@ impl Engine {
         // der schon beim Kompilieren in `note` steckt. Gilt für alle Hit-Arten;
         // Note-Offs/Echo/Ratchet nehmen `Hit::note` und sind damit konsistent.
         let live = self.playback[lane_idx].live_transpose;
-        let shift = |n: u8| (n as i32 + live).clamp(0, 127) as u8;
+        let live_scale = self.playback[lane_idx].live_scale_shift;
+        let shift = |n: u8| match live_scale {
+            Some((deg, root_pc, scale)) => crate::scale::shift_degrees(n, deg, root_pc, scale),
+            None => (n as i32 + live).clamp(0, 127) as u8,
+        };
 
         // Step-Inhalt einsammeln, dann senden (Borrow-Konflikt vermeiden).
         let mut raw: Vec<Hit> = Vec::new();

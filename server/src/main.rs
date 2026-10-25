@@ -13,6 +13,7 @@ mod logbuf;
 mod midi;
 mod model;
 mod net_ap;
+mod scale;
 mod state;
 mod ws;
 

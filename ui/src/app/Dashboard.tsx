@@ -24,6 +24,14 @@ import type { Block, KeyLink } from "../state";
 import { ControlDock, CONTROL_DOCK_W } from "./dashboard/ControlDock";
 import type { Device } from "../state";
 
+// Skalen für „Stay in scale" am Lane-Link ("" = aus) — Namen wie `ScaleName`.
+const STAY_SCALES = [
+  "", "major", "minor", "pentatonicMajor", "pentatonicMinor", "dorian", "phrygian", "lydian", "mixolydian",
+  "locrian", "harmonicMinor", "melodicMinor", "blues",
+];
+const scaleLabel = (s: string) =>
+  s.replace(/([A-Z])/g, " $1").replace(/^./, (c) => c.toUpperCase());
+
 const TOP = 100;
 const LONG_PRESS_MS = 700;
 // Breite des rechts angedockten Control-Menüs — nur noch für die Anker der
@@ -729,6 +737,25 @@ export function Dashboard() {
                   {menuLink.transpose ? `${menuLink.transpose > 0 ? "+" : ""}${menuLink.transpose}` : "0"}
                 </Button>
               </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <div style={{ flex: 1, fontSize: 13 }}>Stay in scale</div>
+                <Button
+                  style={{ height: 38, padding: "0 12px", fontSize: 13, minWidth: 64 }}
+                  onClick={() => {
+                    const next = STAY_SCALES[(STAY_SCALES.indexOf(menuLink.scale ?? "") + 1) % STAY_SCALES.length];
+                    send({ t: "keyLink.update", link: { ...menuLink, scale: next || undefined } });
+                  }}
+                >
+                  {menuLink.scale ? scaleLabel(menuLink.scale) : "Off"}
+                </Button>
+              </div>
+              {menuLink.scale && (
+                <div style={{ fontSize: 12, color: "var(--pal-text-dim)", marginBottom: 6 }}>
+                  Keys move the melody by scale steps, not semitones — it stays in{" "}
+                  {noteName((menuLink.rootNote ?? 60) + (menuLink.transpose ?? 0))} {scaleLabel(menuLink.scale)}. A
+                  4th above shifts it up 3 steps.
+                </div>
+              )}
               <div style={{ fontSize: 12, color: "var(--pal-text-dim)", marginBottom: 16 }}>
                 The last key you play sets the lane's transpose — {noteName((menuLink.rootNote ?? 60) + (menuLink.transpose ?? 0))} is ±0, a fifth
                 above is +7. It stacks on top of each slot's own transpose; the keys themselves stay silent.

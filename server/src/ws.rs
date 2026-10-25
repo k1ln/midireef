@@ -2285,6 +2285,7 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                     enabled: true,
                     channel: None,
                     transpose: None,
+                    scale: None,
                     x: cmd.get("x").and_then(|v| v.as_f64()).unwrap_or(24.0),
                     y: cmd.get("y").and_then(|v| v.as_f64()).unwrap_or(24.0),
                 });

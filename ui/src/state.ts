@@ -342,6 +342,8 @@ export interface KeyLink {
   enabled: boolean;
   channel?: number;
   transpose?: number;
+  /** Lane-Link "Stay in scale": `ScaleName` aus shared/model.ts. */
+  scale?: string;
   x: number;
   y: number;
 }

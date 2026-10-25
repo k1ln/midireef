@@ -55,6 +55,9 @@ pub enum ClockCommand {
     SetTriggerNote(String, Option<u8>),
     /// Live-Transponierung einer Lane in Halbtönen (Lane-Keys-Link, s. `KeyLink::lane_id`).
     SetLaneTranspose(String, i32),
+    /// Wie `SetLaneTranspose`, aber um Skalenstufen statt Halbtöne („Stay in
+    /// scale"): (Lane, Stufen, Grundton-Pitchclass, Skalen-Intervalle).
+    SetLaneScaleShift(String, i32, u8, &'static [u8]),
     /// Live vom Keyboard kommende Note für eine per `record.arm` gelinkte
     /// Melodie-Lane — siehe `record_note_in` unten. Nur der Clock-Thread kennt
     /// den laufenden Puls-Zähler, daher landet das hier statt in ws.rs.
@@ -260,6 +263,9 @@ fn clock_loop(
                 }
                 ClockCommand::SetLaneTranspose(lane_id, semitones) => {
                     engine.set_live_transpose(&lane_id, semitones);
+                }
+                ClockCommand::SetLaneScaleShift(lane_id, degrees, root_pc, scale) => {
+                    engine.set_live_scale_shift(&lane_id, degrees, root_pc, scale);
                 }
                 ClockCommand::SetClockSource(src) => {
                     let mut t = transport.lock().unwrap();

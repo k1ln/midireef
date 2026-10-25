@@ -183,6 +183,11 @@ pub struct KeyLink {
     /// verschiebt sie die Bezugsnote (`root_note + transpose` = Transpose 0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transpose: Option<i32>,
+    /// Lane-Link: „Stay in scale" — Skalenname (`ScaleName`, Grundton = Pitchclass
+    /// von `root_note + transpose`). Gesetzt, wandert die Lane um Skalenstufen
+    /// statt Halbtöne und bleibt in der Tonleiter. `None`/`chromatic` = Halbtöne.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<String>,
     /// Position auf der Dashboard-Leinwand.
     #[serde(default)]
     pub x: f64,

@@ -598,6 +598,8 @@ impl AppState {
         // (Lane, Halbtöne, Link-ID) der Lane-Links, die diese Note als Transpose
         // lesen — getrennt von `targets`, weil dabei KEINE Noten ans Device gehen.
         let mut steer: Vec<(String, i32, String)> = Vec::new();
+        // Lane-Links mit „Stay in scale": (Lane, Stufen, Grundton-PC, Skala, Link-ID).
+        let mut steer_scale: Vec<(String, i32, u8, &'static [u8], String)> = Vec::new();
         let (targets, fired_ids): (Vec<(String, Vec<u8>)>, Vec<String>) = {
             let proj = self.project.lock().unwrap();
             let mut out = Vec::new();
@@ -615,7 +617,14 @@ impl AppState {
                         // Link-Transpose verschiebt die Bezugsnote: -12 → eine
                         // Oktave tiefer ist der Nullpunkt.
                         let root = link.root_note.unwrap_or(60) as i32 + link.transpose.unwrap_or(0);
-                        steer.push((lane_id.clone(), msg[1] as i32 - root, link.id.clone()));
+                        match link.scale.as_deref().and_then(crate::scale::intervals) {
+                            Some(scale) => {
+                                let root_pc = root.rem_euclid(12) as u8;
+                                let degrees = crate::scale::degrees_between(root, msg[1], root_pc, scale);
+                                steer_scale.push((lane_id.clone(), degrees, root_pc, scale, link.id.clone()));
+                            }
+                            None => steer.push((lane_id.clone(), msg[1] as i32 - root, link.id.clone())),
+                        }
                     }
                     continue;
                 }
@@ -646,6 +655,12 @@ impl AppState {
             let _ = self
                 .events
                 .send(serde_json::json!({ "t": "keyLink.activity", "linkId": id }));
+        }
+        for (lane_id, degrees, root_pc, scale, link_id) in steer_scale {
+            self.clock.send(ClockCommand::SetLaneScaleShift(lane_id, degrees, root_pc, scale));
+            let _ = self.events.send(
+                serde_json::json!({ "t": "keyLink.activity", "linkId": link_id, "semitones": degrees }),
+            );
         }
         for (lane_id, semitones, link_id) in steer {
             self.clock.send(ClockCommand::SetLaneTranspose(lane_id, semitones));
