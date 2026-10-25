@@ -179,7 +179,8 @@ pub struct KeyLink {
     /// Kanal-Remap aufs Zielgerät — `None` = Kanal der Quelle unverändert lassen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<u8>,
-    /// Halbton-Transpose auf durchgeleitete Noten.
+    /// Halbton-Transpose auf durchgeleitete Noten; bei einem Lane-Link
+    /// verschiebt sie die Bezugsnote (`root_note + transpose` = Transpose 0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transpose: Option<i32>,
     /// Position auf der Dashboard-Leinwand.

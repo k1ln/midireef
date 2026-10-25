@@ -612,7 +612,9 @@ impl AppState {
                 // Weiterreichen ans Device (sonst klänge die Taste zusätzlich).
                 if let Some(lane_id) = &link.lane_id {
                     if status == 0x90 && msg.len() >= 3 && msg[2] > 0 {
-                        let root = link.root_note.unwrap_or(60) as i32;
+                        // Link-Transpose verschiebt die Bezugsnote: -12 → eine
+                        // Oktave tiefer ist der Nullpunkt.
+                        let root = link.root_note.unwrap_or(60) as i32 + link.transpose.unwrap_or(0);
                         steer.push((lane_id.clone(), msg[1] as i32 - root, link.id.clone()));
                     }
                     continue;

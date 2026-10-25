@@ -911,7 +911,7 @@ export interface KeyLink {
   rootNote?: MidiNote; // Taste = Transpose 0 bei einem Lane-Link (Standard 60)
   enabled: boolean;
   channel?: MidiChannel; // Kanal-Remap aufs Ziel (optional)
-  transpose?: number; // Halbton-Transpose auf Noten (optional)
+  transpose?: number; // Halbton-Transpose auf Noten (optional); Lane-Link: verschiebt die Bezugsnote (-12 → Nullpunkt eine Oktave tiefer)
   x: number; // Position auf der Dashboard-Leinwand
   y: number;
 }

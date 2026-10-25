@@ -716,8 +716,21 @@ export function Dashboard() {
                   {noteName(menuLink.rootNote ?? 60)}
                 </Button>
               </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <div style={{ flex: 1, fontSize: 13 }}>Transpose (shifts root key)</div>
+                <Button
+                  style={{ height: 38, padding: "0 12px", fontSize: 13, minWidth: 64 }}
+                  onClick={() =>
+                    numberEdit(menuLink.transpose ?? 0, -48, 48, (v) =>
+                      send({ t: "keyLink.update", link: { ...menuLink, transpose: v || undefined } }),
+                    )
+                  }
+                >
+                  {menuLink.transpose ? `${menuLink.transpose > 0 ? "+" : ""}${menuLink.transpose}` : "0"}
+                </Button>
+              </div>
               <div style={{ fontSize: 12, color: "var(--pal-text-dim)", marginBottom: 16 }}>
-                The last key you play sets the lane's transpose — {noteName(menuLink.rootNote ?? 60)} is ±0, a fifth
+                The last key you play sets the lane's transpose — {noteName((menuLink.rootNote ?? 60) + (menuLink.transpose ?? 0))} is ±0, a fifth
                 above is +7. It stacks on top of each slot's own transpose; the keys themselves stay silent.
               </div>
               <Button
