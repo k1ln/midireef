@@ -32,13 +32,26 @@ export interface KeyLinkWidgetProps {
    *  die Kachel sagt das dann laut, statt still zu schlucken. */
   deviceHasPort: boolean;
   zoom: number;
+  /** Lane-Link (`link.laneId`): Name der gesteuerten Lane; `undefined` = Lane fehlt. */
+  laneName?: string;
+  /** Lane-Link: zuletzt gesetzte Transponierung (aus `keyLink.activity`). */
+  semitones?: number;
   /** Blitzt kurz auf, während Noten durchlaufen (`keyLink.activity`). */
   active?: boolean;
   /** Tipp auf die obere Hälfte → Menü (Parent rendert es). */
   onOpenMenu: () => void;
 }
 
-export function KeyLinkWidget({ link, deviceName, deviceHasPort, zoom, active, onOpenMenu }: KeyLinkWidgetProps) {
+export function KeyLinkWidget({
+  link,
+  deviceName,
+  deviceHasPort,
+  laneName,
+  semitones,
+  zoom,
+  active,
+  onOpenMenu,
+}: KeyLinkWidgetProps) {
   const send = useSend();
   const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
   const gesture = useRef<"pending" | "drag" | "done">("done");
@@ -82,7 +95,16 @@ export function KeyLinkWidget({ link, deviceName, deviceHasPort, zoom, active, o
   };
 
   const on = link.enabled;
-  const warn = !deviceName ? "no target — tap to set" : !deviceHasPort ? "target has no MIDI out" : null;
+  const steering = !!link.laneId;
+  const warn = steering
+    ? !laneName
+      ? "no lane — tap to set"
+      : null
+    : !deviceName
+      ? "no target — tap to set"
+      : !deviceHasPort
+        ? "target has no MIDI out"
+        : null;
   const accent = warn ? "255, 120, 90" : "var(--pal-run-rgb)";
 
   return (
@@ -139,15 +161,17 @@ export function KeyLinkWidget({ link, deviceName, deviceHasPort, zoom, active, o
           style={{
             fontSize: 13,
             fontWeight: 700,
-            color: deviceName ? "var(--pal-white)" : "var(--pal-text-dim)",
+            color: (steering ? laneName : deviceName) ? "var(--pal-white)" : "var(--pal-text-dim)",
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
           }}
         >
-          ↓ {deviceName ?? "pick a synth"}
-          {link.channel != null && <span style={{ color: "var(--pal-text-dim)" }}> · ch{link.channel}</span>}
-          {link.transpose ? (
+          {steering ? `↕ ${laneName ?? "pick a lane"}` : `↓ ${deviceName ?? "pick a synth"}`}
+          {!steering && link.channel != null && (
+            <span style={{ color: "var(--pal-text-dim)" }}> · ch{link.channel}</span>
+          )}
+          {!steering && link.transpose ? (
             <span style={{ color: "var(--pal-text-dim)" }}>
               {" "}
               · {link.transpose > 0 ? "+" : ""}
@@ -155,6 +179,11 @@ export function KeyLinkWidget({ link, deviceName, deviceHasPort, zoom, active, o
             </span>
           ) : null}
         </div>
+        {steering && laneName && (
+          <div style={{ fontSize: 22, fontWeight: 800, color: "var(--pal-white)", lineHeight: 1.1 }}>
+            {semitones == null ? "play a key" : semitones > 0 ? `+${semitones}` : semitones < 0 ? `−${-semitones}` : "±0"}
+          </div>
+        )}
         {warn && (
           <div style={{ marginTop: "auto", fontSize: 11, fontWeight: 700, color: "rgb(255, 140, 110)" }}>{warn}</div>
         )}

@@ -334,7 +334,11 @@ export interface RoutingHub {
 export interface KeyLink {
   id: string;
   port: string;
-  deviceId: string;
+  deviceId: string; // leer bei einem Lane-Link
+  /** Lane-Link: die gespielte Taste steuert die Transponierung dieser Lane
+   *  (Abstand zu `rootNote`, Standard 60) statt Noten an ein Device zu senden. */
+  laneId?: string;
+  rootNote?: number;
   enabled: boolean;
   channel?: number;
   transpose?: number;

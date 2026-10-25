@@ -53,6 +53,8 @@ pub enum ClockCommand {
     /// eine externe MIDI-Note nur die Rate treiben soll (`setsKeytrack` bei
     /// `control.setTrigger`, unabhängig von dessen `starts`).
     SetTriggerNote(String, Option<u8>),
+    /// Live-Transponierung einer Lane in Halbtönen (Lane-Keys-Link, s. `KeyLink::lane_id`).
+    SetLaneTranspose(String, i32),
     /// Live vom Keyboard kommende Note für eine per `record.arm` gelinkte
     /// Melodie-Lane — siehe `record_note_in` unten. Nur der Clock-Thread kennt
     /// den laufenden Puls-Zähler, daher landet das hier statt in ws.rs.
@@ -255,6 +257,9 @@ fn clock_loop(
                 }
                 ClockCommand::SetTriggerNote(lane_id, note) => {
                     engine.set_trigger_note(&lane_id, note);
+                }
+                ClockCommand::SetLaneTranspose(lane_id, semitones) => {
+                    engine.set_live_transpose(&lane_id, semitones);
                 }
                 ClockCommand::SetClockSource(src) => {
                     let mut t = transport.lock().unwrap();

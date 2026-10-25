@@ -595,12 +595,26 @@ impl AppState {
         }
         let in_channel = msg[0] & 0x0F;
 
+        // (Lane, Halbtöne, Link-ID) der Lane-Links, die diese Note als Transpose
+        // lesen — getrennt von `targets`, weil dabei KEINE Noten ans Device gehen.
+        let mut steer: Vec<(String, i32, String)> = Vec::new();
         let (targets, fired_ids): (Vec<(String, Vec<u8>)>, Vec<String>) = {
             let proj = self.project.lock().unwrap();
             let mut out = Vec::new();
             let mut fired = Vec::new();
             for link in proj.key_links.iter().filter(|l| l.enabled) {
                 if !crate::midi::same_port(&link.port, source_port) {
+                    continue;
+                }
+                // Lane-Link: die gespielte Taste SETZT die Transponierung der
+                // Lane (Abstand zur Bezugsnote, Standard C3 = 60). Nur Note-On
+                // zählt; die zuletzt gespielte Taste bleibt stehen. Kein
+                // Weiterreichen ans Device (sonst klänge die Taste zusätzlich).
+                if let Some(lane_id) = &link.lane_id {
+                    if status == 0x90 && msg.len() >= 3 && msg[2] > 0 {
+                        let root = link.root_note.unwrap_or(60) as i32;
+                        steer.push((lane_id.clone(), msg[1] as i32 - root, link.id.clone()));
+                    }
                     continue;
                 }
                 let Some(dev) = proj.devices.iter().find(|d| d.id == link.device_id) else {
@@ -630,6 +644,12 @@ impl AppState {
             let _ = self
                 .events
                 .send(serde_json::json!({ "t": "keyLink.activity", "linkId": id }));
+        }
+        for (lane_id, semitones, link_id) in steer {
+            self.clock.send(ClockCommand::SetLaneTranspose(lane_id, semitones));
+            let _ = self.events.send(
+                serde_json::json!({ "t": "keyLink.activity", "linkId": link_id, "semitones": semitones }),
+            );
         }
     }
 }

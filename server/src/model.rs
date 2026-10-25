@@ -164,8 +164,17 @@ pub struct KeyLink {
     pub id: Id,
     /// Portname des MIDI-Eingangs (toleranter Vergleich, s. `midi::same_port`).
     pub port: String,
-    /// Ziel-Device (dessen `midi_out_port`).
+    /// Ziel-Device (dessen `midi_out_port`). Leer bei einem Lane-Link (`lane_id`).
+    #[serde(default)]
     pub device_id: Id,
+    /// Lane-Link: statt Noten an ein Device zu schicken, STEUERT jede gespielte
+    /// Note die Transponierung dieser Lane (`Playback::live_transpose`) —
+    /// Abstand zur `root_note`. Es gehen dabei keine Noten ans Device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane_id: Option<Id>,
+    /// Bezugsnote eines Lane-Links: diese Taste = Transpose 0 (Standard 60).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_note: Option<u8>,
     pub enabled: bool,
     /// Kanal-Remap aufs Zielgerät — `None` = Kanal der Quelle unverändert lassen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -591,5 +600,29 @@ mod tests {
         let proj = Project::new("t");
         let ctrl = serde_json::json!({ "id": "c1", "mapping": { "channel": 1, "kind": "cc", "number": 1 } });
         assert!(control_target_sends(&proj, &ctrl, 64).is_empty());
+    }
+
+    #[test]
+    fn key_link_loads_old_device_links_and_new_lane_links() {
+        // Altes Projekt: nur deviceId, weder laneId noch rootNote.
+        let old: KeyLink = serde_json::from_value(serde_json::json!({
+            "id": "a", "port": "KeyStep", "deviceId": "d1", "enabled": true, "x": 1.0, "y": 2.0
+        }))
+        .unwrap();
+        assert_eq!(old.device_id, "d1");
+        assert!(old.lane_id.is_none() && old.root_note.is_none());
+
+        // Lane-Link: deviceId darf fehlen (wird leer), laneId/rootNote kommen mit.
+        let lane: KeyLink = serde_json::from_value(serde_json::json!({
+            "id": "b", "port": "KeyStep", "laneId": "l1", "rootNote": 48, "enabled": true
+        }))
+        .unwrap();
+        assert!(lane.device_id.is_empty());
+        assert_eq!(lane.lane_id.as_deref(), Some("l1"));
+        assert_eq!(lane.root_note, Some(48));
+
+        // Und ein Device-Link schreibt die neuen Felder gar nicht erst heraus.
+        let out = serde_json::to_value(&old).unwrap();
+        assert!(out.get("laneId").is_none() && out.get("rootNote").is_none());
     }
 }

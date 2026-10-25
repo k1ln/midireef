@@ -17,6 +17,7 @@ import { useViewportSize } from "./useViewportSize";
 import { Button } from "./widgets/Button";
 import { ControlWidget, type LiveControl } from "./dashboard/ControlWidget";
 import { KeyLinkWidget } from "./dashboard/KeyLinkWidget";
+import { noteName } from "./NotePicker";
 import { DevicePickerPopup, KindPickerPopup, LanePickerPopup, SteerTargetPopup, TriggerPickerPopup } from "./dashboard/menus";
 import { Popup } from "./widgets/Popup";
 import type { Block, KeyLink } from "../state";
@@ -91,6 +92,12 @@ export function Dashboard() {
   const [keyLinkMenu, setKeyLinkMenu] = useState<{ linkId: string } | null>(null);
   // Ziel-Device-Picker, aus dem Menü heraus geöffnet.
   const [keyLinkDevicePicker, setKeyLinkDevicePicker] = useState<{ linkId: string } | null>(null);
+  // Lane für einen Lane-Link wählen (Taste steuert deren Transpose) — aus dem
+  // Link-Menü heraus, für „Lane wechseln" bzw. „auf Lane umstellen".
+  const [keyLinkLanePicker, setKeyLinkLanePicker] = useState<{ linkId: string } | null>(null);
+  // Zuletzt von einem Lane-Link gesetzte Transponierung (aus keyLink.activity),
+  // nur für die Anzeige auf der Kachel.
+  const [keyLinkSemis, setKeyLinkSemis] = useState<Record<string, number>>({});
   // Links, durch die GERADE Noten laufen (`keyLink.activity`) — nur ein kurzes
   // Aufblitzen, kein persistenter Zustand.
   const [keyLinkActive, setKeyLinkActive] = useState<Set<string>>(new Set());
@@ -179,6 +186,10 @@ export function Dashboard() {
         case "keyLink.activity":
           if (evt.linkId) {
             const id = evt.linkId as string;
+            if (typeof evt.semitones === "number") {
+              const semis = evt.semitones as number;
+              setKeyLinkSemis((prev) => (prev[id] === semis ? prev : { ...prev, [id]: semis }));
+            }
             setKeyLinkActive((prev) => {
               if (prev.has(id)) return prev;
               const next = new Set(prev);
@@ -332,6 +343,7 @@ export function Dashboard() {
       keyLinkAddPort ||
       keyLinkMenu ||
       keyLinkDevicePicker ||
+      keyLinkLanePicker ||
       targetPicker ||
       targetEditor ||
       selectedId
@@ -348,6 +360,7 @@ export function Dashboard() {
     keyLinkAddPort,
     keyLinkMenu,
     keyLinkDevicePicker,
+    keyLinkLanePicker,
     targetPicker,
     targetEditor,
     selectedId,
@@ -359,6 +372,7 @@ export function Dashboard() {
   const selectedCtrl = selectedId ? controls.find((c) => c.id === selectedId) : undefined;
   const menuLink = keyLinkMenu ? keyLinks.find((l) => l.id === keyLinkMenu.linkId) : undefined;
   const pickerLink = keyLinkDevicePicker ? keyLinks.find((l) => l.id === keyLinkDevicePicker.linkId) : undefined;
+  const lanePickerLink = keyLinkLanePicker ? keyLinks.find((l) => l.id === keyLinkLanePicker.linkId) : undefined;
   const triggerLabelFor = (ctrl: LiveControl): string | undefined => {
     if (!ctrl.trigger) return undefined;
     for (const d of devices) {
@@ -375,9 +389,12 @@ export function Dashboard() {
   useEffect(() => {
     if (keyLinkMenu && !keyLinks.some((l) => l.id === keyLinkMenu.linkId)) setKeyLinkMenu(null);
     if (keyLinkDevicePicker && !keyLinks.some((l) => l.id === keyLinkDevicePicker.linkId)) setKeyLinkDevicePicker(null);
-  }, [keyLinkMenu, keyLinkDevicePicker, keyLinks]);
+    if (keyLinkLanePicker && !keyLinks.some((l) => l.id === keyLinkLanePicker.linkId)) setKeyLinkLanePicker(null);
+  }, [keyLinkMenu, keyLinkDevicePicker, keyLinkLanePicker, keyLinks]);
 
   const deviceName = (deviceId?: string | null) => devices.find((d) => d.id === deviceId)?.name;
+  const allLanes = devices.flatMap((d) => (d.lanes ?? []).map((l) => ({ dev: d, lane: l })));
+  const laneName = (laneId?: string | null) => (laneId ? allLanes.find((x) => x.lane.id === laneId)?.lane.name : undefined);
   const deviceLabel = (deviceId: string) => devices.find((d) => d.id === deviceId)?.name ?? "(gone)";
 
   // Benannte CCs des Geräte-Profils (falls verknüpft) — für den CC-Picker im
@@ -484,6 +501,8 @@ export function Dashboard() {
               link={link}
               deviceName={deviceName(link.deviceId)}
               deviceHasPort={!!devices.find((d) => d.id === link.deviceId)?.midiOutPort}
+              laneName={laneName(link.laneId)}
+              semitones={keyLinkSemis[link.id]}
               zoom={zoom}
               active={keyLinkActive.has(link.id)}
               onOpenMenu={() => setKeyLinkMenu({ linkId: link.id })}
@@ -594,7 +613,7 @@ export function Dashboard() {
                 className="popup-row"
                 onClick={() => {
                   setKeyLinkPortPicker(false);
-                  if (devices.length === 1) {
+                  if (devices.length === 1 && allLanes.length === 0) {
                     send({ t: "keyLink.add", port, deviceId: devices[0].id });
                   } else {
                     setKeyLinkAddPort(port);
@@ -630,6 +649,27 @@ export function Dashboard() {
               </Button>
             ))
           )}
+          {allLanes.length > 0 && (
+            <>
+              <div style={{ fontSize: 13, color: "var(--pal-text-dim)", margin: "12px 0 8px" }}>
+                … or steer a lane's transpose — the key you play sets it
+              </div>
+              {allLanes.map(({ dev, lane }) => (
+                <Button
+                  key={lane.id}
+                  className="popup-row"
+                  style={{ height: 40, flexDirection: "column", alignItems: "flex-start", paddingLeft: 12 }}
+                  onClick={() => {
+                    send({ t: "keyLink.add", port: keyLinkAddPort, laneId: lane.id });
+                    setKeyLinkAddPort(null);
+                  }}
+                >
+                  <span style={{ fontWeight: 700 }}>↕ {lane.name}</span>
+                  <span style={{ fontSize: 11, color: "var(--pal-text-dim)" }}>{dev.name}</span>
+                </Button>
+              ))}
+            </>
+          )}
         </Popup>
       )}
 
@@ -647,6 +687,53 @@ export function Dashboard() {
             {menuLink.enabled ? "● LIVE — tap to mute" : "○ OFF — tap to go live"}
           </Button>
 
+          {menuLink.laneId ? (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                <div style={{ flex: 1, fontSize: 13 }}>Steered lane</div>
+                <Button
+                  style={{ height: 38, padding: "0 12px", fontSize: 13, maxWidth: 200 }}
+                  onClick={() => setKeyLinkLanePicker({ linkId: menuLink.id })}
+                >
+                  {laneName(menuLink.laneId) ?? "Pick a lane"}
+                </Button>
+              </div>
+              {!laneName(menuLink.laneId) && (
+                <div style={{ fontSize: 12, color: "rgb(255, 140, 110)", marginBottom: 10 }}>
+                  That lane no longer exists — pick another one.
+                </div>
+              )}
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <div style={{ flex: 1, fontSize: 13 }}>Root key (= ±0)</div>
+                <Button
+                  style={{ height: 38, padding: "0 12px", fontSize: 13, minWidth: 64 }}
+                  onClick={() =>
+                    numberEdit(menuLink.rootNote ?? 60, 0, 127, (v) =>
+                      send({ t: "keyLink.update", link: { ...menuLink, rootNote: v === 60 ? undefined : v } }),
+                    )
+                  }
+                >
+                  {noteName(menuLink.rootNote ?? 60)}
+                </Button>
+              </div>
+              <div style={{ fontSize: 12, color: "var(--pal-text-dim)", marginBottom: 16 }}>
+                The last key you play sets the lane's transpose — {noteName(menuLink.rootNote ?? 60)} is ±0, a fifth
+                above is +7. It stacks on top of each slot's own transpose; the keys themselves stay silent.
+              </div>
+              <Button
+                style={{ width: "100%", height: 38, fontSize: 13, marginBottom: 12 }}
+                onClick={() =>
+                  send({
+                    t: "keyLink.update",
+                    link: { ...menuLink, laneId: undefined, rootNote: undefined, deviceId: devices[0]?.id ?? "" },
+                  })
+                }
+              >
+                Play a synth instead
+              </Button>
+            </>
+          ) : (
+            <>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
             <div style={{ flex: 1, fontSize: 13 }}>Target synth</div>
             <Button
@@ -699,6 +786,15 @@ export function Dashboard() {
             </Button>
           </div>
 
+              <Button
+                style={{ width: "100%", height: 38, fontSize: 13, marginBottom: 12 }}
+                onClick={() => setKeyLinkLanePicker({ linkId: menuLink.id })}
+              >
+                Steer a lane's transpose instead
+              </Button>
+            </>
+          )}
+
           <Button
             variant="danger"
             style={{ width: "100%", height: 42 }}
@@ -723,6 +819,26 @@ export function Dashboard() {
           onPick={(deviceId) => {
             send({ t: "keyLink.setDevice", linkId: pickerLink.id, deviceId });
             setKeyLinkDevicePicker(null);
+          }}
+        />
+      )}
+
+      {/* Lane für einen Lane-Link wählen (Taste steuert deren Transpose). */}
+      {lanePickerLink && (
+        <LanePickerPopup
+          x={window.innerWidth / 2 - 130}
+          y={TOP + 16}
+          devices={devices}
+          filter={() => true}
+          prompt="Which lane should this keyboard transpose?"
+          emptyText="No lanes yet."
+          onClose={() => setKeyLinkLanePicker(null)}
+          onPick={(lane) => {
+            send({
+              t: "keyLink.update",
+              link: { ...lanePickerLink, laneId: lane.id, deviceId: "", channel: undefined, transpose: undefined },
+            });
+            setKeyLinkLanePicker(null);
           }}
         />
       )}

@@ -903,7 +903,12 @@ export interface RoutingHub {
 export interface KeyLink {
   id: Id;
   port: string; // physischer MIDI-In-Port (toleranter Vergleich)
-  deviceId: Id; // Ziel-Device (dessen midiOutPort)
+  deviceId: Id; // Ziel-Device (dessen midiOutPort); leer bei einem Lane-Link
+  /** Lane-Link: statt Noten ans Device zu schicken, STEUERT jede gespielte Taste
+   *  die Transponierung dieser Lane (Abstand zu `rootNote`, zusätzlich zum
+   *  Slot-Transpose; die zuletzt gespielte Taste bleibt aktiv). */
+  laneId?: Id;
+  rootNote?: MidiNote; // Taste = Transpose 0 bei einem Lane-Link (Standard 60)
   enabled: boolean;
   channel?: MidiChannel; // Kanal-Remap aufs Ziel (optional)
   transpose?: number; // Halbton-Transpose auf Noten (optional)
@@ -1124,7 +1129,7 @@ export type Command =
   | { t: "routing.removeRoute"; routeId: Id }
   | { t: "routing.setRouteEnabled"; routeId: Id; enabled: boolean }
   // ── Dashboard „Keys links" (Controller → Synth, on the fly umhängbar) ──
-  | { t: "keyLink.add"; port: string; deviceId: Id; x?: number; y?: number }
+  | { t: "keyLink.add"; port: string; deviceId?: Id; laneId?: Id; x?: number; y?: number } // entweder deviceId (Noten durchreichen) ODER laneId (Taste steuert deren Transpose)
   | { t: "keyLink.update"; link: KeyLink }
   | { t: "keyLink.setEnabled"; linkId: Id; enabled: boolean }
   | { t: "keyLink.setDevice"; linkId: Id; deviceId: Id }
@@ -1217,7 +1222,7 @@ export type ServerEvent =
   | { t: "noteInput.armed"; blockId: Id | null } // aktueller Eingabe-Zustand der Piano-Rolle (null = niemand hört zu)
   | { t: "record.armState"; controlId: Id | null; laneId: Id | null } // aktueller Record-Arm-Zustand (beide null = nichts armiert)
   | { t: "routing.activity"; routeId: Id } // Route hat gerade Daten durchgeleitet (UI-Feedback)
-  | { t: "keyLink.activity"; linkId: Id } // Keys-Link hat gerade Noten durchgeleitet (kurzes UI-Aufblitzen)
+  | { t: "keyLink.activity"; linkId: Id; semitones?: number } // Keys-Link hat gerade Noten durchgeleitet (kurzes UI-Aufblitzen); semitones = neue Transponierung eines Lane-Links
   | { t: "midi.ports"; outputs: string[]; inputs: string[] }
   | { t: "project.list"; projects: ProjectSummary[]; currentId: Id } // beim Verbinden + nach jeder Projekt-Operation
   | { t: "server.logLines"; lines: string[] } // Antwort auf "server.log": letzte ≤1000 Log-Zeilen

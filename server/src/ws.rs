@@ -2271,12 +2271,17 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
         "keyLink.add" => {
             let port = str_field(&cmd, "port").unwrap_or_default();
             let device_id = str_field(&cmd, "deviceId").unwrap_or_default();
-            if !port.is_empty() && !device_id.is_empty() {
+            // Ziel ist ENTWEDER ein Device (Noten durchreichen) ODER eine Lane
+            // (Taste steuert deren Transpose, s. `KeyLink::lane_id`).
+            let lane_id = str_field(&cmd, "laneId").filter(|l| !l.is_empty());
+            if !port.is_empty() && (!device_id.is_empty() || lane_id.is_some()) {
                 let mut proj = state.project.lock().unwrap();
                 proj.key_links.push(crate::model::KeyLink {
                     id: uuid::Uuid::new_v4().to_string(),
                     port,
-                    device_id,
+                    device_id: if lane_id.is_some() { String::new() } else { device_id },
+                    lane_id,
+                    root_note: None,
                     enabled: true,
                     channel: None,
                     transpose: None,

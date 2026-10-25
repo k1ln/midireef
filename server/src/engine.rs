@@ -562,6 +562,12 @@ struct Playback {
     /// LFO-Key-Tracking von CC-Bausteinen (`rateKeyTrack`). `None` bei Touch-
     /// oder Sequencer-Auslösung ohne Note.
     trigger_note: Option<u8>,
+    /// Live-Transponierung in Halbtönen, gesteuert von einem Lane-Keys-Link
+    /// (`KeyLink::lane_id`). Kommt beim Spielen ZUSÄTZLICH zum `transpose` des
+    /// Slots obendrauf (s. `fire_step`) und bleibt bis zur nächsten Taste
+    /// stehen — auch über Rebuilds/Transport-Neustart (Playback wird per Lane-ID
+    /// übernommen).
+    live_transpose: i32,
     /// Beat-Repeat/Stutter (`press_repeat`/`release_repeat`): `Some` friert
     /// `pos` ein und loopt stattdessen ein kurzes Fenster der jüngsten
     /// Vergangenheit, bis losgelassen wird — s. `RepeatState`.
@@ -1013,6 +1019,16 @@ impl Engine {
         }
     }
 
+    /// Setzt die Live-Transponierung einer Lane (Lane-Keys-Link). Wirkt ab dem
+    /// nächsten Step; bereits klingende Noten enden mit ihrer eigenen
+    /// Tonhöhe. Auf ±48 geklemmt (wie der Slot-Transpose in der UI). No-op für
+    /// eine unbekannte Lane.
+    pub fn set_live_transpose(&mut self, lane_id: &str, semitones: i32) {
+        if let Some(idx) = self.lanes.iter().position(|l| l.id == lane_id) {
+            self.playback[idx].live_transpose = semitones.clamp(-48, 48);
+        }
+    }
+
     /// Touch-Up auf eine "hold"-Lane: Baustein stoppen, Lane wieder stumm
     /// schalten und alle noch offenen Noten dieser Lane sofort abschalten
     /// (nicht erst zur regulären Off-Fälligkeit). No-op für andere Lanes.
@@ -1327,6 +1343,7 @@ impl Engine {
                         held: false,
                         queued: None,
                         trigger_note: None,
+                        live_transpose: 0,
                         repeat: None,
                         scatter: false,
                         pending_realign: false,
@@ -1732,6 +1749,11 @@ impl Engine {
         // durchgelaufen ist — Basis für First/NotFirst/Ratio UND für
         // `StepMod.drift_steps` (Arp-Note wandert pro Loop weiter).
         let loops_done = self.playback[lane_idx].loops_done;
+        // Live-Transponierung (Lane-Keys-Link) obendrauf auf den Slot-Transpose,
+        // der schon beim Kompilieren in `note` steckt. Gilt für alle Hit-Arten;
+        // Note-Offs/Echo/Ratchet nehmen `Hit::note` und sind damit konsistent.
+        let live = self.playback[lane_idx].live_transpose;
+        let shift = |n: u8| (n as i32 + live).clamp(0, 127) as u8;
 
         // Step-Inhalt einsammeln, dann senden (Borrow-Konflikt vermeiden).
         let mut raw: Vec<Hit> = Vec::new();
@@ -1744,7 +1766,7 @@ impl Engine {
                     let eff_step = drifted_step(n.step, n.m.drift_steps, loops_done, total_steps);
                     if eff_step == step {
                         raw.push(Hit {
-                            note: n.note,
+                            note: shift(n.note),
                             vel: n.vel,
                             len_pulses: (n.len_steps.max(1) as u64) * pps,
                             m: n.m,
@@ -1759,7 +1781,7 @@ impl Engine {
                 for n in &w.notes {
                     if n.step == step {
                         raw.push(Hit {
-                            note: n.note,
+                            note: shift(n.note),
                             vel: n.vel,
                             len_pulses: (n.len_steps.max(1) as u64) * pps,
                             m: n.m,
@@ -1772,7 +1794,7 @@ impl Engine {
                 if let Some(row) = steps.get(step as usize) {
                     for h in row {
                         raw.push(Hit {
-                            note: h.note,
+                            note: shift(h.note),
                             vel: h.vel,
                             len_pulses: pps,
                             m: h.m,
