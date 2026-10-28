@@ -192,7 +192,7 @@ export interface BlockBase {
 
 export interface MelodyNote extends StepMod {
   step: number; // Start-Step (0-basiert, über alle Takte)
-  lengthSteps: number; // Dauer in Steps
+  lengthSteps: number; // Dauer in Steps (auch Bruchteile — frei gezogene Länge)
   note: MidiNote; // absolute Tonhöhe VOR Transpose
   velocity: Midi7Bit;
 }
@@ -1095,7 +1095,7 @@ export type Command =
   // vorhandene Note um, ohne beide bleibt sie unverändert. `velocity` und
   // `lengthSteps` schickt vor allem das Einspielen über die Piano-Rolle mit
   // (s. "noteInput.listen"), wo Anschlag und Notenlänge schon feststehen.
-  | { t: "melody.addNote"; blockId: Id; step: number; note: MidiNote; velocity?: Midi7Bit; lengthSteps?: number }
+  | { t: "melody.addNote"; blockId: Id; step: number; note: MidiNote; velocity?: Midi7Bit; lengthSteps?: number; microTiming?: number } // microTiming: 0..1 Versatz INNERHALB des Steps (frei gesetzte, nicht gerasterte Note); lengthSteps darf krumm sein
   | { t: "melody.removeNote"; blockId: Id; step: number; note: MidiNote } // eine bestimmte Note an einem Step entfernen, identifiziert über (step, Tonhöhe)
   | { t: "melody.setNotePitch"; blockId: Id; step: number; note: MidiNote; newNote: MidiNote } // Tonhöhe einer bestehenden Note ändern (identifiziert über die alte Tonhöhe)
   | { t: "melody.setNoteLength"; blockId: Id; step: number; note: MidiNote; lengthSteps: number } // Dauer einer bestimmten Note am Step (Note-Off entsprechend später)

@@ -24,6 +24,10 @@ export interface Slot {
 
 export interface MelodyNote {
   step: number;
+  /** Beginn der Note ist `step + microTiming` — ein Bruchteil eines Steps
+   *  (0..1) nach hinten, damit sie nicht aufs Raster gezwungen wird. */
+  microTiming?: number;
+  /** Auch Bruchteile von Steps: eine frei gezogene Länge bleibt, wie sie ist. */
   lengthSteps: number;
   note: number;
   velocity: number;

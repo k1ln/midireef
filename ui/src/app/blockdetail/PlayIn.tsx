@@ -26,8 +26,8 @@
 //!     Playhead (`RuntimeFeed.currentStep`, dieselbe Live-Position, die auch
 //!     den Playhead in der Rolle zeichnet), und eine gespielte Note landet
 //!     genau dort, wo der Playhead gerade steht, mit ihrer TATSÄCHLICH
-//!     gehaltenen Länge (Note-on merkt sich den Start-Step, Note-off rechnet
-//!     die Länge bis zum dann aktuellen Step aus) — derselbe Ablauf wie
+//!     gehaltenen Länge (Note-on merkt sich die Start-Position — Step PLUS Anteil
+//!     darin, ungerastet —, Note-off rechnet die Länge bis zur dann aktuellen aus) — derselbe Ablauf wie
 //!     `record_note_in` in `clock.rs` (dem Server-Pendant für `record.arm` im
 //!     Dashboard), nur ohne den Umweg über ein gelerntes Keyboard-Control und
 //!     eine Lane-Zuordnung: hier ist der Baustein selbst das Ziel. Läuft der
@@ -60,6 +60,10 @@ const VELOCITIES = [20, 40, 60, 80, 100, 110, 127];
 /** Anschlag, den ein Gerät ohne eigene Velocity meldet (sollte praktisch nie
  *  vorkommen, ist aber ein sinnvoller Nullwert). */
 export const DEFAULT_VELOCITY = 100;
+
+/** Kürzeste live eingespielte Notenlänge in Steps: ein Antippen soll eine
+ *  kurze, aber hörbare und greifbare Note ergeben, keine Haarlinie. */
+const MIN_LIVE_LENGTH = 0.25;
 
 export interface PlayIn {
   mode: PlayInMode;
@@ -177,9 +181,12 @@ export function usePlayIn(block: Block, totalSteps: number, active: boolean, mod
    *  die Note nur (Vorschau bzw. Server-Ton), es wird nichts geschrieben. */
   const liveWriteOn = useCallback(
     (note: number, velocity: number) => {
-      const step = runtime.currentStep(block.id);
-      if (step === null) return;
-      liveHolds.current.set(note, step);
+      // Die Position ist KEIN ganzer Step: die Note landet dort, wo sie
+      // gespielt wurde (Step + Versatz darin), nicht auf dem Raster.
+      const pos = runtime.currentPosition(block.id);
+      if (pos === null) return;
+      const step = Math.floor(pos);
+      liveHolds.current.set(note, pos);
       const already = (block.notes ?? []).some((n) => n.step === step && n.note === note);
       if (already) return;
       send({
@@ -189,25 +196,27 @@ export function usePlayIn(block: Block, totalSteps: number, active: boolean, mod
         note,
         velocity: Math.max(1, Math.min(127, velocity)),
         lengthSteps: 1,
+        microTiming: pos - step,
       });
     },
     [send, block.id, runtime, block.notes],
   );
 
-  /** Live-Modus: Note endet — Länge = Abstand vom gemerkten Start-Step bis
-   *  zum jetzigen Playhead (mod Baustein-Länge, mindestens 1). Lief der
-   *  Baustein zwischenzeitlich nicht mehr, bleibt die Note bei ihrer 1-Step-
-   *  Startlänge stehen statt an einem geratenen Ende. */
+  /** Live-Modus: Note endet — Länge = Abstand vom gemerkten Start bis zur
+   *  jetzigen Playhead-Position (mod Baustein-Länge), so wie gehalten, ohne
+   *  auf ganze Steps zu runden. Lief der Baustein zwischenzeitlich nicht mehr,
+   *  bleibt die Note bei ihrer 1-Step-Startlänge stehen statt an einem
+   *  geratenen Ende. */
   const liveWriteOff = useCallback(
     (note: number) => {
-      const startStep = liveHolds.current.get(note);
+      const startPos = liveHolds.current.get(note);
       liveHolds.current.delete(note);
-      if (startStep === undefined) return;
-      const nowStep = runtime.currentStep(block.id);
-      if (nowStep === null) return;
+      if (startPos === undefined) return;
+      const nowPos = runtime.currentPosition(block.id);
+      if (nowPos === null) return;
       const total = totalRef.current;
-      const len = Math.max(1, (((nowStep - startStep) % total) + total) % total);
-      send({ t: "melody.setNoteLength", blockId: block.id, step: startStep, note, lengthSteps: len });
+      const len = Math.max(MIN_LIVE_LENGTH, (((nowPos - startPos) % total) + total) % total);
+      send({ t: "melody.setNoteLength", blockId: block.id, step: Math.floor(startPos), note, lengthSteps: len });
     },
     [send, block.id, runtime],
   );

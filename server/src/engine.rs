@@ -26,7 +26,10 @@ const MIN_CC_SEND_INTERVAL: Duration = Duration::from_millis(20);
 
 struct CNote {
     step: u32,
-    len_steps: u32,
+    /// Fließkomma, damit eine frei gezogene Notenlänge (nicht auf ganze
+    /// Steps gerastet) erhalten bleibt — in Pulse umgerechnet über
+    /// `note_len_pulses`.
+    len_steps: f32,
     note: u8,
     vel: u8,
     m: StepMod,
@@ -1787,7 +1790,7 @@ impl Engine {
                         raw.push(Hit {
                             note: shift(n.note),
                             vel: n.vel,
-                            len_pulses: (n.len_steps.max(1) as u64) * pps,
+                            len_pulses: note_len_pulses(n.len_steps, pps),
                             m: n.m,
                             choke_group: None,
                         });
@@ -1802,7 +1805,7 @@ impl Engine {
                         raw.push(Hit {
                             note: shift(n.note),
                             vel: n.vel,
-                            len_pulses: (n.len_steps.max(1) as u64) * pps,
+                            len_pulses: note_len_pulses(n.len_steps, pps),
                             m: n.m,
                             choke_group: None,
                         });
@@ -2268,7 +2271,7 @@ impl Engine {
                     for n in notes {
                         if n.step == step {
                             on_bytes.extend_from_slice(&[0x90 | (ch - 1), n.note, n.vel]);
-                            p.pending.push((ch, n.note, global_pulse + (n.len_steps.max(1) * pps) as u64));
+                            p.pending.push((ch, n.note, global_pulse + note_len_pulses(n.len_steps, pps as u64)));
                         }
                     }
                     if !on_bytes.is_empty() {
@@ -2280,7 +2283,7 @@ impl Engine {
                     for n in &w.notes {
                         if n.step == step {
                             on_bytes.extend_from_slice(&[0x90 | (ch - 1), n.note, n.vel]);
-                            p.pending.push((ch, n.note, global_pulse + (n.len_steps.max(1) * pps) as u64));
+                            p.pending.push((ch, n.note, global_pulse + note_len_pulses(n.len_steps, pps as u64)));
                         }
                     }
                     if !on_bytes.is_empty() {
@@ -2438,7 +2441,7 @@ fn parse_trig_condition(v: &Option<serde_json::Value>) -> Option<TrigCondition> 
 struct MelodyNoteJson {
     step: u32,
     #[serde(rename = "lengthSteps")]
-    len_steps: u32,
+    len_steps: f32,
     note: i32,
     velocity: u8,
     #[serde(flatten)]
@@ -2591,6 +2594,16 @@ fn one_i32() -> i32 {
     1
 }
 
+/// Kürzeste Notenlänge in Steps. Darunter wäre sie kürzer als ein Puls und
+/// würde von `note_len_pulses` ohnehin auf einen Puls angehoben.
+const MIN_NOTE_LEN_STEPS: f32 = 0.05;
+
+/// Notenlänge in Pulsen — mindestens ein Puls, gerundet statt abgeschnitten,
+/// damit eine frei gezogene Länge dort endet, wo sie hingehört.
+fn note_len_pulses(len_steps: f32, pps: u64) -> u64 {
+    ((len_steps.max(MIN_NOTE_LEN_STEPS) as f64 * pps as f64).round() as u64).max(1)
+}
+
 fn one_u32() -> u32 {
     1
 }
@@ -2694,7 +2707,7 @@ fn compile_block(
                 .iter()
                 .map(|n| CNote {
                     step: n.step,
-                    len_steps: n.len_steps.max(1),
+                    len_steps: n.len_steps.max(MIN_NOTE_LEN_STEPS),
                     note: (n.note + transpose).clamp(0, 127) as u8,
                     vel: n.velocity.clamp(1, 127),
                     m: n.step_mod.compile(),
@@ -2762,7 +2775,7 @@ fn compile_block(
                 .iter()
                 .flat_map(|c| {
                     let step = c.step;
-                    let len = c.len_steps.max(1);
+                    let len = c.len_steps.max(1) as f32;
                     let vel = c.velocity.clamp(1, 127);
                     let m = c.step_mod.compile();
                     c.notes.iter().map(move |n| CNote {
@@ -3013,7 +3026,7 @@ fn build_note_sequence(
         let drift_steps = if drift_index == Some(cycle_pos) { drift_amount } else { 0 };
         out.push(CNote {
             step,
-            len_steps: gate_steps,
+            len_steps: gate_steps as f32,
             note: pool[idx],
             vel,
             m: StepMod { drift_steps, ..StepMod::default() },
@@ -3049,7 +3062,7 @@ fn build_chord_sequence(
             };
             out.push(CNote {
                 step,
-                len_steps: gate_steps,
+                len_steps: gate_steps as f32,
                 note,
                 vel,
                 m: StepMod { micro_timing, ..StepMod::default() },

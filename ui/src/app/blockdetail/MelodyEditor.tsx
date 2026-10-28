@@ -5,9 +5,12 @@
 //!     Tonhöhe UND Notenlänge als Text, erlaubt Akkord-Stapel und ist auf dem
 //!     Touchdisplay treffsicher. Der Verlauf einer Melodie ist aber nicht zu
 //!     sehen: alle Noten stehen auf gleicher Höhe.
-//!   "grid" (Piano-Roll) — Zeile = Tonhöhe, Spalte = Step. Man SIEHT die
-//!     Melodie und setzt Noten mit einem Tipper, dafür ist die Notenlänge nur
-//!     als Balken sichtbar (Feineinstellung bleibt der Spalten-Ansicht).
+//!   "grid" (Piano-Roll) — Zeile = Tonhöhe, Zeit nach rechts, OHNE Zellraster
+//!     (s. RollCanvas.tsx): Noten sind Balken, die dort beginnen, wo man sie
+//!     setzt (Step + `microTiming`) und beliebig lang sind. Man SIEHT die
+//!     Melodie, kann hineinzoomen und setzt Noten mit einem Tipper. Das ist die
+//!     Standardansicht — nur sie kann Noten abbilden, die nicht auf einem Step
+//!     liegen (eingespielte Takes!). Die Spalten-Ansicht zeigt sie auf ihrem Step.
 //!
 //! Beide Ansichten sprechen dieselben Kommandos (melody.addNote/removeNote/
 //! setNotePitch/setNoteLength) — es ist wirklich nur die Darstellung.
@@ -23,26 +26,23 @@
 //! hat — und dann löscht der nächste Tipper etwas, das man setzen wollte. Das
 //! lange Drücken hängt dagegen an der Note selbst und kann nicht „anbleiben".
 //!
-//! In der Piano-Rolle kommt dazu, NUR dort: waagerechtes Ziehen auf einer
-//! Note oder ihrem Halte-Schweif verlängert/verkürzt sie live, direkt unter
-//! dem Finger — und zwar NOCH VOR dem Halte-Timer für den Editor, sobald die
-//! Bewegung eine kleine Schwelle überschreitet (s. `RollCell`). Ohne das
-//! bräuchte jede Längenänderung einen Umweg über den Editor oder das
-//! Grau-Werkzeug; ein Ziehen direkt an der Note trifft man auf dem
-//! Touchdisplay ohnehin am sichersten, weil Finger und Ziel dieselbe Stelle
-//! sind.
+//! In der Piano-Rolle kommen dazu, NUR dort: Ziehen am rechten Ende einer Note
+//! ändert ihre Länge live unter dem Finger, Ziehen am Rest verschiebt sie
+//! (Zeit frei, Tonhöhe zeilenweise), und Zoom hält das Treffen auch bei langen
+//! Bausteinen leicht — alles in `RollCanvas`.
 
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useRef, useState } from "react";
 import type { Block, MelodyNote } from "../../state";
 import { useSend, useRuntime } from "../store";
 import { useNotePicker, noteName } from "../NotePicker";
 import { Button } from "../widgets/Button";
 import { Popup } from "../widgets/Popup";
-import { StepBars, StepCell, RollKey, ROLL_LOW_NOTE, ROLL_HIGH_NOTE, ROLL_KEY_W, HOLD_MS, isBlackKey, type StepFlow } from "./StepGrid";
+import { StepBars, StepCell, type StepFlow } from "./StepGrid";
+import { RollCanvas, ROLL_MIN_LENGTH } from "./RollCanvas";
 import { useLongPress } from "../useLongPress";
 import { useLocalPref } from "../useLocalPref";
 import { NoteEditorPopup, type NoteRef } from "./NoteEditor";
-import { usePlayIn, PlayInBar, type PlayIn, type PlayInMode } from "./PlayIn";
+import { usePlayIn, PlayInBar, type PlayInMode } from "./PlayIn";
 
 export type { PlayInMode } from "./PlayIn";
 
@@ -374,7 +374,7 @@ function MelodyStack({ block, flow }: { block: Block; flow: StepFlow }) {
                             Quadrat, damit es nur ein Ziel für den Finger gibt. */}
                         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", lineHeight: 1.1 }}>
                           <span style={{ fontSize: 14, fontWeight: 700 }}>{noteName(n.note)}</span>
-                          <span style={{ fontSize: 10, color: "var(--pal-step-label)" }}>len {len}</span>
+                          <span style={{ fontSize: 10, color: "var(--pal-step-label)" }}>len {Math.round(len * 100) / 100}</span>
                         </div>
                       </StepCell>
                     );
@@ -473,11 +473,13 @@ function PaintSwatch({
       title={title}
       {...handlers}
       style={{
-        width: 48,
-        height: 48,
+        // 38 statt 48: die Leiste frisst Höhe, die die Rolle braucht; ein
+        // Daumen trifft 38px-Kreise trotzdem sicher.
+        width: 38,
+        height: 38,
         borderRadius: "50%",
         background: color,
-        border: active ? "4px solid var(--pal-text)" : "4px solid transparent",
+        border: active ? "3px solid var(--pal-text)" : "3px solid transparent",
         cursor: "pointer",
         flexShrink: 0,
       }}
@@ -570,15 +572,13 @@ export function PaintToolbar({ paint, setPaint }: { paint: PaintTool; setPaint: 
 }
 
 // ── Piano-Roll-Ansicht ──────────────────────────────────────────────────────
+// Ohne Zellraster: die Ansicht selbst steckt in `RollCanvas` (Zoom, Balken,
+// Gesten). Hier steht, was die Gesten BEDEUTEN — Kommandos an den Server und
+// das Paint-Werkzeug.
 
-// Quadratische Zellen: eine 34×20-Zelle ist mit dem Finger senkrecht kaum zu
-// treffen — daneben liegt sofort die nächste Tonhöhe. Gleich hoch wie breit
-// kostet Sichtfeld (der Ausschnitt scrollt ohnehin), trifft dafür. 64 statt 50:
-// selbst 50 war für einen Finger noch knapp (s. Nutzer-Feedback) — das
-// Sichtfeld verkleinert sich dadurch, aber die Rolle ist ja ohnehin auf
-// Scrollen ausgelegt (und seit der Zeilen-Virtualisierung kostet das nichts).
-const ROW_H = 64;
-const CELL_W = 64;
+/** Anschlag einer frisch gesetzten Note, wenn kein Paint-Werkzeug etwas anderes
+ *  vorgibt. */
+const NEW_NOTE_VELOCITY = 100;
 
 /** Akkord-Typen für den Lang-Druck auf eine leere Zelle (s. `ChordPickerPopup`)
  *  — Intervalle in Halbtönen ÜBER der angetippten Tonhöhe, die selbst immer
@@ -602,11 +602,14 @@ const CHORD_KINDS: { label: string; intervals: number[] }[] = [
 function ChordPickerPopup({
   block,
   step,
+  micro,
   root,
   onClose,
 }: {
   block: Block;
   step: number;
+  /** Versatz im Step (0..1) — der Akkord beginnt dort, wo gedrückt wurde. */
+  micro: number;
   root: number;
   onClose: () => void;
 }) {
@@ -615,7 +618,7 @@ function ChordPickerPopup({
     for (const semi of [0, ...intervals]) {
       const note = root + semi;
       if (note < 0 || note > 127) continue;
-      send({ t: "melody.addNote", blockId: block.id, step, note });
+      send({ t: "melody.addNote", blockId: block.id, step, note, microTiming: micro });
     }
     onClose();
   };
@@ -638,14 +641,24 @@ function ChordPickerPopup({
   );
 }
 
+/** Zeit in Steps (Bruchteile erlaubt) → Step + Versatz darin, so wie der Server
+ *  eine Note speichert. Immer nach HINTEN versetzt: die Engine kann eine Note
+ *  nicht vor ihrem Step spielen, also rundet das ab statt zu runden. */
+function splitTime(t: number, totalSteps: number): { step: number; micro: number } {
+  const clamped = Math.min(totalSteps - ROLL_MIN_LENGTH, Math.max(0, t));
+  const step = Math.floor(clamped);
+  return { step, micro: clamped - step };
+}
+
 function MelodyGrid({
   block,
-  flow,
   playIn,
   playInMode,
   paint,
 }: {
   block: Block;
+  /** Wird nicht mehr gebraucht — die Rolle hat kein Takt-Layout. Bleibt in der
+   *  Signatur, damit `MelodyEditor` beide Ansichten gleich füttern kann. */
   flow: StepFlow;
   playIn: boolean;
   playInMode: PlayInMode;
@@ -653,156 +666,127 @@ function MelodyGrid({
 }) {
   const send = useSend();
   const [editing, setEditing] = useState<NoteRef | null>(null);
-  const [chordPick, setChordPick] = useState<NoteRef | null>(null);
+  const [chordPick, setChordPick] = useState<{ step: number; micro: number; note: number } | null>(null);
   const [redVel] = usePaintVelocity("red");
   const [greenVel] = usePaintVelocity("green");
   const [blueVel] = usePaintVelocity("blue");
+  // Länge neuer Noten: die zuletzt gezogene. Eine Note einmal auf die gewünschte
+  // Länge ziehen, und die nächsten Tipper setzen gleich lange — statt jede Note
+  // einzeln zu dehnen.
+  const [newLenPref, setNewLenPref] = useLocalPref<string>("melody.roll.newLength", "1");
+  const newLength = Math.max(ROLL_MIN_LENGTH, parseFloat(newLenPref) || 1);
   const stepsPerBar = block.stepsPerBar ?? 16;
   const totalSteps = stepsPerBar * (block.lengthBars ?? 1);
   const notes = block.notes ?? [];
-  // Umfasst alle `.step-scroller` dieser Rolle — bei Layout "wrap" ist das
-  // einer pro Takt-Zeile, nicht nur einer. Ein Klick auf +8ve/-8ve/Grundnote
-  // bewegt sie alle gleich weit, sonst zeigten Takt-Zeilen nach dem Springen
-  // unterschiedliche Tonhöhen-Ausschnitte.
-  const wrapperRef = useRef<HTMLDivElement | null>(null);
-  const forEachScroller = (fn: (el: HTMLElement) => void) => {
-    wrapperRef.current?.querySelectorAll<HTMLElement>(".step-scroller").forEach(fn);
-  };
-  const jumpOctave = (semitones: number) => {
-    forEachScroller((el) => el.scrollBy({ top: -semitones * ROW_H, behavior: "smooth" }));
-  };
-  const jumpToBaseNote = () => {
-    forEachScroller((el) => {
-      // Rechnet die Ziel-Zeile aus `data-rows-top` aus, statt sie per
-      // `[data-roll-center]` im DOM zu suchen: die Zeile selbst ist
-      // virtualisiert und steht nur im DOM, solange sie im sichtbaren
-      // Fenster (± Überstand) liegt — weit weggescrollt fände `querySelector`
-      // sie also gar nicht mehr (s. `RollRows`).
-      const anchor = el.querySelector<HTMLElement>("[data-rows-top]");
-      if (!anchor) return;
-      const index = ROLL_HIGH_NOTE - DEFAULT_BASE_NOTE;
-      const wanted = anchor.offsetTop + index * ROW_H + ROW_H / 2 - el.clientHeight / 2;
-      el.scrollTo({ top: Math.max(0, Math.min(wanted, el.scrollHeight - el.clientHeight)), behavior: "smooth" });
-    });
-  };
   // Einspielen: Schreib-Cursor + Tastatur-Eingang. Der Hook läuft immer mit
   // (Hooks dürfen nicht bedingt sein), armiert den Server aber nur, solange
   // `playIn` steht — s. PlayIn.tsx.
   const play = usePlayIn(block, totalSteps, playIn, playInMode);
 
-  // Tonumfang: die volle MIDI-Skala von C0 bis G9. Kein Fenster um die
-  // Grundnote mehr — jede Tonhöhe, die ein Gerät spielen kann, soll auch im
-  // Raster setzbar sein; gescrollt wird ohnehin (Start s. data-roll-center).
-  const rows: number[] = [];
-  for (let note = ROLL_HIGH_NOTE; note >= ROLL_LOW_NOTE; note--) rows.push(note);
+  const addAt = (t: number, pitch: number, velocity: number) => {
+    const { step, micro } = splitTime(t, totalSteps);
+    send({
+      t: "melody.addNote",
+      blockId: block.id,
+      step,
+      note: pitch,
+      velocity,
+      lengthSteps: Math.min(newLength, totalSteps - (step + micro)),
+      microTiming: micro,
+    });
+  };
 
-  // Noten nach Tonhöhe vorsortiert: über 116 Zeilen × Steps würde ein
-  // `notes.find()` über ALLE Noten je Zelle spürbar bremsen, ein Blick in die
-  // Noten DIESER Zeile (meist keine oder eine) nicht.
-  const byPitch = new Map<number, typeof notes>();
-  for (const n of notes) {
-    const list = byPitch.get(n.note);
-    if (list) list.push(n);
-    else byPitch.set(n.note, [n]);
-  }
+  const setLength = (n: MelodyNote, lengthSteps: number) =>
+    send({
+      t: "melody.setNoteLength",
+      blockId: block.id,
+      step: n.step,
+      note: n.note,
+      lengthSteps: Math.max(ROLL_MIN_LENGTH, lengthSteps),
+    });
 
-  /** Note, die an diesem Step ANFÄNGT. */
-  const noteAt = (step: number, pitch: number) => byPitch.get(pitch)?.find((n) => n.step === step);
-  /** Note, die über diesen Step hinweg KLINGT (Halten sichtbar machen). */
-  const heldAt = (step: number, pitch: number) =>
-    byPitch.get(pitch)?.find((n) => n.step < step && n.step + Math.max(1, n.lengthSteps ?? 1) > step);
-
-  /** Wendet das armierte Paint-Werkzeug auf eine getippte Zelle an — s. den
-   *  Kopfkommentar über `PaintToolbar`. Grau: trifft der Tipper die Note
-   *  selbst, wächst sie um einen Step; trifft er ihre (ggf. noch gar nicht
-   *  gezeichnete) Fortsetzung, wird ihre Länge auf genau diesen Step gesetzt —
-   *  das kürzt (Tipper innerhalb der Spur) oder verlängert (Tipper danach) je
-   *  nachdem, wo er landet. Farben: auf einer Note ändern sie nur die
-   *  Velocity, auf einer leeren Zelle setzen sie gleich eine neue Note damit.
-   */
-  const applyPaint = (tool: Exclude<PaintTool, null>, step: number, pitch: number) => {
-    const rowNotes = byPitch.get(pitch) ?? [];
-    const own = rowNotes.find((n) => n.step === step);
-    const covering = own ?? rowNotes.find((n) => n.step < step && n.step + Math.max(1, n.lengthSteps ?? 1) > step);
-
-    if (tool === "grey") {
-      if (covering) {
-        const newLen = own ? Math.max(1, covering.lengthSteps ?? 1) + 1 : step - covering.step + 1;
-        send({ t: "melody.setNoteLength", blockId: block.id, step: covering.step, note: pitch, lengthSteps: newLen });
-        return;
+  /** Tipper auf leere Fläche. Mit Paint-Werkzeug: Grau dehnt die Note davor
+   *  (gleiche Tonhöhe) bis hierher, eine Farbe setzt gleich eine Note mit ihrem
+   *  Anschlag. Ohne: neue Note genau hier. */
+  const tapEmpty = (t: number, pitch: number) => {
+    if (paint === "grey") {
+      let before: MelodyNote | undefined;
+      for (const n of notes) {
+        const start = n.step + (n.microTiming ?? 0);
+        if (n.note === pitch && start < t && (!before || start > before.step + (before.microTiming ?? 0))) before = n;
       }
-      let preceding: (typeof rowNotes)[number] | undefined;
-      for (const n of rowNotes) if (n.step < step && (!preceding || n.step > preceding.step)) preceding = n;
-      if (preceding) {
-        send({ t: "melody.setNoteLength", blockId: block.id, step: preceding.step, note: pitch, lengthSteps: step - preceding.step + 1 });
-      }
+      if (before) setLength(before, t - (before.step + (before.microTiming ?? 0)));
       return;
     }
+    if (paint) addAt(t, pitch, paint === "red" ? redVel : paint === "green" ? greenVel : blueVel);
+    else addAt(t, pitch, NEW_NOTE_VELOCITY);
+  };
 
-    const vel = tool === "red" ? redVel : tool === "green" ? greenVel : blueVel;
-    if (covering) send({ t: "melody.setNoteVelocity", blockId: block.id, step: covering.step, note: pitch, velocity: vel });
-    else send({ t: "melody.addNote", blockId: block.id, step, note: pitch, velocity: vel });
+  /** Tipper auf eine Note. Mit Paint-Werkzeug: Grau dehnt sie um einen Step,
+   *  eine Farbe setzt ihren Anschlag. Ohne: Note entfernen. */
+  const tapNote = (n: MelodyNote) => {
+    if (paint === "grey") {
+      setLength(n, Math.min(totalSteps - n.step - (n.microTiming ?? 0), Math.max(ROLL_MIN_LENGTH, n.lengthSteps ?? 1) + 1));
+    } else if (paint) {
+      const velocity = paint === "red" ? redVel : paint === "green" ? greenVel : blueVel;
+      send({ t: "melody.setNoteVelocity", blockId: block.id, step: n.step, note: n.note, velocity });
+    } else {
+      send({ t: "melody.removeNote", blockId: block.id, step: n.step, note: n.note });
+    }
+  };
+
+  /** Verschieben = an der alten Stelle weg, an der neuen mit denselben Werten
+   *  hin. Eine Note ist über (Step, Tonhöhe) adressiert — es gibt kein
+   *  „umsetzen"-Kommando, und zwei Kommandos nacheinander sind in der
+   *  Reihenfolge sicher. */
+  const moveNote = (n: MelodyNote, t: number, pitch: number) => {
+    const { step, micro } = splitTime(t, totalSteps);
+    if (step === n.step && pitch === n.note && Math.abs(micro - (n.microTiming ?? 0)) < 0.001) return;
+    send({ t: "melody.removeNote", blockId: block.id, step: n.step, note: n.note });
+    send({
+      t: "melody.addNote",
+      blockId: block.id,
+      step,
+      note: Math.min(127, Math.max(0, pitch)),
+      velocity: n.velocity,
+      lengthSteps: Math.min(Math.max(ROLL_MIN_LENGTH, n.lengthSteps ?? 1), totalSteps - (step + micro)),
+      microTiming: micro,
+    });
   };
 
   return (
-    <div ref={wrapperRef} style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
-      {/* Springt über die volle Tonhöhen-Skala, statt sie leerzuscrollen —
-          116 Zeilen bei ~15 sichtbaren sind sonst viel Wischen für eine weit
-          entfernte Tonhöhe (s. Nutzer-Feedback zur Rolle). */}
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginBottom: 6, flexShrink: 0 }}>
-        <Button variant="alt" style={{ width: 56, height: 34, fontSize: 13 }} title="Scroll one octave up" onClick={() => jumpOctave(12)}>
-          +8ve
-        </Button>
-        <Button
-          variant="alt"
-          style={{ width: 64, height: 34, fontSize: 13 }}
-          title="Scroll to the block's base note"
-          onClick={jumpToBaseNote}
-        >
-          {noteName(DEFAULT_BASE_NOTE)}
-        </Button>
-        <Button variant="alt" style={{ width: 56, height: 34, fontSize: 13 }} title="Scroll one octave down" onClick={() => jumpOctave(-12)}>
-          −8ve
-        </Button>
-      </div>
-      <StepBars
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+      <RollCanvas
+        blockId={block.id}
+        notes={notes}
         totalSteps={totalSteps}
         stepsPerBar={stepsPerBar}
-        cellW={CELL_W}
-        flow={flow}
-        fillHeight
-        cursorStep={playIn ? play.cursor : undefined}
-        // Live: der Cursor IST der laufende Playhead, nicht per Tipper auf
-        // das Lineal versetzbar (s. PlayIn.tsx `setCursor`, dort im
-        // Live-Modus eine No-op).
+        centerNote={DEFAULT_BASE_NOTE}
+        send={send}
+        // Im Live-Modus IST der Cursor der Playhead — den zeichnet die Rolle
+        // ohnehin; ein Band käme nur doppelt.
+        cursorStep={playIn && playInMode === "step" ? play.cursor : undefined}
         onPickStep={playIn && playInMode === "step" ? play.setCursor : undefined}
-        leftGutter={ROLL_KEY_W}
-      >
-        {(steps) => (
-          <RollRows
-            rows={rows}
-            steps={steps}
-            stepsPerBar={stepsPerBar}
-            totalSteps={totalSteps}
-            block={block}
-            playIn={playIn}
-            play={play}
-            paint={paint}
-            applyPaint={applyPaint}
-            noteAt={noteAt}
-            heldAt={heldAt}
-            send={send}
-            setEditing={setEditing}
-            setChordPick={setChordPick}
-          />
-        )}
-      </StepBars>
+        onTapEmpty={tapEmpty}
+        onLongPressEmpty={(t, pitch) => {
+          const { step, micro } = splitTime(t, totalSteps);
+          setChordPick({ step, micro, note: pitch });
+        }}
+        onTapNote={tapNote}
+        onLongPressNote={(n) => setEditing({ step: n.step, note: n.note })}
+        onMoveNote={moveNote}
+        onResizeNote={(n, len) => {
+          const clamped = Math.min(len, Math.max(ROLL_MIN_LENGTH, totalSteps - n.step - (n.microTiming ?? 0)));
+          setLength(n, clamped);
+          setNewLenPref(String(Math.round(clamped * 1000) / 1000));
+        }}
+      />
 
       <div style={{ marginTop: 6, fontSize: 12, color: "var(--pal-text-dim)", flexShrink: 0 }}>
         {playIn && playInMode === "live" ? (
           <>
-            Play a connected MIDI keyboard or the keys below — the block loops and each note lands right where the moving
-            playhead is, with the length you actually held it. Editing by tap still works.
+            Play a connected MIDI keyboard or the keys below — the block loops and each note lands exactly where you played
+            it, with the length you actually held it. Editing by tap still works.
           </>
         ) : playIn ? (
           <>
@@ -810,15 +794,14 @@ function MelodyGrid({
             cursor moves on when you let go. Tap the ruler to jump the cursor, "▶" leaves a rest. Editing by tap still works.
           </>
         ) : paint === "grey" ? (
-          <>Grey armed — tap a note to grow it by one step, or any cell after it to lengthen (or shorten) it up to there.</>
+          <>Grey armed — tap a note to grow it by a step, or empty space to the right of one to stretch it up to there.</>
         ) : paint ? (
-          <>{paint[0].toUpperCase() + paint.slice(1)} armed — tap a note to accent it, an empty cell to place a new one with it.</>
+          <>{paint[0].toUpperCase() + paint.slice(1)} armed — tap a note to accent it, empty space to place a new one with it.</>
         ) : (
           <>
-            Tap an empty cell to place a note, tap the note again to remove it, tap its trail to end it there. Drag a note or its
-            trail sideways to lengthen or shorten it. Long-press a note for pitch, length and velocity, or an empty cell to stack
-            a chord there. Hold a key at either end of a row to hear that pitch. Pick a paint color above to skip the editor for
-            length/velocity — tap the color again to let go of it.
+            Tap empty space to place a note exactly there, tap a note to remove it. Drag a note's right end to resize it (new
+            notes then get that length), drag the rest to move it. Long-press a note for pitch, length and velocity, or empty
+            space for a chord. Zoom with ↔ ↕ or two fingers; swipe empty space to scroll.
           </>
         )}
       </div>
@@ -829,370 +812,14 @@ function MelodyGrid({
         <NoteEditorPopup block={block} target={editing} onRetarget={setEditing} onClose={() => setEditing(null)} />
       )}
       {chordPick && (
-        <ChordPickerPopup block={block} step={chordPick.step} root={chordPick.note} onClose={() => setChordPick(null)} />
+        <ChordPickerPopup
+          block={block}
+          step={chordPick.step}
+          micro={chordPick.micro}
+          root={chordPick.note}
+          onClose={() => setChordPick(null)}
+        />
       )}
     </div>
-  );
-}
-
-/** Zusätzliche Tonhöhen-Zeilen, die über das gemessene Sichtfenster hinaus
- *  gemountet bleiben — billig dank `.roll-row`s `content-visibility:auto`
- *  (theme.css), nur genug Puffer, dass ein schneller Wisch keine leeren
- *  Zeilen für einen Frame aufblitzen lässt. */
-const ROLL_OVERSCAN = 6;
-
-/** Großzügiges Fenster für den allerersten Render, bevor der Scroller
- *  vermessen ist — breit genug für jeden realen Bildschirm, damit die
- *  Grundnoten-Zeile (`data-roll-center`, von StepScrollers Start-Scroll
- *  gelesen) beim Mount garantiert schon steht. */
-const ROLL_INITIAL_HALF = 24;
-
-/** Liest die sichtbare Zeilen-Spanne aus dem `.step-scroller`, der `anchorRef`
- *  umschließt — einem pro Takt-Zeile bei Layout "wrap", einem einzigen bei
- *  "scroll" (s. StepGrid.tsx). Der Scroller wird per `closest()` erst im
- *  Effekt gesucht (Refs sind beim Commit schon gesetzt, bevor Effekte
- *  laufen), darum startet der Hook mit einem großzügig geschätzten Fenster
- *  statt mit leerem Zustand. */
-function useVisibleRollRows(
-  anchorRef: { current: HTMLElement | null },
-  rowCount: number,
-  rowH: number,
-  initialCenter: number,
-): [number, number] {
-  const [range, setRange] = useState<[number, number]>(() => [
-    Math.max(0, initialCenter - ROLL_INITIAL_HALF),
-    Math.min(rowCount, initialCenter + ROLL_INITIAL_HALF),
-  ]);
-
-  useEffect(() => {
-    const container = anchorRef.current?.closest<HTMLElement>(".step-scroller");
-    if (!container) return;
-    let raf = 0;
-    const measure = () => {
-      raf = 0;
-      const start = Math.max(0, Math.floor(container.scrollTop / rowH) - ROLL_OVERSCAN);
-      const end = Math.min(
-        rowCount,
-        Math.ceil((container.scrollTop + container.clientHeight) / rowH) + ROLL_OVERSCAN,
-      );
-      setRange((prev) => (prev[0] === start && prev[1] === end ? prev : [start, end]));
-    };
-    const onScroll = () => {
-      if (!raf) raf = requestAnimationFrame(measure);
-    };
-    measure();
-    container.addEventListener("scroll", onScroll, { passive: true });
-    const ro = new ResizeObserver(onScroll);
-    ro.observe(container);
-    return () => {
-      container.removeEventListener("scroll", onScroll);
-      ro.disconnect();
-      if (raf) cancelAnimationFrame(raf);
-    };
-  }, [anchorRef, rowCount, rowH]);
-
-  return range;
-}
-
-/** Tonhöhen-Zeilen EINER Takt-Zeile der Piano-Rolle, virtualisiert: die volle
- *  MIDI-Skala sind 116 Zeilen, sichtbar sind auf dem Display vielleicht 15 —
- *  ungefiltert gemountet bedeutete, dass jede Notenänderung (und jede fremde
- *  Projektänderung, solange dieser Editor offen ist, s. MelodyGrid-Kopf) alle
- *  116 neu anlegte und abglich. `.roll-row`s `content-visibility` erspart dem
- *  Browser nur das MALEN der ausgeblendeten Zeilen — das hier erspart React
- *  das Anlegen als Elemente überhaupt, und DAS kostete auf dem Pi die Zeit. */
-function RollRows({
-  rows,
-  steps,
-  stepsPerBar,
-  totalSteps,
-  block,
-  playIn,
-  play,
-  paint,
-  applyPaint,
-  noteAt,
-  heldAt,
-  send,
-  setEditing,
-  setChordPick,
-}: {
-  rows: number[];
-  steps: number[];
-  /** Für die Takt-Trennlinien — s. `RollCell`s `barStart`. */
-  stepsPerBar: number;
-  /** Obergrenze für die Ziehen-Geste — eine Note darf nicht über das Ende
-   *  des Bausteins hinaus wachsen, auch wenn der Finger weiter zieht. */
-  totalSteps: number;
-  block: Block;
-  playIn: boolean;
-  play: PlayIn;
-  paint: PaintTool;
-  applyPaint: (tool: Exclude<PaintTool, null>, step: number, pitch: number) => void;
-  noteAt: (step: number, pitch: number) => MelodyNote | undefined;
-  heldAt: (step: number, pitch: number) => MelodyNote | undefined;
-  send: ReturnType<typeof useSend>;
-  setEditing: (ref: NoteRef) => void;
-  setChordPick: (ref: NoteRef) => void;
-}) {
-  const anchorRef = useRef<HTMLDivElement | null>(null);
-  const initialCenter = Math.max(0, rows.indexOf(DEFAULT_BASE_NOTE));
-  const [start, end] = useVisibleRollRows(anchorRef, rows.length, ROW_H, initialCenter);
-
-  return (
-    // Anker mit fester Position relativ zum Scroller, unabhängig vom
-    // Scroll-Stand — anders als die Zeilen selbst, die außerhalb von
-    // [start,end) gar nicht im DOM stehen (s. MelodyGrids `jumpToBaseNote`,
-    // die genau deshalb NICHT über `[data-roll-center]` sucht, wenn das
-    // Ziel gerade nicht sichtbar ist).
-    <div ref={anchorRef} data-rows-top="">
-      {start > 0 && <div style={{ height: start * ROW_H }} />}
-      {rows.slice(start, end).map((note) => {
-        const isC = ((note % 12) + 12) % 12 === 0;
-        return (
-          <div
-            key={note}
-            className="step-row roll-row"
-            // Anker für den Start-Scroll des Ausschnitts (s. StepScroller).
-            data-roll-center={note === DEFAULT_BASE_NOTE ? "" : undefined}
-            style={
-              {
-                // C bleibt die kräftigste Markierung (Oktavgrenze). Alle
-                // anderen Zeilen bekommen nur einen HAUCH Unterschied je
-                // Taste (weiß heller, schwarz dunkler) — genug, um beim
-                // Blick über die Rolle die Tastatur wiederzuerkennen, ohne
-                // mit der viel helleren gehaltenen Note zu konkurrieren.
-                background: isC
-                  ? "var(--pal-panel-deep)"
-                  : isBlackKey(note)
-                    ? "var(--pal-roll-black)"
-                    : "var(--pal-roll-white)",
-                // Platzhalterhöhe der ausgeblendeten Zeilen (s. .roll-row).
-                "--roll-row-h": `${ROW_H}px`,
-              } as CSSProperties
-            }
-          >
-            {/* Klaviatur auch links: hält man das Display mit der rechten
-                Hand, verdeckt genau die die Tasten am rechten Rand — die
-                Zeile bleibt so in jeder Griffhaltung lesbar. Klebt (sticky)
-                am linken Rand des Scrollers, verdrängt also die Zellen statt
-                sie zu überdecken (s. `leftGutter` an StepBars für das
-                passende Lineal-Gegenstück). */}
-            <RollKey
-              note={note}
-              label={noteName(note)}
-              height={ROW_H}
-              side="left"
-              onPress={() => send({ t: "block.previewNote", blockId: block.id, note, on: true })}
-              onRelease={() => send({ t: "block.previewNote", blockId: block.id, note, on: false })}
-            />
-            {steps.map((step) => {
-              const noteStart = noteAt(step, note);
-              const held = !noteStart ? heldAt(step, note) : undefined;
-              return (
-                <RollCell
-                  key={step}
-                  // Anfang eines neuen Takts (außer dem allerersten Step) —
-                  // eine kräftigere Linie, damit man beim Scrollen durch
-                  // mehrtaktige Melodien sieht, wo ein Takt endet und der
-                  // nächste beginnt (s. Nutzer-Feedback).
-                  barStart={step > 0 && step % stepsPerBar === 0}
-                  // Die Spalte, auf die das nächste Gespielte geht.
-                  cursor={playIn && step === play.cursor}
-                  // Gehaltene Note als eigener, DECKENDER Grauton statt als
-                  // halbtransparentes Weiß — vorher schimmerte die Zeile
-                  // darunter durch und die Note sah "leer" aus.
-                  background={
-                    noteStart ? "var(--pal-btn-active)" : held ? "var(--pal-step-held)" : "var(--pal-step-off)"
-                  }
-                  onTap={() => {
-                    // Werkzeug armiert: es entscheidet allein, s.
-                    // `applyPaint` — kein Setzen/Entfernen daneben.
-                    if (paint) {
-                      applyPaint(paint, step, note);
-                      return;
-                    }
-                    // Auf dem Anfang: Note wieder weg — derselbe Tipper,
-                    // der sie gesetzt hat, nimmt sie zurück. Auf dem
-                    // Halte-Schweif: Note bis GENAU hierher kürzen — das
-                    // ist die schnelle Länge direkt im Raster, ohne Umweg.
-                    // Leere Zelle: neue Note.
-                    if (noteStart)
-                      send({ t: "melody.removeNote", blockId: block.id, step, note });
-                    else if (held)
-                      send({
-                        t: "melody.setNoteLength",
-                        blockId: block.id,
-                        step: held.step,
-                        note,
-                        lengthSteps: step - held.step + 1,
-                      });
-                    else send({ t: "melody.addNote", blockId: block.id, step, note });
-                  }}
-                  // Lang drücken öffnet den Editor dieser Note — auch vom
-                  // Halte-Schweif aus, der gehört ja zur selben Note. Auf
-                  // einer leeren Zelle stapelt es stattdessen einen Akkord
-                  // ab genau dieser Tonhöhe (s. `ChordPickerPopup`) — der
-                  // kurze Tipper bleibt dort weiterhin die einzelne Note.
-                  onLongPress={
-                    noteStart || held
-                      ? () => setEditing({ step: (noteStart ?? held)!.step, note })
-                      : () => setChordPick({ step, note })
-                  }
-                  // Waagerecht ziehen auf der Note oder ihrem Halte-Schweif
-                  // verlängert/verkürzt sie live — noch bevor der Halte-
-                  // Timer für den Editor auslöst (s. Datei-Kopf). `root`
-                  // bleibt immer der ANFANG der Note, egal ob der Finger auf
-                  // ihm oder irgendwo im Schweif aufgesetzt hat.
-                  onDragStep={
-                    noteStart || held
-                      ? (delta) => {
-                          const root = (noteStart ?? held)!;
-                          const target = step + delta;
-                          const newLength = Math.max(1, Math.min(totalSteps - root.step, target - root.step + 1));
-                          send({ t: "melody.setNoteLength", blockId: block.id, step: root.step, note, lengthSteps: newLength });
-                        }
-                      : undefined
-                  }
-                />
-              );
-            })}
-            {/* Klaviatur am Zeilenende: sie sagt (wie die frühere reine
-                Beschriftung), auf welcher Tonhöhe man tippt — und spielt
-                sie beim Drücken an, damit man eine Note hören kann, bevor
-                man sie setzt. Gedrückt halten = Ton hält (s. RollKey). */}
-            <RollKey
-              note={note}
-              label={noteName(note)}
-              height={ROW_H}
-              side="right"
-              onPress={() => send({ t: "block.previewNote", blockId: block.id, note, on: true })}
-              onRelease={() => send({ t: "block.previewNote", blockId: block.id, note, on: false })}
-            />
-          </div>
-        );
-      })}
-      {end < rows.length && <div style={{ height: (rows.length - end) * ROW_H }} />}
-    </div>
-  );
-}
-
-/** Schwelle in Pixeln, ab der eine Bewegung überhaupt als Geste zählt statt
- *  als Zittern — dieselbe Schwelle/Logik wie `VelocityBars`' `DIR_SLOP`:
- *  die GRÖSSERE Achse gewinnt (waagerecht = Länge ziehen, senkrecht = die
- *  Rolle scrollen lassen). */
-const DRAG_SLOP = 8;
-
-/** Eine Piano-Roll-Zelle. Eigene Komponente (statt der geteilten `StepCell`
- *  bzw. `useLongPress`), weil sie DREI Gesten gegeneinander abwägen muss —
- *  Tipper, langes Drücken UND waagerechtes Ziehen zur Längenänderung — und
- *  genau diese Abwägung nur hier gebraucht wird (s. Datei-Kopf). */
-function RollCell({
-  background,
-  cursor,
-  barStart,
-  onTap,
-  onLongPress,
-  onDragStep,
-}: {
-  background: string;
-  /** Liegt die Zelle auf dem Schreib-Cursor des Einspielens? */
-  cursor?: boolean;
-  /** Erster Step eines neuen Takts (außer dem allerersten) — kräftigere
-   *  linke Kante statt des normalen Zellrahmens, s. `RollRows`. */
-  barStart?: boolean;
-  onTap: () => void;
-  /** RollRows liefert das immer — Note oder leere Zelle öffnen beide etwas
-   *  (Editor bzw. Akkord-Auswahl), nur WAS unterscheidet sich. Bleibt
-   *  trotzdem optional: ohne Halte-Ziel soll auch kein Halte-Timer laufen,
-   *  der sonst einen langsamen Tipper verschluckt. */
-  onLongPress?: () => void;
-  /** Waagerechtes Ziehen auf einer Note oder ihrem Halte-Schweif — bekommt
-   *  das Delta in STEPS seit dem Drücken (nicht in Pixeln: die Zellbreite
-   *  ist schon eingerechnet), nur bei jeder tatsächlichen Änderung, nie bei
-   *  jedem Pixel. Fehlt bei leeren Zellen — da gibt es nichts zu ziehen. */
-  onDragStep?: (deltaSteps: number) => void;
-}) {
-  const timer = useRef<number | undefined>(undefined);
-  const fired = useRef(false);
-  const gesture = useRef<{ x: number; y: number; mode: "idle" | "drag" | "pan"; lastDelta: number }>({
-    x: 0,
-    y: 0,
-    mode: "idle",
-    lastDelta: 0,
-  });
-
-  const cancelTimer = () => {
-    window.clearTimeout(timer.current);
-    timer.current = undefined;
-  };
-
-  const handlers = {
-    onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => {
-      // Pointer-Capture hält Move/Up an dieser Zelle fest, auch wenn der
-      // Finger beim Ziehen längst über Nachbarzellen steht (s. VelocityBars).
-      e.currentTarget.setPointerCapture?.(e.pointerId);
-      fired.current = false;
-      gesture.current = { x: e.clientX, y: e.clientY, mode: "idle", lastDelta: 0 };
-      if (onLongPress) {
-        timer.current = window.setTimeout(() => {
-          fired.current = true;
-          onLongPress();
-        }, HOLD_MS);
-      }
-    },
-    onPointerMove: (e: React.PointerEvent<HTMLDivElement>) => {
-      if (!onDragStep || fired.current) return;
-      const g = gesture.current;
-      if (g.mode === "idle") {
-        const dx = e.clientX - g.x;
-        const dy = e.clientY - g.y;
-        if (Math.max(Math.abs(dx), Math.abs(dy)) < DRAG_SLOP) return;
-        g.mode = Math.abs(dx) >= Math.abs(dy) ? "drag" : "pan";
-        // Ziehen gewinnt gegen den Halte-Timer — genau das war die Bitte:
-        // "vor" dem langen Drücken, nicht erst danach.
-        if (g.mode === "drag") cancelTimer();
-      }
-      if (g.mode !== "drag") return;
-      const delta = Math.round((e.clientX - g.x) / CELL_W);
-      if (delta !== g.lastDelta) {
-        g.lastDelta = delta;
-        onDragStep(delta);
-      }
-    },
-    onPointerUp: () => {
-      cancelTimer();
-      // Ein Ziehen zählt nicht zusätzlich als Tipper — sonst würde das
-      // Loslassen nach dem Verlängern dieselbe Zelle nochmal antippen.
-      if (gesture.current.mode === "drag") fired.current = true;
-      gesture.current.mode = "idle";
-      if (!fired.current) onTap();
-    },
-    onPointerLeave: cancelTimer,
-    // Quer-Wischen zum Scrollen darf weder als Tipper noch als langes
-    // Drücken enden (s. dieselbe Stelle in StepGrid's StepCell) — und bricht
-    // hier zusätzlich ein begonnenes Ziehen sauber ab, statt es beim
-    // nächsten Move mit einem neuen Startpunkt fortzusetzen.
-    onPointerCancel: () => {
-      cancelTimer();
-      gesture.current.mode = "idle";
-    },
-  };
-
-  return (
-    <div
-      className={`step-cell${cursor ? " step-cursor" : ""}`}
-      style={{
-        width: CELL_W - 2,
-        height: ROW_H,
-        background,
-        // Waagerecht bleibt JS vorbehalten (das Ziehen), senkrecht darf der
-        // Browser nativ scrollen lassen — dieselbe Aufteilung wie
-        // VelocityBars' `touchAction: "pan-x"`, nur seitenverkehrt.
-        touchAction: onDragStep ? "pan-y" : "manipulation",
-        ...(barStart ? { borderLeft: "3px solid var(--pal-text-dim)" } : undefined),
-      }}
-      {...handlers}
-    />
   );
 }

@@ -1109,6 +1109,104 @@ textarea {
   box-shadow: inset 0 0 0 2px rgba(var(--pal-run-rgb), 0.85);
 }
 
+/* ── Piano-Rolle ohne Raster (RollCanvas.tsx) ─────────────────────────────── */
+.roll-ruler {
+  background: var(--pal-panel);
+  border-bottom: 1px solid var(--pal-step-border);
+  user-select: none;
+}
+.roll-ruler-corner {
+  position: sticky;
+  left: 0;
+  z-index: 5;
+  background: var(--pal-panel);
+}
+.roll-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  padding-left: 4px;
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 10px;
+  line-height: 28px;
+  color: var(--pal-text-dim);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.roll-tick.major {
+  border-left-color: rgba(255, 255, 255, 0.3);
+  color: var(--pal-text);
+  font-weight: 700;
+}
+.roll-cursor-mark {
+  position: absolute;
+  top: 0;
+  background: rgba(var(--pal-run-rgb), 0.45);
+  pointer-events: none;
+}
+.roll-cursor-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(var(--pal-run-rgb), 0.14);
+  pointer-events: none;
+}
+.roll-surface {
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+/* Playhead: dünne Linie über die ganze Höhe, geschoben um den Anteil `--play`
+   (0..1, von der Runtime weich interpoliert) der Rollenbreite. */
+.roll-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  margin-left: -1px;
+  transform: translateX(calc(var(--play, 0) * var(--roll-w, 0px)));
+  background: rgba(var(--pal-run-rgb), 0.95);
+  box-shadow: 0 0 10px rgba(var(--pal-run-rgb), 0.6);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 4;
+  transition: opacity 500ms ease-out;
+}
+.block-detail.playing .roll-playhead {
+  opacity: 1;
+  transition-duration: 60ms;
+}
+.roll-note {
+  background: var(--pal-btn-active);
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  overflow: hidden;
+  -webkit-tap-highlight-color: transparent;
+}
+.roll-note-body {
+  flex: 1;
+  min-width: 0;
+  padding-left: 5px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--pal-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  pointer-events: none;
+}
+/* Griff am rechten Ende — sichtbar, damit man weiß, wo man zum Dehnen greift. */
+.roll-note-handle {
+  flex: 0 0 5px;
+  align-self: stretch;
+  margin: 3px 3px 3px 0;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
 /* ── Einspiel-Leiste unter der Piano-Rolle (PlayIn.tsx) ─────────────────── */
 .play-in-bar {
   /* Klebt am unteren Rand des scrollenden Editors: die Rolle darüber scrollt

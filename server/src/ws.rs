@@ -1290,10 +1290,20 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                     .get("velocity")
                     .and_then(|v| v.as_u64())
                     .map(|v| v.clamp(1, 127));
+                // Länge darf krumm sein (frei gezogen, nicht auf ganze Steps
+                // gerastet) — die Engine rechnet sie in Pulse um.
                 let length = cmd
                     .get("lengthSteps")
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v.max(1));
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v.clamp(0.05, 512.0));
+                // Versatz INNERHALB des Steps (0..1): wo genau zwischen zwei
+                // Steps die Note beginnt. Nur nach hinten — die Engine kann
+                // eine Note nicht früher spielen als ihren Step (kein
+                // Vorlauf), ein negativer Wert würde einfach sofort klingen.
+                let micro = cmd
+                    .get("microTiming")
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v.clamp(0.0, 1.0));
                 let mut proj = state.project.lock().unwrap();
                 if let Some(b) = find_block_mut(&mut proj, &id) {
                     if !b["notes"].is_array() {
@@ -1315,15 +1325,24 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                                     n["velocity"] = serde_json::json!(v);
                                 }
                                 if let Some(l) = length {
-                                    n["lengthSteps"] = serde_json::json!(l);
+                                    n["lengthSteps"] = length_json(l);
+                                }
+                                if let Some(m) = micro {
+                                    set_micro_timing(n, m);
                                 }
                             }
-                            None => arr.push(serde_json::json!({
-                                "step": step,
-                                "lengthSteps": length.unwrap_or(1),
-                                "note": note,
-                                "velocity": velocity.unwrap_or(100),
-                            })),
+                            None => {
+                                let mut n = serde_json::json!({
+                                    "step": step,
+                                    "lengthSteps": length_json(length.unwrap_or(1.0)),
+                                    "note": note,
+                                    "velocity": velocity.unwrap_or(100),
+                                });
+                                if let Some(m) = micro {
+                                    set_micro_timing(&mut n, m);
+                                }
+                                arr.push(n);
+                            }
                         }
                     }
                 }
@@ -1404,7 +1423,7 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 str_field(&cmd, "blockId"),
                 cmd.get("step").and_then(|v| v.as_u64()),
                 cmd.get("note").and_then(|v| v.as_u64()),
-                cmd.get("lengthSteps").and_then(|v| v.as_u64()),
+                cmd.get("lengthSteps").and_then(|v| v.as_f64()),
             ) {
                 let mut proj = state.project.lock().unwrap();
                 if let Some(b) = find_block_mut(&mut proj, &id) {
@@ -1413,7 +1432,7 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                             n.get("step").and_then(|v| v.as_u64()) == Some(step)
                                 && n.get("note").and_then(|v| v.as_u64()) == Some(note)
                         }) {
-                            n["lengthSteps"] = serde_json::json!(len.clamp(1, 512));
+                            n["lengthSteps"] = length_json(len.clamp(0.05, 512.0));
                         }
                     }
                 }
@@ -2882,6 +2901,30 @@ fn lane_str<F: FnMut(&mut Lane, String)>(
 
 /// Sucht einen Baustein anhand seiner ID in der projektweiten Bibliothek
 /// (`project.blocks`). IDs sind global eindeutig — die ID allein reicht.
+/// Notenlänge als JSON: GANZE Steps bleiben ganze Zahlen (so wie Projekte sie
+/// schon immer gespeichert haben und so, wie die Tests sie vergleichen), nur
+/// frei gezogene Längen werden zu Kommazahlen. Auf drei Stellen gerundet —
+/// feiner als ein Puls wird eine Länge ohnehin nie.
+pub(crate) fn length_json(len: f64) -> serde_json::Value {
+    let r = (len * 1000.0).round() / 1000.0;
+    if r.fract() == 0.0 {
+        serde_json::json!(r as u64)
+    } else {
+        serde_json::json!(r)
+    }
+}
+
+/// Setzt den Versatz innerhalb des Steps an einer Note (`StepMod.microTiming`);
+/// 0 entfernt das Feld wieder, statt eine überflüssige `0.0` zu speichern.
+pub(crate) fn set_micro_timing(note: &mut serde_json::Value, micro: f64) {
+    let r = (micro * 1000.0).round() / 1000.0;
+    if r > 0.0 {
+        note["microTiming"] = serde_json::json!(r);
+    } else if let Some(o) = note.as_object_mut() {
+        o.remove("microTiming");
+    }
+}
+
 fn find_block_mut<'a>(proj: &'a mut Project, block_id: &str) -> Option<&'a mut serde_json::Value> {
     proj.blocks
         .as_array_mut()?
@@ -2917,16 +2960,29 @@ fn refit_block_content(b: &mut serde_json::Value, old_spb: u32, new_spb: u32, to
     let scale = new_spb as f64 / old_spb as f64;
     let at = |step: u64| -> u64 { (step as f64 * scale).round() as u64 };
     let dur = |len: u64| -> u64 { ((len as f64 * scale).round() as u64).clamp(1, total as u64) };
+    let dur_len = |len: f64| -> f64 { (len * scale).clamp(0.05, total as f64) };
 
     // Melodie / Akkorde: Position + Länge mitziehen, hinten Abgeschnittenes weg.
     for key in ["notes", "chords"] {
         if let Some(arr) = b.get_mut(key).and_then(|v| v.as_array_mut()) {
             for ev in arr.iter_mut() {
                 if let Some(step) = ev.get("step").and_then(|v| v.as_u64()) {
-                    ev["step"] = serde_json::json!(at(step));
+                    // Eine Note mit Versatz im Step (`microTiming`) behält ihren
+                    // ZEITPUNKT: Step + Versatz wird skaliert und wieder zerlegt —
+                    // sonst rutschte sie bei jedem Auflösungswechsel gegen das
+                    // Raster. Ohne Versatz bleibt es beim Runden auf einen Step.
+                    let micro = ev.get("microTiming").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    if micro > 0.0 {
+                        let t = (step as f64 + micro) * scale;
+                        let new_step = (t + 1e-9).floor();
+                        ev["step"] = serde_json::json!(new_step as u64);
+                        set_micro_timing(ev, (t - new_step).max(0.0));
+                    } else {
+                        ev["step"] = serde_json::json!(at(step));
+                    }
                 }
-                if let Some(len) = ev.get("lengthSteps").and_then(|v| v.as_u64()) {
-                    ev["lengthSteps"] = serde_json::json!(dur(len));
+                if let Some(len) = ev.get("lengthSteps").and_then(|v| v.as_f64()) {
+                    ev["lengthSteps"] = length_json(dur_len(len));
                 }
             }
             arr.retain(|ev| ev.get("step").and_then(|v| v.as_u64()).unwrap_or(0) < total as u64);
@@ -3767,5 +3823,49 @@ mod tests {
             block["layers"][0]["values"],
             serde_json::json!([0.25, 0.25, 0.5, 0.5])
         );
+    }
+}
+
+#[cfg(test)]
+mod free_timing_tests {
+    use super::*;
+
+    #[test]
+    fn whole_lengths_stay_integers_and_free_ones_become_decimals() {
+        assert_eq!(length_json(2.0), 2);
+        assert_eq!(length_json(1.9999), 2);
+        assert_eq!(length_json(1.5), serde_json::json!(1.5));
+        assert_eq!(length_json(0.3333333), serde_json::json!(0.333));
+    }
+
+    #[test]
+    fn micro_timing_zero_removes_the_field() {
+        let mut n = serde_json::json!({ "step": 3, "note": 60 });
+        set_micro_timing(&mut n, 0.25);
+        assert_eq!(n["microTiming"], 0.25);
+        set_micro_timing(&mut n, 0.0);
+        assert!(n.get("microTiming").is_none());
+    }
+
+    #[test]
+    fn resolution_change_scales_fractional_note_lengths() {
+        let mut b = serde_json::json!({
+            "notes": [{ "step": 4, "lengthSteps": 1.5, "microTiming": 0.5, "note": 60, "velocity": 100 }],
+        });
+        // 16 → 32 Steps pro Takt: 4,5 alte Steps = 9,0 neue — dieselbe Zeit.
+        refit_block_content(&mut b, 16, 32, 32);
+        let n = &b["notes"][0];
+        assert_eq!(n["step"], 9);
+        assert!(n.get("microTiming").is_none());
+        assert_eq!(n["lengthSteps"], 3);
+
+        // 16 → 24: 4,5 → 6,75 — Step 6 plus Dreiviertel.
+        let mut b = serde_json::json!({
+            "notes": [{ "step": 4, "lengthSteps": 1, "microTiming": 0.5, "note": 60, "velocity": 100 }],
+        });
+        refit_block_content(&mut b, 16, 24, 24);
+        let n = &b["notes"][0];
+        assert_eq!(n["step"], 6);
+        assert_eq!(n["microTiming"], 0.75);
     }
 }

@@ -137,7 +137,7 @@ fn clock_loop(
     let mut taps: Vec<Instant> = Vec::new();
     // Live-Aufnahme (record.arm): pro (laneId, Note) der Step, an dem die
     // Note per Note-On begonnen hat — Note-Off berechnet daraus `lengthSteps`.
-    let mut recording_holds: HashMap<(String, u8), u32> = HashMap::new();
+    let mut recording_holds: HashMap<(String, u8), u64> = HashMap::new();
 
     loop {
         // Bei Projekt-Änderung neu kompilieren.
@@ -437,7 +437,7 @@ fn record_note_in(
     velocity: u8,
     on: bool,
     pulses: u64,
-    holds: &mut HashMap<(String, u8), u32>,
+    holds: &mut HashMap<(String, u8), u64>,
 ) -> Option<(String, bool)> {
     let block_id = proj
         .devices
@@ -465,7 +465,12 @@ fn record_note_in(
     let time_sig = block.get("timeSignature").and_then(|v| v.as_str()).unwrap_or("4/4");
     let total_steps = steps_per_bar * length_bars;
     let pulses_per_step = (pulses_per_bar(time_sig) / steps_per_bar).max(1) as u64;
-    let step = ((pulses / pulses_per_step) % total_steps as u64) as u32;
+    // Position im Baustein in Pulsen — NICHT auf den Step gerundet: die Note
+    // landet dort, wo sie gespielt wurde (Step + Versatz darin, `microTiming`),
+    // ihre Länge ist die tatsächlich gehaltene. Feiner als ein Puls (24 pro
+    // Viertel) löst die Uhr allerdings nicht auf.
+    let total_pulses = (pulses_per_step * total_steps as u64).max(1);
+    let now_pos = pulses % total_pulses;
 
     let key = (lane_id.to_string(), note);
     if !block["notes"].is_array() {
@@ -473,30 +478,97 @@ fn record_note_in(
     }
 
     if on {
-        holds.insert(key, step);
+        let step = (now_pos / pulses_per_step) as u32;
+        let micro = (now_pos % pulses_per_step) as f64 / pulses_per_step as f64;
+        holds.insert(key, now_pos);
         let arr = block["notes"].as_array_mut()?;
         let dup = arr.iter().any(|n| {
             n.get("step").and_then(|v| v.as_u64()) == Some(step as u64)
                 && n.get("note").and_then(|v| v.as_u64()) == Some(note as u64)
         });
         if !dup {
-            arr.push(serde_json::json!({
+            let mut n = serde_json::json!({
                 "step": step,
                 "lengthSteps": 1,
                 "note": note,
                 "velocity": velocity,
-            }));
+            });
+            crate::ws::set_micro_timing(&mut n, micro);
+            arr.push(n);
         }
         Some((block_id, !dup))
     } else {
-        let start_step = holds.remove(&key)?;
-        let len = (step as i64 - start_step as i64).rem_euclid(total_steps as i64).max(1) as u32;
+        let start_pos = holds.remove(&key)?;
+        let start_step = (start_pos / pulses_per_step) as u32;
+        let held = (now_pos + total_pulses - start_pos) % total_pulses;
+        let len = held.max(1) as f64 / pulses_per_step as f64;
         let arr = block["notes"].as_array_mut()?;
         let n = arr.iter_mut().find(|n| {
             n.get("step").and_then(|v| v.as_u64()) == Some(start_step as u64)
                 && n.get("note").and_then(|v| v.as_u64()) == Some(note as u64)
         })?;
-        n["lengthSteps"] = serde_json::json!(len);
+        n["lengthSteps"] = crate::ws::length_json(len);
         Some((block_id, true))
+    }
+}
+
+#[cfg(test)]
+mod record_tests {
+    use super::*;
+    use crate::model::{Device, Lane};
+
+    /// 4/4, 16 Steps pro Takt → 6 Pulse pro Step, 96 Pulse pro Baustein.
+    fn project() -> Project {
+        let mut proj = Project::new("t");
+        let mut dev = Device::new("D".into(), "D".into());
+        dev.id = "dev-1".into();
+        let mut lane = Lane::new("melody", "L".into());
+        lane.id = "lane-1".into();
+        lane.slots = serde_json::json!([{ "id": "s1", "blockId": "blk-1" }]);
+        dev.lanes.push(lane);
+        proj.devices.push(dev);
+        proj.blocks = serde_json::json!([{
+            "id": "blk-1", "type": "melody", "stepsPerBar": 16, "lengthBars": 1, "notes": [],
+        }]);
+        proj
+    }
+
+    #[test]
+    fn live_recording_keeps_the_position_between_steps_and_the_held_length() {
+        let mut proj = project();
+        let mut holds = HashMap::new();
+        // Pulse 14 = Step 2 + 2/6, gehalten bis Pulse 29 (15 Pulse = 2,5 Steps).
+        record_note_in(&mut proj, "lane-1", 60, 100, true, 14, &mut holds).unwrap();
+        record_note_in(&mut proj, "lane-1", 60, 100, false, 29, &mut holds).unwrap();
+        let n = &proj.blocks[0]["notes"][0];
+        assert_eq!(n["step"], 2);
+        let micro = n["microTiming"].as_f64().unwrap();
+        assert!((micro - 2.0 / 6.0).abs() < 0.001, "micro = {micro}");
+        let len = n["lengthSteps"].as_f64().unwrap();
+        assert!((len - 2.5).abs() < 0.001, "len = {len}");
+    }
+
+    #[test]
+    fn a_note_exactly_on_a_step_has_no_micro_timing_and_whole_length_stays_an_integer() {
+        let mut proj = project();
+        let mut holds = HashMap::new();
+        record_note_in(&mut proj, "lane-1", 64, 90, true, 12, &mut holds).unwrap();
+        record_note_in(&mut proj, "lane-1", 64, 90, false, 24, &mut holds).unwrap();
+        let n = &proj.blocks[0]["notes"][0];
+        assert_eq!(n["step"], 2);
+        assert!(n.get("microTiming").is_none());
+        assert_eq!(n["lengthSteps"], 2);
+    }
+
+    #[test]
+    fn a_note_held_across_the_loop_end_wraps_around() {
+        let mut proj = project();
+        let mut holds = HashMap::new();
+        // Beginnt bei Pulse 90 (Step 15), endet bei Pulse 102 = 6 im nächsten Durchlauf.
+        record_note_in(&mut proj, "lane-1", 67, 100, true, 90, &mut holds).unwrap();
+        record_note_in(&mut proj, "lane-1", 67, 100, false, 102, &mut holds).unwrap();
+        let n = &proj.blocks[0]["notes"][0];
+        assert_eq!(n["step"], 15);
+        assert_eq!(n["lengthSteps"], 2);
     }
 }

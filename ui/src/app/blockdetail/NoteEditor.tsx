@@ -68,7 +68,7 @@ export function NoteEditorPopup({
   const note = notes.find((n) => n.step === target.step && n.note === target.note);
   if (!note) return null;
 
-  const len = Math.max(1, note.lengthSteps ?? 1);
+  const len = Math.max(0.05, note.lengthSteps ?? 1);
   const vel = Math.min(127, Math.max(1, note.velocity ?? 100));
   // Am selben Step schon vergebene Tonhöhen: der Server lehnt ein Umziehen
   // dorthin ab (Akkord-Stack darf keine Dublette enthalten), also sperren wir
@@ -83,7 +83,7 @@ export function NoteEditorPopup({
   };
 
   const setLength = (next: number) => {
-    const clamped = Math.min(totalSteps, Math.max(1, next));
+    const clamped = Math.min(totalSteps, Math.max(0.05, next));
     if (clamped === len) return;
     send({ t: "melody.setNoteLength", blockId: block.id, step: target.step, note: note.note, lengthSteps: clamped });
   };
@@ -103,7 +103,7 @@ export function NoteEditorPopup({
 
   return (
     <Popup onClose={onClose} boxStyle={{ width: POPUP_W }}>
-      <div className="popup-title">Note · step {target.step + 1}</div>
+      <div className="popup-title">Note · step {fmtLen(target.step + (note.microTiming ?? 0) + 1)}</div>
 
       {/* ── Tonhöhe ── */}
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 14 }}>
@@ -129,7 +129,7 @@ export function NoteEditorPopup({
 
       {/* ── Länge ── */}
       <div style={{ fontSize: 13, color: "var(--pal-text-dim)", marginBottom: 6 }}>
-        Length — {len} {len === 1 ? "step" : "steps"} · {barLabel(len, stepsPerBar)}
+        Length — {fmtLen(len)} {len === 1 ? "step" : "steps"} · {barLabel(len, stepsPerBar)}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
         {presets.map((n) => (
@@ -144,7 +144,7 @@ export function NoteEditorPopup({
         ))}
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 16 }}>
-        <Button variant="alt" style={STEP_BTN} disabled={len <= 1} onClick={() => setLength(len - 1)}>
+        <Button variant="alt" style={STEP_BTN} disabled={len <= 0.05} onClick={() => setLength(len > 1 ? len - 1 : len / 2)}>
           −
         </Button>
         <Button variant="alt" style={STEP_BTN} disabled={len >= totalSteps} onClick={() => setLength(len + 1)}>
@@ -209,9 +209,16 @@ export function NoteEditorPopup({
 
 const STEP_BTN = { width: 62, height: 50, fontSize: 16 } as const;
 
+/** Frei gezogene Längen sind Kommazahlen — auf zwei Stellen gekürzt, ohne
+ *  überflüssige Nullen ("2" statt "2.00"). */
+function fmtLen(n: number): string {
+  return String(Math.round(n * 100) / 100);
+}
+
 /** Länge zusätzlich in Takten ausdrücken — „4 steps" sagt bei 16/Takt wenig,
  *  „¼ bar" dafür sofort etwas. */
 function barLabel(len: number, stepsPerBar: number): string {
+  if (!Number.isInteger(len)) return `${fmtLen(len / stepsPerBar)} bar`;
   if (len % stepsPerBar === 0) {
     const bars = len / stepsPerBar;
     return `${bars} ${bars === 1 ? "bar" : "bars"}`;

@@ -185,7 +185,7 @@ function BlockDetailBody({
   );
   // Wie `flow` eine reine Ansichtssache — sie liegt hier, weil ihr Schalter in
   // der Kopfzeile sitzt (s. MelodyToolbar) und das Raster darunter.
-  const [melodyLayout, setMelodyLayout] = useLocalPref<MelodyLayout>("blockdetail.melodyLayout", "stack");
+  const [melodyLayout, setMelodyLayout] = useLocalPref<MelodyLayout>("blockdetail.melodyLayout", "grid");
   // „Play in" ist bewusst KEINE gemerkte Vorliebe: der Modus armiert den
   // MIDI-Eingang und blendet die Klaviatur ein — beim nächsten Öffnen eines
   // Bausteins stünde man sonst ungefragt in einem Aufnahme-Modus.

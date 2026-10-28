@@ -174,12 +174,21 @@ export class RuntimeFeed {
    *  Live-Position, an die man schreiben könnte. Läuft er in mehreren Lanes,
    *  zählt (wie bei `paintBlock`) die erste gefundene. */
   currentStep(blockId: string): number | null {
+    const at = this.currentPosition(blockId);
+    return at === null ? null : Math.floor(at);
+  }
+
+  /** Wie `currentStep`, aber NICHT auf den Step gerundet: der Nachkommaanteil
+   *  sagt, wie weit der Playhead schon im Step ist (0 ≤ x < steps). Das
+   *  Live-Einspielen schreibt damit die Note dorthin, wo sie gespielt wurde,
+   *  statt sie auf den Step-Anfang zu ziehen. */
+  currentPosition(blockId: string): number | null {
     const now = performance.now();
     for (const st of this.lanes.values()) {
       if (st.blockId !== blockId || st.running === false) continue;
       const pos = Math.min(st.len, st.pos + ((now - st.at) / 1000) * this.pulsesPerSec);
-      const frac = pos / st.len;
-      return Math.min(st.steps - 1, Math.floor(frac * st.steps));
+      const at = (pos / st.len) * st.steps;
+      return Math.min(st.steps - 0.001, Math.max(0, at));
     }
     return null;
   }
