@@ -11,6 +11,7 @@ use crate::clock::ClockCommand;
 use crate::display;
 use crate::github;
 use crate::midi;
+use crate::midifile;
 use crate::model::{ClockSource, Device, Lane, Project};
 use crate::net_ap;
 use crate::state::AppState;
@@ -1507,6 +1508,28 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
         "block.stopPreview" => {
             state.clock.send(ClockCommand::StopBlockPreview);
         }
+        // MIDI-Dateien: Bibliothek auflisten (`midi.files`), eine Datei mit allen
+        // Noten zum Auswählen öffnen (`midi.file`).
+        "midi.list" => {
+            let _ = state.events.send(serde_json::json!({
+                "t": "midi.files",
+                "files": midifile::list(&state.data_dir),
+            }));
+        }
+        "midi.open" => {
+            if let Some(file) = str_field(&cmd, "file") {
+                let evt = match midifile::open(&state.data_dir, &file) {
+                    Ok(p) => midifile::to_event(&file, &p),
+                    Err(message) => serde_json::json!({ "t": "midi.error", "file": file, "message": message }),
+                };
+                let _ = state.events.send(evt);
+            }
+        }
+        // Ausschnitt einer MIDI-Datei als Melodie-Baustein. Ohne `blockId` wird
+        // ein neuer Baustein im nächsten freien Melodie-Feld angelegt, mit
+        // `blockId` bekommt ein vorhandener (Probe-)Baustein den neuen Inhalt.
+        // `listen` startet danach gleich die Vorschau (wie "▶ Play" im Editor).
+        "midi.toBlock" => handle_midi_to_block(state, &cmd),
         // Baustein-Detail: Step einer Beat-Line an/aus (velocity 0/100).
         "beat.toggleStep" => {
             if let (Some(id), Some(line_id), Some(step)) = (
@@ -2741,6 +2764,93 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
             tracing::debug!("Command (noch) nicht behandelt: {other}");
         }
     }
+}
+
+/// `midi.toBlock` — siehe Kommentar am Command.
+fn handle_midi_to_block(state: &AppState, cmd: &serde_json::Value) {
+    let fail = |message: String| {
+        let _ = state.events.send(serde_json::json!({ "t": "midi.error", "message": message }));
+    };
+    let Some(file) = str_field(cmd, "file") else { return };
+    let tracks: Vec<usize> = cmd
+        .get("tracks")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_u64().map(|n| n as usize)).collect())
+        .unwrap_or_default();
+    let (Some(start), Some(end)) = (
+        cmd.get("startBeat").and_then(|v| v.as_f64()),
+        cmd.get("endBeat").and_then(|v| v.as_f64()),
+    ) else {
+        return fail("Select a range first.".into());
+    };
+    let parsed = match midifile::open(&state.data_dir, &file) {
+        Ok(p) => p,
+        Err(m) => return fail(m),
+    };
+    let sel = match midifile::select_notes(&parsed, &tracks, start, end) {
+        Ok(s) => s,
+        Err(m) => return fail(m),
+    };
+    let note_count = sel.notes.len();
+    let length_bars = sel.length_bars;
+    let name: String = str_field(cmd, "name").unwrap_or_default().chars().take(6).collect();
+
+    let block_id = {
+        let mut proj = state.project.lock().unwrap();
+        let existing = str_field(cmd, "blockId");
+        let apply = |b: &mut serde_json::Value| {
+            b["notes"] = serde_json::Value::Array(sel.notes);
+            b["lengthBars"] = serde_json::json!(sel.length_bars);
+            b["stepsPerBar"] = serde_json::json!(sel.steps_per_bar);
+            b["timeSignature"] = serde_json::json!(sel.time_signature);
+            if !name.is_empty() {
+                b["name"] = serde_json::json!(name);
+            }
+        };
+        match existing {
+            Some(id) => match find_block_mut(&mut proj, &id) {
+                Some(b) if b["type"] == "melody" => {
+                    apply(b);
+                    id
+                }
+                _ => return fail("That block no longer exists.".into()),
+            },
+            None => {
+                let used: std::collections::HashSet<(u64, u64)> = proj
+                    .blocks
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter(|b| b["type"] == "melody")
+                            .filter_map(|b| Some((b["slot"]["row"].as_u64()?, b["slot"]["col"].as_u64()?)))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let Some((row, col)) = (1..=9u64).flat_map(|r| (1..=9u64).map(move |c| (r, c))).find(|p| !used.contains(p)) else {
+                    return fail("The melody library is full (9×9).".into());
+                };
+                let mut b = blank_melody_block();
+                b["slot"] = serde_json::json!({ "type": "melody", "row": row, "col": col });
+                apply(&mut b);
+                let id = b["id"].as_str().unwrap_or_default().to_string();
+                if let Some(arr) = proj.blocks.as_array_mut() {
+                    arr.push(b);
+                }
+                id
+            }
+        }
+    };
+    broadcast_snapshot(state);
+    if cmd.get("listen").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let looping = cmd.get("loop").and_then(|v| v.as_bool()).unwrap_or(false);
+        state.clock.send(ClockCommand::PlayBlockPreview(block_id.clone(), looping));
+    }
+    let _ = state.events.send(serde_json::json!({
+        "t": "midi.blockReady",
+        "blockId": block_id,
+        "noteCount": note_count,
+        "lengthBars": length_bars,
+    }));
 }
 
 fn str_field(cmd: &serde_json::Value, key: &str) -> Option<String> {

@@ -11,6 +11,7 @@ import { useState, type CSSProperties } from "react";
 import type { Block, BlockType } from "../state";
 import { useSend, useStoreValue } from "./store";
 import { Button } from "./widgets/Button";
+import { MidiImport } from "./MidiImport";
 import { TRANSPORT_H } from "./layout";
 
 const TYPES: { type: BlockType; label: string }[] = [
@@ -37,6 +38,7 @@ export function BlockLibrary({ initialType, initialMovingBlockId, onOpenBlock }:
   const blocks = useStoreValue((s) => (s.project?.blocks as Block[] | undefined) ?? EMPTY_BLOCKS);
   const [activeType, setActiveType] = useState<BlockType>(initialType ?? "melody");
   const [movingBlockId, setMovingBlockId] = useState<string | undefined>(initialMovingBlockId);
+  const [importing, setImporting] = useState(false);
 
   return (
     // A plain top-level page — same shape as Dashboard / Sequencer: full-bleed
@@ -67,6 +69,16 @@ export function BlockLibrary({ initialType, initialMovingBlockId, onOpenBlock }:
           </Button>
         ))}
       </div>
+
+      {activeType === "melody" && (
+        <Button
+          style={{ height: 34, padding: "0 14px", fontSize: 14, marginBottom: 14 }}
+          onClick={() => setImporting(true)}
+        >
+          Import from MIDI file…
+        </Button>
+      )}
+      {importing && <MidiImport onClose={() => setImporting(false)} onOpenBlock={onOpenBlock} />}
 
       <BlockGrid
         blocks={blocks}

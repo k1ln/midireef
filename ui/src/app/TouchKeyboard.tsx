@@ -39,10 +39,14 @@ export function TouchKeyboardProvider({ children }: { children: ReactNode }) {
   // Großbuchstaben hintereinander (z.B. "ghp_", Präfixe), ein Einmal-Shift
   // würde nach jedem Zeichen wieder zurückfallen.
   const [caps, setCaps] = useState(false);
+  // Eingeklappt: nur eine schmale Leiste mit Text + OK/Abbrechen, der Rest des
+  // Bildschirms bleibt sichtbar und bedienbar. Die Eingabe läuft weiter.
+  const [collapsed, setCollapsed] = useState(false);
 
   const open: OpenFn = (current, maxLen, done) => {
     setSession({ value: current, maxLen, primed: current.length > 0, done });
     setCaps(false);
+    setCollapsed(false);
   };
 
   const close = (result: string | null) => {
@@ -74,7 +78,52 @@ export function TouchKeyboardProvider({ children }: { children: ReactNode }) {
   return (
     <Ctx.Provider value={open}>
       {children}
-      {session && (
+      {session && collapsed && (
+        <div
+          style={{
+            position: "fixed",
+            left: "50%",
+            bottom: 8,
+            transform: "translateX(-50%)",
+            width: "min(720px, calc(100vw - 16px))",
+            boxSizing: "border-box",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: 8,
+            borderRadius: 14,
+            background: "rgba(17, 17, 17, 0.97)",
+            border: "1.5px solid rgba(255, 255, 255, 0.3)",
+            zIndex: 100,
+          }}
+        >
+          <Button style={{ width: 52, height: 46, fontSize: 20 }} onClick={() => setCollapsed(false)}>
+            ▲
+          </Button>
+          <div
+            onClick={() => setCollapsed(false)}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              fontSize: 22,
+              fontWeight: 700,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              cursor: "pointer",
+            }}
+          >
+            {session.value || " "}
+          </div>
+          <Button variant="danger" style={{ height: 46, padding: "0 16px", fontSize: 16 }} onClick={() => close(null)}>
+            Cancel
+          </Button>
+          <Button variant="active" style={{ height: 46, padding: "0 20px", fontSize: 16 }} onClick={() => close(session.value.trim())}>
+            OK
+          </Button>
+        </div>
+      )}
+      {session && !collapsed && (
         <div
           style={{
             position: "fixed",
@@ -89,7 +138,14 @@ export function TouchKeyboardProvider({ children }: { children: ReactNode }) {
             zIndex: 100,
           }}
         >
-          <div style={{ textAlign: "center", padding: "0 16px 12px" }}>
+          <div style={{ textAlign: "center", padding: "0 16px 12px", position: "relative" }}>
+            <Button
+              style={{ position: "absolute", right: 16, top: 0, width: 64, height: 44, fontSize: 20 }}
+              onClick={() => setCollapsed(true)}
+              aria-label="Collapse keyboard"
+            >
+              ▼
+            </Button>
             <span
               onClick={toggleSelect}
               style={{

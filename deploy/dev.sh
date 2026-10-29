@@ -76,6 +76,7 @@ fi
 # bleibt gültig).
 pi_rsync -a -q deploy/bin/midireef-net "$PI:$PI_DIR/bin/midireef-net"
 pi_rsync -a -q deploy/bin/midireef-display "$PI:$PI_DIR/bin/midireef-display"
+pi_rsync -a --delete -q server/midi-library/ "$PI:$PI_DIR/midi-library/"
 pi_ssh "chmod +x '$PI_DIR/bin/midireef-net' '$PI_DIR/bin/midireef-display'"
 
 log "Dienst neu starten"

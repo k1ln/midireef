@@ -31,12 +31,15 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProp
 import type { MelodyNote } from "../../state";
 import type { useSend } from "../store";
 import { noteName } from "../NotePicker";
+import { useLocalPref } from "../useLocalPref";
 import { Button } from "../widgets/Button";
 import { RollKey, ROLL_LOW_NOTE, ROLL_HIGH_NOTE, HOLD_MS, isBlackKey } from "./StepGrid";
 
 /** Breite der Klaviatur links. Schmaler als früher (78): die Zeit ist das, was
  *  hier Platz braucht. Breit genug für einen Finger bleibt sie trotzdem. */
 const KEY_W = 56;
+/** Eingeklappt: nur ein schmaler Streifen (antippbar zum Wiederaufklappen). */
+const KEY_W_SHUT = 16;
 /** Höhe des Lineals oben. */
 const RULER_H = 28;
 
@@ -119,17 +122,22 @@ export function RollCanvas(props: RollCanvasProps) {
   // 1 = der ganze Baustein passt in die Breite.
   const [hZoom, setHZoom] = useState(1);
   const [rowH, setRowH] = useState(ROW_DEFAULT);
+  // Klaviatur ein-/ausklappbar, jederzeit — gemerkt je Gerät. Eingeklappt gewinnt
+  // die Zeit Platz; die Probetöne der Tasten entfallen dann.
+  const [keysPref, setKeysPref] = useLocalPref<string>("melody.roll.keys", "open");
+  const keysOpen = keysPref !== "shut";
+  const keyW = keysOpen ? KEY_W : KEY_W_SHUT;
   const lock = useRef<GestureLock>({ pinch: false });
 
   const total = Math.max(1, totalSteps);
-  const fitPx = vw > 0 ? Math.max(1.5, (vw - KEY_W - 8) / total) : 16;
+  const fitPx = vw > 0 ? Math.max(1.5, (vw - keyW - 8) / total) : 16;
   const maxZoom = Math.max(1, PX_MAX / fitPx);
   const px = fitPx * clamp(hZoom, 1, maxZoom);
   const rollW = px * total;
 
   // Aktueller Stand für Handler, die nicht bei jedem Render neu hängen sollen.
-  const geo = useRef({ px, rowH, fitPx, maxZoom });
-  geo.current = { px, rowH, fitPx, maxZoom };
+  const geo = useRef({ px, rowH, fitPx, maxZoom, keyW });
+  geo.current = { px, rowH, fitPx, maxZoom, keyW };
 
   // Breite des Ausschnitts → Einpass-Zoom.
   useEffect(() => {
@@ -148,7 +156,7 @@ export function RollCanvas(props: RollCanvasProps) {
     const el = scroller.current;
     const g = geo.current;
     return {
-      tx: ((el?.scrollLeft ?? 0) + vx - KEY_W) / g.px,
+      tx: ((el?.scrollLeft ?? 0) + vx - g.keyW) / g.px,
       ty: ((el?.scrollTop ?? 0) + vy - RULER_H) / g.rowH,
       vx,
       vy,
@@ -164,7 +172,7 @@ export function RollCanvas(props: RollCanvasProps) {
   /** Bildmitte als Fixpunkt, wenn kein Finger den Zoom lenkt (Tasten). */
   const centerAnchor = useCallback(() => {
     const el = scroller.current;
-    return anchorAt(el ? (el.clientWidth + KEY_W) / 2 : 0, el ? (el.clientHeight + RULER_H) / 2 : 0);
+    return anchorAt(el ? (el.clientWidth + geo.current.keyW) / 2 : 0, el ? (el.clientHeight + RULER_H) / 2 : 0);
   }, [anchorAt]);
 
   // Nach dem Zoom den Fixpunkt zurück unter den Finger scrollen — vor dem
@@ -174,7 +182,7 @@ export function RollCanvas(props: RollCanvasProps) {
     const el = scroller.current;
     if (!a || !el) return;
     anchorRef.current = null;
-    el.scrollLeft = a.tx * px + KEY_W - a.vx;
+    el.scrollLeft = a.tx * px + keyW - a.vx;
     el.scrollTop = a.ty * rowH + RULER_H - a.vy;
   }, [px, rowH]);
 
@@ -336,6 +344,14 @@ export function RollCanvas(props: RollCanvasProps) {
       {/* Zoom links (der Grund dieser Rolle), Oktavsprünge rechts. */}
       <div style={{ display: "flex", gap: 6, marginBottom: 6, flexShrink: 0, flexWrap: "wrap", alignItems: "center" }}>
         <Button
+          variant={keysOpen ? "active" : "alt"}
+          style={{ ...ZOOM_BTN, width: 72 }}
+          title={keysOpen ? "Hide the piano keys" : "Show the piano keys"}
+          onClick={() => setKeysPref(keysOpen ? "shut" : "open")}
+        >
+          {keysOpen ? "◀ Keys" : "▶ Keys"}
+        </Button>
+        <Button
           variant="alt"
           style={ZOOM_BTN}
           title="Zoom out in time"
@@ -404,17 +420,17 @@ export function RollCanvas(props: RollCanvasProps) {
           overscrollBehavior: "contain",
         }}
       >
-        <div style={{ position: "relative", width: KEY_W + rollW, height: RULER_H + ROW_COUNT * rowH }}>
+        <div style={{ position: "relative", width: keyW + rollW, height: RULER_H + ROW_COUNT * rowH }}>
           {/* Lineal — klebt oben; im Step-Modus des Einspielens antippbar. */}
           <div
             className="roll-ruler"
-            style={{ position: "sticky", top: 0, zIndex: 4, height: RULER_H, width: KEY_W + rollW }}
+            style={{ position: "sticky", top: 0, zIndex: 4, height: RULER_H, width: keyW + rollW }}
           >
-            <div className="roll-ruler-corner" style={{ width: KEY_W, height: RULER_H }} />
+            <div className="roll-ruler-corner" style={{ width: keyW, height: RULER_H }} />
             <div
               style={{
                 position: "absolute",
-                left: KEY_W,
+                left: keyW,
                 top: 0,
                 width: rollW,
                 height: RULER_H,
@@ -450,20 +466,29 @@ export function RollCanvas(props: RollCanvasProps) {
                 style={{
                   display: "flex",
                   height: rowH,
-                  width: KEY_W + rollW,
+                  width: keyW + rollW,
                   background: isC ? "var(--pal-panel-deep)" : isBlackKey(note) ? "var(--pal-roll-black)" : "var(--pal-roll-white)",
                   boxShadow: isC ? "inset 0 -1px 0 var(--pal-step-border)" : undefined,
                 }}
               >
-                <RollKey
-                  note={note}
-                  label={noteName(note)}
-                  height={rowH}
-                  width={KEY_W}
-                  side="left"
-                  onPress={() => send({ t: "block.previewNote", blockId, note, on: true })}
-                  onRelease={() => send({ t: "block.previewNote", blockId, note, on: false })}
-                />
+                {keysOpen ? (
+                  <RollKey
+                    note={note}
+                    label={noteName(note)}
+                    height={rowH}
+                    width={keyW}
+                    side="left"
+                    onPress={() => send({ t: "block.previewNote", blockId, note, on: true })}
+                    onRelease={() => send({ t: "block.previewNote", blockId, note, on: false })}
+                  />
+                ) : (
+                  // Eingeklappt: nur die Tastenfarbe als Streifen; Tippen klappt auf.
+                  <div
+                    className={`roll-key left ${isBlackKey(note) ? "black" : "white"}`}
+                    style={{ width: keyW, height: rowH, padding: 0, cursor: "pointer" }}
+                    onClick={() => setKeysPref("open")}
+                  />
+                )}
               </div>
             );
           })}
@@ -472,7 +497,7 @@ export function RollCanvas(props: RollCanvasProps) {
           <div
             ref={surfaceRef}
             className="roll-surface"
-            style={{ position: "absolute", left: KEY_W, top: RULER_H, width: rollW, height: ROW_COUNT * rowH, touchAction: "pan-x pan-y" }}
+            style={{ position: "absolute", left: keyW, top: RULER_H, width: rollW, height: ROW_COUNT * rowH, touchAction: "pan-x pan-y" }}
             onPointerDown={(e) => {
               if (e.target !== e.currentTarget) return;
               if (!e.isPrimary || lock.current.pinch) {

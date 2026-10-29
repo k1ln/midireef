@@ -977,6 +977,7 @@ dependencies = [
  "futures-util",
  "hound",
  "midir",
+ "midly",
  "reqwest",
  "serde",
  "serde_json",
@@ -986,6 +987,12 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
 ]
+
+[[package]]
+name = "midly"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "207d755f4cb882d20c4da58d707ca9130a0c9bc5061f657a4f299b8e36362b7a"
 
 [[package]]
 name = "mime"

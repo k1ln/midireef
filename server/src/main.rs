@@ -11,6 +11,7 @@ mod engine;
 mod github;
 mod logbuf;
 mod midi;
+mod midifile;
 mod model;
 mod net_ap;
 mod scale;

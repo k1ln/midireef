@@ -93,6 +93,7 @@ echo "$(git -C "$SRC_DIR" rev-parse --short HEAD 2>/dev/null || echo local)-$(da
 # ── 5. Install artifacts ────────────────────────────────────────────────────
 log "Installing binaries + UI"
 rsync -a --delete "$SRC_DIR/ui/dist/" "$INSTALL_DIR/ui/"
+rsync -a --delete "$SRC_DIR/server/midi-library/" "$INSTALL_DIR/midi-library/"
 install -m755 "$SRC_DIR/deploy/bin/midireef-net" "$INSTALL_DIR/bin/midireef-net"
 install -m755 "$SRC_DIR/deploy/bin/midireef-display" "$INSTALL_DIR/bin/midireef-display"
 install -m755 "$SRC_DIR/deploy/kiosk.sh" "$INSTALL_DIR/bin/kiosk.sh"
