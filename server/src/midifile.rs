@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 const MAX_NOTES: usize = 4096;
 /// Steps pro Viertelnote im erzeugten Baustein (16 Steps pro 4/4-Takt).
 const STEPS_PER_BEAT: f64 = 4.0;
-const MAX_LENGTH_BARS: u32 = 16;
+const MAX_LENGTH_BARS: u32 = 1024;
 
 pub fn library_roots(data_dir: &Path) -> Vec<PathBuf> {
     let lib = std::env::var("MIDIREEF_MIDI_LIBRARY")
@@ -259,6 +259,8 @@ pub struct Selection {
     pub length_bars: u32,
     pub steps_per_bar: u32,
     pub time_signature: &'static str,
+    /// Mehr Noten als `MAX_NOTES` im Ausschnitt — der Rest wurde weggelassen.
+    pub truncated: bool,
 }
 
 /// Baut aus `[start_beat, end_beat)` der gewählten Spuren die Baustein-Noten.
@@ -285,6 +287,7 @@ pub fn select_notes(p: &ParsedMidi, track_indices: &[usize], start_beat: f64, en
 
     let mut notes: Vec<Value> = Vec::new();
     let mut seen = HashSet::new();
+    let mut truncated = false;
     'tracks: for tr in p.tracks.iter().filter(|t| track_indices.contains(&t.index)) {
         for n in &tr.notes {
             if n.start < start_beat - 1e-6 || n.start >= end_beat {
@@ -308,16 +311,17 @@ pub fn select_notes(p: &ParsedMidi, track_indices: &[usize], start_beat: f64, en
                 "velocity": n.vel.clamp(1, 127),
             });
             crate::ws::set_micro_timing(&mut v, micro);
-            notes.push(v);
             if notes.len() >= MAX_NOTES {
+                truncated = true;
                 break 'tracks;
             }
+            notes.push(v);
         }
     }
     if notes.is_empty() {
         return Err("No notes in this selection.".into());
     }
-    Ok(Selection { notes, length_bars, steps_per_bar, time_signature })
+    Ok(Selection { notes, length_bars, steps_per_bar, time_signature, truncated })
 }
 
 #[cfg(test)]

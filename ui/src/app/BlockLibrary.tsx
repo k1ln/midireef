@@ -12,6 +12,7 @@ import type { Block, BlockType } from "../state";
 import { useSend, useStoreValue } from "./store";
 import { Button } from "./widgets/Button";
 import { MidiImport } from "./MidiImport";
+import { Td3Melody, quickTd3 } from "./Td3Melody";
 import { TRANSPORT_H } from "./layout";
 
 const TYPES: { type: BlockType; label: string }[] = [
@@ -39,6 +40,7 @@ export function BlockLibrary({ initialType, initialMovingBlockId, onOpenBlock }:
   const [activeType, setActiveType] = useState<BlockType>(initialType ?? "melody");
   const [movingBlockId, setMovingBlockId] = useState<string | undefined>(initialMovingBlockId);
   const [importing, setImporting] = useState(false);
+  const [td3, setTd3] = useState(false);
 
   return (
     // A plain top-level page — same shape as Dashboard / Sequencer: full-bleed
@@ -71,14 +73,24 @@ export function BlockLibrary({ initialType, initialMovingBlockId, onOpenBlock }:
       </div>
 
       {activeType === "melody" && (
-        <Button
-          style={{ height: 34, padding: "0 14px", fontSize: 14, marginBottom: 14 }}
-          onClick={() => setImporting(true)}
-        >
-          Import from MIDI file…
-        </Button>
+        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+          <Button style={{ height: 34, padding: "0 14px", fontSize: 14 }} onClick={() => setImporting(true)}>
+            Import from MIDI file…
+          </Button>
+          <Button style={{ height: 34, padding: "0 14px", fontSize: 14 }} onClick={() => setTd3(true)}>
+            TD-3 melody…
+          </Button>
+          <Button
+            style={{ height: 34, padding: "0 14px", fontSize: 14 }}
+            title="Add a new TD-3 pattern right away, with the settings you used last"
+            onClick={() => quickTd3(send)}
+          >
+            ⚡ Quick TD-3
+          </Button>
+        </div>
       )}
       {importing && <MidiImport onClose={() => setImporting(false)} onOpenBlock={onOpenBlock} />}
+      {td3 && <Td3Melody onClose={() => setTd3(false)} onOpenBlock={onOpenBlock} />}
 
       <BlockGrid
         blocks={blocks}

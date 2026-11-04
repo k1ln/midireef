@@ -43,7 +43,7 @@ interface MidiFileInfo {
   tracks: MidiTrackInfo[];
 }
 
-const LENGTHS = [1, 2, 4, 8, 16];
+const LENGTHS = [1, 2, 4, 8, 16, 32, 64];
 const ROLL_H = 150;
 const MAP_H = 30;
 const MIN_PPB = 2;
@@ -70,7 +70,7 @@ export function MidiImport({ onClose, onOpenBlock }: MidiImportProps) {
   const [loop, setLoop] = useState(true);
   const [listening, setListening] = useState(false);
   const [draftId, setDraftId] = useState<string | null>(null);
-  const [result, setResult] = useState<{ noteCount: number; lengthBars: number } | null>(null);
+  const [result, setResult] = useState<{ noteCount: number; lengthBars: number; truncated: boolean } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Refs für die Antwort-Handler / Timer, die sonst veraltete Werte sähen.
@@ -101,7 +101,7 @@ export function MidiImport({ onClose, onOpenBlock }: MidiImportProps) {
       } else if (evt.t === "midi.blockReady") {
         draftRef.current = evt.blockId;
         setDraftId(evt.blockId);
-        setResult({ noteCount: evt.noteCount, lengthBars: evt.lengthBars });
+        setResult({ noteCount: evt.noteCount, lengthBars: evt.lengthBars, truncated: !!evt.truncated });
         setError(null);
         inflight.current = false;
         const q = queued.current;
@@ -345,7 +345,7 @@ export function MidiImport({ onClose, onOpenBlock }: MidiImportProps) {
                 {trackSel.size === 0
                   ? "Select at least one track."
                   : result && draftId
-                    ? `${result.noteCount} notes · ${result.lengthBars} bar${result.lengthBars === 1 ? "" : "s"} as a melody block`
+                    ? `${result.noteCount} notes · ${result.lengthBars} bar${result.lengthBars === 1 ? "" : "s"} as a melody block${result.truncated ? " (too many notes — only the first part was kept, pick fewer bars)" : ""}`
                     : "Listen to try it as a melody block."}
               </span>
               <Button style={{ height: 48, padding: "0 16px", fontSize: 16 }} disabled={trackSel.size === 0} onClick={() => keep(false)}>

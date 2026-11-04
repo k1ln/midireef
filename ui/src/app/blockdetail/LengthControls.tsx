@@ -14,8 +14,8 @@ import { useSend } from "../store";
 import { Button } from "../widgets/Button";
 import { Popup } from "../widgets/Popup";
 
-/** Takte pro Baustein — der Server klemmt ebenfalls auf 1…16. */
-const BAR_OPTIONS = [1, 2, 3, 4, 6, 8, 12, 16];
+/** Takte pro Baustein — der Server klemmt ebenfalls auf 1…1024. */
+const BAR_OPTIONS = [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024];
 
 /** Substeps pro Takt. Krumme Werte (6, 12, 24) für Triolen/6-8-Feeling; nach
  *  oben bei 64 Schluss, darüber rundet die Engine die Pulses pro Step nur noch

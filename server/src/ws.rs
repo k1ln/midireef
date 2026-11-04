@@ -12,6 +12,7 @@ use crate::display;
 use crate::github;
 use crate::midi;
 use crate::midifile;
+use crate::td3;
 use crate::model::{ClockSource, Device, Lane, Project};
 use crate::net_ap;
 use crate::state::AppState;
@@ -1530,6 +1531,8 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
         // `blockId` bekommt ein vorhandener (Probe-)Baustein den neuen Inhalt.
         // `listen` startet danach gleich die Vorschau (wie "▶ Play" im Editor).
         "midi.toBlock" => handle_midi_to_block(state, &cmd),
+        // Acid-Pattern für den Behringer TD-3 als Melodie-Baustein (Entwurf).
+        "td3.toBlock" => handle_td3_to_block(state, &cmd),
         // Baustein-Detail: Step einer Beat-Line an/aus (velocity 0/100).
         "beat.toggleStep" => {
             if let (Some(id), Some(line_id), Some(step)) = (
@@ -2793,52 +2796,22 @@ fn handle_midi_to_block(state: &AppState, cmd: &serde_json::Value) {
     };
     let note_count = sel.notes.len();
     let length_bars = sel.length_bars;
+    let truncated = sel.truncated;
     let name: String = str_field(cmd, "name").unwrap_or_default().chars().take(6).collect();
 
-    let block_id = {
-        let mut proj = state.project.lock().unwrap();
-        let existing = str_field(cmd, "blockId");
-        let apply = |b: &mut serde_json::Value| {
-            b["notes"] = serde_json::Value::Array(sel.notes);
-            b["lengthBars"] = serde_json::json!(sel.length_bars);
-            b["stepsPerBar"] = serde_json::json!(sel.steps_per_bar);
-            b["timeSignature"] = serde_json::json!(sel.time_signature);
-            if !name.is_empty() {
-                b["name"] = serde_json::json!(name);
-            }
-        };
-        match existing {
-            Some(id) => match find_block_mut(&mut proj, &id) {
-                Some(b) if b["type"] == "melody" => {
-                    apply(b);
-                    id
-                }
-                _ => return fail("That block no longer exists.".into()),
-            },
-            None => {
-                let used: std::collections::HashSet<(u64, u64)> = proj
-                    .blocks
-                    .as_array()
-                    .map(|a| {
-                        a.iter()
-                            .filter(|b| b["type"] == "melody")
-                            .filter_map(|b| Some((b["slot"]["row"].as_u64()?, b["slot"]["col"].as_u64()?)))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let Some((row, col)) = (1..=9u64).flat_map(|r| (1..=9u64).map(move |c| (r, c))).find(|p| !used.contains(p)) else {
-                    return fail("The melody library is full (9×9).".into());
-                };
-                let mut b = blank_melody_block();
-                b["slot"] = serde_json::json!({ "type": "melody", "row": row, "col": col });
-                apply(&mut b);
-                let id = b["id"].as_str().unwrap_or_default().to_string();
-                if let Some(arr) = proj.blocks.as_array_mut() {
-                    arr.push(b);
-                }
-                id
-            }
-        }
+    let block_id = match upsert_melody_draft(
+        state,
+        str_field(cmd, "blockId"),
+        MelodyDraft {
+            notes: sel.notes,
+            length_bars: sel.length_bars,
+            steps_per_bar: sel.steps_per_bar,
+            time_signature: sel.time_signature,
+            name,
+        },
+    ) {
+        Ok(id) => id,
+        Err(m) => return fail(m),
     };
     broadcast_snapshot(state);
     if cmd.get("listen").and_then(|v| v.as_bool()).unwrap_or(false) {
@@ -2850,6 +2823,120 @@ fn handle_midi_to_block(state: &AppState, cmd: &serde_json::Value) {
         "blockId": block_id,
         "noteCount": note_count,
         "lengthBars": length_bars,
+        "truncated": truncated,
+    }));
+}
+
+/// Inhalt eines (Probe-)Melodie-Bausteins, den `upsert_melody_draft` setzt.
+struct MelodyDraft {
+    notes: Vec<serde_json::Value>,
+    length_bars: u32,
+    steps_per_bar: u32,
+    time_signature: &'static str,
+    /// Leer = Namen unverändert lassen.
+    name: String,
+}
+
+/// Legt einen Melodie-Baustein im nächsten freien Melodie-Feld an (ohne
+/// `existing`) bzw. überschreibt den Inhalt des vorhandenen. Gemeinsamer Kern
+/// der Import-/Generator-Dialoge (`midi.toBlock`, `td3.toBlock`), die beide
+/// erst einen Entwurf zum Probehören anlegen und ihn bei Änderungen nachziehen.
+fn upsert_melody_draft(state: &AppState, existing: Option<String>, draft: MelodyDraft) -> Result<String, String> {
+    let mut proj = state.project.lock().unwrap();
+    let apply = |b: &mut serde_json::Value| {
+        b["notes"] = serde_json::Value::Array(draft.notes.clone());
+        b["lengthBars"] = serde_json::json!(draft.length_bars);
+        b["stepsPerBar"] = serde_json::json!(draft.steps_per_bar);
+        b["timeSignature"] = serde_json::json!(draft.time_signature);
+        if !draft.name.is_empty() {
+            b["name"] = serde_json::json!(draft.name);
+        }
+    };
+    match existing {
+        Some(id) => match find_block_mut(&mut proj, &id) {
+            Some(b) if b["type"] == "melody" => {
+                apply(b);
+                Ok(id)
+            }
+            _ => Err("That block no longer exists.".into()),
+        },
+        None => {
+            let used: std::collections::HashSet<(u64, u64)> = proj
+                .blocks
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter(|b| b["type"] == "melody")
+                        .filter_map(|b| Some((b["slot"]["row"].as_u64()?, b["slot"]["col"].as_u64()?)))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let Some((row, col)) = (1..=9u64).flat_map(|r| (1..=9u64).map(move |c| (r, c))).find(|p| !used.contains(p)) else {
+                return Err("The melody library is full (9×9).".into());
+            };
+            let mut b = blank_melody_block();
+            b["slot"] = serde_json::json!({ "type": "melody", "row": row, "col": col });
+            apply(&mut b);
+            let id = b["id"].as_str().unwrap_or_default().to_string();
+            if let Some(arr) = proj.blocks.as_array_mut() {
+                arr.push(b);
+            }
+            Ok(id)
+        }
+    }
+}
+
+/// `td3.toBlock` — Acid-Pattern für den Behringer TD-3 erzeugen (s. `td3.rs`)
+/// und als Melodie-Baustein ablegen, sonst wie `midi.toBlock`: ohne `blockId`
+/// neuer Entwurf, mit `blockId` wird der Entwurf umgeschrieben, `listen`
+/// startet die Vorschau. Antwort: `td3.blockReady` mit dem Pattern zur Anzeige.
+fn handle_td3_to_block(state: &AppState, cmd: &serde_json::Value) {
+    let params = td3::Params::from_cmd(cmd);
+    // Mit `pattern` (vom Dialog nach Handbearbeitung/Eingabe geschickt) wird
+    // nichts gewürfelt, sondern genau dieses Pattern übernommen.
+    let generated = match cmd.get("pattern") {
+        Some(v) => match td3::from_pattern(v) {
+            Some(g) => g,
+            None => {
+                let _ = state.events.send(serde_json::json!({ "t": "td3.error", "message": "That pattern isn't valid." }));
+                return;
+            }
+        },
+        None => td3::generate(&params),
+    };
+    let bars = generated.bars.len() as u32;
+    let notes = td3::to_notes(&generated);
+    let note_count = notes.len();
+    let name: String = str_field(cmd, "name").unwrap_or_default().chars().take(6).collect();
+
+    let block_id = match upsert_melody_draft(
+        state,
+        str_field(cmd, "blockId"),
+        MelodyDraft {
+            notes,
+            length_bars: bars,
+            steps_per_bar: td3::STEPS,
+            time_signature: "4/4",
+            name,
+        },
+    ) {
+        Ok(id) => id,
+        Err(message) => {
+            let _ = state.events.send(serde_json::json!({ "t": "td3.error", "message": message }));
+            return;
+        }
+    };
+    broadcast_snapshot(state);
+    if cmd.get("listen").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let looping = cmd.get("loop").and_then(|v| v.as_bool()).unwrap_or(false);
+        state.clock.send(ClockCommand::PlayBlockPreview(block_id.clone(), looping));
+    }
+    let _ = state.events.send(serde_json::json!({
+        "t": "td3.blockReady",
+        "blockId": block_id,
+        "noteCount": note_count,
+        "lengthBars": bars,
+        "pattern": td3::to_pattern_json(&generated),
     }));
 }
 
@@ -3047,7 +3134,7 @@ fn find_block_mut<'a>(proj: &'a mut Project, block_id: &str) -> Option<&'a mut s
 /// Substeps pro Takt wird daraus bei 4/4 (96 Pulses) ohnehin nur noch Jitter.
 const MIN_STEPS_PER_BAR: u32 = 1;
 const MAX_STEPS_PER_BAR: u32 = 64;
-const MAX_LENGTH_BARS: u32 = 16;
+const MAX_LENGTH_BARS: u32 = 1024;
 
 fn block_u32(b: &serde_json::Value, key: &str, default: u32) -> u32 {
     b.get(key).and_then(|v| v.as_u64()).unwrap_or(default as u64) as u32

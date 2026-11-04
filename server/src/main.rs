@@ -16,6 +16,7 @@ mod model;
 mod net_ap;
 mod scale;
 mod state;
+mod td3;
 mod ws;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

@@ -83,10 +83,11 @@ Basslines and ground basses
 - `Walking-Bass1.mid` — Public domain — [source](https://commons.wikimedia.org/wiki/File%3AWalking-Bass1.mid)
 - `Walkingbass.mid` — Public domain — [source](https://commons.wikimedia.org/wiki/File%3AWalkingbass.mid)
 
-## clair-de-lune (2)
+## clair-de-lune (3)
 
 Debussy, Clair de Lune
 
+- `Clair-de-Lune-Suite-bergamasque-full.mid` — Public Domain — [source](https://www.mutopiaproject.org/cgibin/piece-info.cgi?id=1778)
 - `Clair-de-Lune-opening-excerpt.mid` — Public domain — [source](https://commons.wikimedia.org/wiki/File%3AClair_de_lune_Debussy.mid)
 - `Clair-de-Lune-piano-midi-de-performance.mid` — CC BY-SA 3.0 de — [source](https://commons.wikimedia.org/wiki/File:Debussy_-_Clair_de_Lune.mid)
 
@@ -127,7 +128,7 @@ Drum and rhythm patterns (grooves, fills, shuffles, four-on-the-floor)
 - `Post-punk-drum-pattern.mid` — CC0 — [source](https://commons.wikimedia.org/wiki/File%3APost-punk_drum_pattern.mid)
 - `Steppers-drum-pattern.mid` — Public domain — [source](https://commons.wikimedia.org/wiki/File%3ASteppers_drum_pattern.mid)
 
-## piano (393)
+## piano (392)
 
 Piano and harpsichord pieces from the Mutopia Project, plus a few Debussy/Satie/Scriabin from Commons
 
