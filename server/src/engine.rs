@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::midi::{MidiOutManager, MIDI_CLOCK, MIDI_START, MIDI_STOP};
 use crate::model::{Device, Lane, Project};
+use crate::stepseq::{SeqEvent, StepSeqs};
 
 const PPQN: u32 = 24;
 const PULSES_PER_WHOLE: u32 = PPQN * 4; // 96 Pulse pro ganze Note
@@ -754,6 +755,12 @@ pub struct Engine {
     /// (Akkorde zählen mehrfach) — Key = Index in `lanes`. Geht ein Eintrag
     /// auf 0, wird die Lane freigegeben (s. `on_pulse`).
     keytrack_gate_count: HashMap<usize, u32>,
+    /// Step-Sequencer („ST"-Ansicht, s. `stepseq.rs`) — laufen neben den
+    /// Lanes, teilen sich nur den MIDI-Ausgang.
+    seqs: StepSeqs,
+    /// Nächster globaler Puls, den `on_pulse` sehen wird — Anker, auf den ein
+    /// mitten im Lauf scharf geschalteter Sequencer einrastet.
+    next_global_pulse: u64,
 }
 
 impl Engine {
@@ -777,6 +784,8 @@ impl Engine {
             preview: None,
             pending_gate_releases: Vec::new(),
             keytrack_gate_count: HashMap::new(),
+            seqs: StepSeqs::new(),
+            next_global_pulse: 0,
         }
     }
 
@@ -789,6 +798,8 @@ impl Engine {
     pub fn transport_start(&mut self) {
         self.reset();
         self.playing = true;
+        self.next_global_pulse = 0;
+        self.seqs.transport_start(&mut self.midi);
         for port in &self.clock_ports {
             self.midi.send(port, &[MIDI_START]);
         }
@@ -796,6 +807,7 @@ impl Engine {
 
     pub fn transport_stop(&mut self) {
         self.playing = false;
+        self.seqs.transport_stop(&mut self.midi);
         for port in &self.clock_ports {
             self.midi.send(port, &[MIDI_STOP]);
         }
@@ -857,6 +869,7 @@ impl Engine {
     }
 
     pub fn panic(&mut self) {
+        self.seqs.silence(&mut self.midi);
         self.midi.all_notes_off();
         self.pending.clear();
         self.pending_on.clear();
@@ -1456,6 +1469,8 @@ impl Engine {
     /// treibt `elapsed_secs`, die Zeitbasis frei laufender (Hz-)LFOs.
     pub fn on_pulse(&mut self, global_pulse: u64, dt_secs: f64) {
         self.elapsed_secs += dt_secs;
+        self.next_global_pulse = global_pulse + 1;
+        self.seqs.on_global_pulse(&mut self.midi, global_pulse);
         self.advance_walkers(global_pulse);
 
         // Fällige Note-Offs: pro Ziel-Port zu EINEM Puffer zusammenfassen und in
@@ -2036,6 +2051,18 @@ impl Engine {
     /// Wiedergabe-Zustand aller Lanes für die UI. Lanes ohne Bausteine (oder
     /// deaktiviert/gemutet, also von `on_pulse` übersprungen) fallen raus —
     /// dann leuchtet in der Übersicht auch nichts.
+    /// Gleicht die Step-Sequencer mit dem Projekt ab (eigener, schlanker Weg
+    /// neben `rebuild` — Knob-Ziehen im ST-View soll nicht alle Lanes neu
+    /// kompilieren).
+    pub fn sync_step_seqs(&mut self, project: &Project) {
+        self.seqs.sync(&mut self.midi, project, self.playing, self.next_global_pulse);
+    }
+
+    /// Step-/Aktivitäts-Rückmeldungen der Step-Sequencer fürs UI.
+    pub fn take_seq_events(&mut self) -> Vec<SeqEvent> {
+        self.seqs.take_events()
+    }
+
     pub fn runtime_snapshot(&self) -> Vec<LaneRuntime> {
         let mut out = Vec::with_capacity(self.lanes.len());
         for (idx, lane) in self.lanes.iter().enumerate() {
@@ -2242,6 +2269,8 @@ impl Engine {
     /// Transport, im selben BPM-Intervall wie `on_pulse` getickt (s.
     /// `clock.rs`). No-op ohne aktive Vorschau.
     pub fn on_preview_pulse(&mut self, dt_secs: f64) {
+        // Freilaufende Step-Sequencer ticken auf demselben unabhängigen Puls.
+        self.seqs.on_free_pulse(&mut self.midi);
         let Some(p) = &mut self.preview else { return };
         p.elapsed_secs += dt_secs;
         let global_pulse = p.global_pulse;

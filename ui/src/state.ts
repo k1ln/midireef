@@ -352,11 +352,44 @@ export interface KeyLink {
   y: number;
 }
 
+/** Ein Step des Step-Sequencers — Spiegel von `SeqStep` in shared/model.ts. */
+export interface SeqStep {
+  on: boolean;
+  /** Tonhöhe 0–127 (Notenziel) bzw. Wert 0–127 (CC-/Program-Ziel). */
+  pitch: number;
+  velocity: number;
+  /** Anteil des Step-Abstands, 0.05–1.0 (1.0 = legato). */
+  gate: number;
+  mod: number;
+}
+
+export type SeqTarget =
+  | { kind: "control"; controlId: string }
+  | { kind: "device"; deviceId: string; channel: number; mode: "note" | "cc"; cc: number; modCc?: number };
+
+/** Step-Sequencer („ST"-Ansicht) — Spiegel von `StepSeq` in shared/model.ts. */
+export interface StepSeq {
+  id: string;
+  name: string;
+  color?: string;
+  running: boolean;
+  /** false = folgt Play/Stop, true = läuft frei. */
+  free: boolean;
+  length: number;
+  rate: string;
+  direction: string;
+  swing: number;
+  transpose: number;
+  steps: SeqStep[];
+  targets: SeqTarget[];
+}
+
 export interface Project {
   id: string;
   name: string;
   bpm: number;
   devices: Device[];
+  stepSeqs?: StepSeq[];
   /** Projektweite Baustein-Bibliothek (9×9-Raster pro Typ). Bausteine sind
    *  reiner Inhalt und in jeder Lane jedes Geräts einsetzbar. */
   blocks: Block[];
@@ -463,6 +496,26 @@ export class Store {
 
   setGithub(g: GithubState) {
     this.github = g;
+    this.emit();
+  }
+
+  /** Ersetzt/ergänzt EINEN Step-Sequencer (Event `stepSeq.state`) — wie
+   *  `patchControl` mit neuen Objekt-Referenzen, damit Selektoren reagieren,
+   *  aber ohne den Rest des Projekts anzufassen. */
+  upsertStepSeq(seq: StepSeq) {
+    if (!this.project) return;
+    const list = this.project.stepSeqs ?? [];
+    const idx = list.findIndex((x) => x.id === seq.id);
+    const next = list.slice();
+    if (idx === -1) next.push(seq);
+    else next[idx] = seq;
+    this.project = { ...this.project, stepSeqs: next };
+    this.emit();
+  }
+
+  removeStepSeq(seqId: string) {
+    if (!this.project) return;
+    this.project = { ...this.project, stepSeqs: (this.project.stepSeqs ?? []).filter((x) => x.id !== seqId) };
     this.emit();
   }
 

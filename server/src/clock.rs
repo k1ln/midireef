@@ -95,6 +95,7 @@ pub fn spawn(
     transport: Arc<Mutex<TransportState>>,
     project: Arc<Mutex<Project>>,
     generation: Arc<AtomicU64>,
+    seq_generation: Arc<AtomicU64>,
     events: broadcast::Sender<serde_json::Value>,
     data_dir: PathBuf,
 ) -> ClockHandle {
@@ -102,7 +103,7 @@ pub fn spawn(
 
     std::thread::Builder::new()
         .name("midireef-clock".into())
-        .spawn(move || clock_loop(rx, transport, project, generation, events, data_dir))
+        .spawn(move || clock_loop(rx, transport, project, generation, seq_generation, events, data_dir))
         .expect("clock thread");
 
     ClockHandle { tx }
@@ -119,11 +120,13 @@ fn clock_loop(
     transport: Arc<Mutex<TransportState>>,
     project: Arc<Mutex<Project>>,
     generation: Arc<AtomicU64>,
+    seq_generation: Arc<AtomicU64>,
     events: broadcast::Sender<serde_json::Value>,
     data_dir: PathBuf,
 ) {
     let mut engine = Engine::new();
     let mut cur_gen = u64::MAX;
+    let mut cur_seq_gen = u64::MAX;
 
     let mut bpm = { transport.lock().unwrap().bpm };
     let mut playing = false;
@@ -140,10 +143,17 @@ fn clock_loop(
     let mut recording_holds: HashMap<(String, u8), u64> = HashMap::new();
 
     loop {
-        // Bei Projekt-Änderung neu kompilieren.
+        // Bei Projekt-Änderung neu kompilieren. Die Step-Sequencer haben einen
+        // eigenen, schlanken Abgleich (`seq_generation`): Knob-Ziehen im ST-View
+        // soll nicht alle Lanes neu kompilieren — aber jede Projekt-Änderung
+        // (Device/Control umbenannt, gelöscht, Projekt gewechselt) muss ihre
+        // aufgelösten Ziele auffrischen.
         let g = generation.load(Ordering::Relaxed);
-        if g != cur_gen {
+        let sg = seq_generation.load(Ordering::Relaxed);
+        if g != cur_gen || sg != cur_seq_gen {
+            let lanes_changed = g != cur_gen;
             cur_gen = g;
+            cur_seq_gen = sg;
             // Projekt KOPIEREN, statt den Lock über den Rebuild zu halten: ein
             // Panic beim Kompilieren darf nicht den `project`-Mutex vergiften
             // und damit jeden weiteren `lock().unwrap()` im Server (die
@@ -152,13 +162,16 @@ fn clock_loop(
             // Server-Neustart still.
             let proj = { project.lock().unwrap_or_else(|e| e.into_inner()).clone() };
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                engine.rebuild_if_needed(&proj, g);
-                // Eine laufende Baustein-Vorschau (BlockDetail „▶ Play") hängt
-                // NICHT an `self.lanes`, also fasst `rebuild_if_needed` sie
-                // nicht an — ohne das hier bliebe eine Schleife auf dem Stand
-                // von ihrem Start, während man am offenen Baustein weiter
-                // editiert.
-                engine.refresh_preview(&proj);
+                if lanes_changed {
+                    engine.rebuild_if_needed(&proj, g);
+                    // Eine laufende Baustein-Vorschau (BlockDetail „▶ Play") hängt
+                    // NICHT an `self.lanes`, also fasst `rebuild_if_needed` sie
+                    // nicht an — ohne das hier bliebe eine Schleife auf dem Stand
+                    // von ihrem Start, während man am offenen Baustein weiter
+                    // editiert.
+                    engine.refresh_preview(&proj);
+                }
+                engine.sync_step_seqs(&proj);
             }));
             if res.is_err() {
                 tracing::error!(
@@ -166,6 +179,8 @@ fn clock_loop(
                 );
             }
         }
+
+        flush_seq_events(&mut engine, &events);
 
         while let Ok(cmd) = rx.try_recv() {
             match cmd {
@@ -359,6 +374,25 @@ fn clock_loop(
         } else {
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+}
+
+/// Step-Sequencer-Rückmeldungen (aktueller Step, Control-Aufblitzen) ans UI.
+/// Der Step geht als eigenes, winziges Event raus — nicht im Projekt-Snapshot
+/// und nicht im 16tel-Takt der Lanes, denn freilaufende Sequencer ticken auch
+/// bei gestopptem Transport.
+fn flush_seq_events(engine: &mut Engine, events: &broadcast::Sender<serde_json::Value>) {
+    use crate::stepseq::SeqEvent;
+    for ev in engine.take_seq_events() {
+        let msg = match ev {
+            SeqEvent::Step { seq_id, step } => {
+                serde_json::json!({ "t": "stepSeq.step", "seqId": seq_id, "step": step })
+            }
+            SeqEvent::Activity { control_id, active } => {
+                serde_json::json!({ "t": "control.activity", "controlId": control_id, "active": active })
+            }
+        };
+        let _ = events.send(msg);
     }
 }
 

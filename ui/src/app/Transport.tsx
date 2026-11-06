@@ -34,11 +34,11 @@ const NAV_H = 46;
 /** BPM-Wippe: kleiner als die Transport-Tasten, aber noch fingerbreit. */
 const NUDGE = 46;
 
-export type TransportView = "start" | "seq" | "library" | "settings" | "audio";
+export type TransportView = "start" | "seq" | "steps" | "library" | "settings" | "audio";
 
 export interface TransportProps {
   /** Which top-level page is showing — every one of them is reached from
-   *  this bar (⌂ Dashboard, SQ Sequencer, ▤ Library, ⚙ Projects), so the
+   *  this bar (⌂ Dashboard, SQ Sequencer, ST Step sequencers, ▤ Library, ⚙ Projects), so the
    *  matching button lights up rather than opening a modal. */
   view: TransportView;
   onNav: (view: TransportView) => void;
@@ -183,6 +183,14 @@ export function Transport({ view, onNav, onAddDevice }: TransportProps) {
           onClick={() => onNav("seq")}
         >
           SQ
+        </Button>
+        <Button
+          className={view === "steps" ? "transport-nav on" : "transport-nav"}
+          style={{ width: NAV, height: NAV_H, fontSize: 17 }}
+          title="Step sequencers"
+          onClick={() => onNav("steps")}
+        >
+          ST
         </Button>
         <Button
           className={view === "start" ? "transport-nav on" : "transport-nav"}

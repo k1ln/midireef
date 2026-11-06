@@ -142,6 +142,26 @@ an/aus und per Tipp umgehängt; mehrere dürfen gleichzeitig „LIVE" sein
 - **`AppState::forward_key_links`** (`state.rs`) — hängt sich wie `forward_via_routing` in den MIDI-In-Thread (`main.rs`), toleranter Portvergleich (`midi::same_port`), leitet nur Spiel-Nachrichten (Note/PB/AT/CC) weiter.
 - UI-Feedback: `keyLink.activity` lässt die Kachel kurz aufblitzen.
 
+### 4b-2. Step-Sequencer („ST", Top-Bar neben SQ/DB)
+
+Korg-SQ-1-artiger Pattern-Spieler mit langen Linien (1–64 Steps, in Seiten zu
+16). Pro Step: Pitch/Wert-Knob, Gate, Velocity, Mod + An/Aus. **Mehrere
+Sequencer laufen gleichzeitig**, jeder mit eigener Zielliste:
+
+- **Dashboard-Control**: Note-Taster spielen die Step-Tonhöhe (Port/Kanal des
+  Controls, mit Velocity + Gate), CC-Controls bekommen den Step-Wert als
+  CC-Wert (inkl. Fan-out/Range), Program-Change-Controls wählen das Programm.
+- **Device direkt**: Noten oder ein CV-artiger CC-Strom (Pitch → CC 0–127).
+- **Sync** (Standard) folgt Play/Stop und liegt auf dem globalen Pulsraster;
+  **Free** läuft unabhängig vom Transport (eigener Pulszähler im selben BPM).
+
+Code: `server/src/stepseq.rs` (Modell + `StepSeqs`-Läufer, gehört der `Engine`,
+tickt in `on_pulse` bzw. `on_preview_pulse`), `stepSeq.*`-Commands in `ws.rs`
+(eigener schlanker Weg: ein `stepSeq.state`-Event pro Änderung statt
+Projekt-Snapshot, Abgleich der Engine über `seq_generation`, entprelltes
+Speichern), UI in `ui/src/app/stepseq/`. `running` wird beim Laden immer auf
+false gesetzt (`migrate_project`).
+
 Darunter liegt weiterhin das **Routing-Hub-Backend** (`RoutingHub` /
 `MidiInputSource` / `MidiRoute`, `routing.*`-Commands, `forward_via_routing`)
 für gefiltertes/remapptes Routing — aktuell **ohne eigene UI** (der frühere

@@ -19,16 +19,17 @@ import { BlockLibrary } from "./BlockLibrary";
 import { LaneControls } from "./LaneControls";
 import { Dashboard } from "./Dashboard";
 import { Audio } from "./Audio";
+import { StepSeqView } from "./stepseq/StepSeqView";
 import { ProjectSettings } from "./ProjectSettings";
 import { applyUiScale, getUiScale } from "./uiScale";
 import { applyMotion, getMotion } from "./motionConfig";
 import { applyAllSizes } from "./uiSizes";
 
 /** Top-level pages, all reached from the transport bar — no back button, no
- *  modal. Dashboard, Sequencer, Block library, Audio and Project settings are
+ *  modal. Dashboard, Sequencer, Step sequencers, Block library, Audio and Project settings are
  *  peers; `blockDetail` / `laneControls` are the only real drill-ins (they
  *  overlay whichever page opened them). */
-type View = "start" | "seq" | "library" | "settings" | "audio";
+type View = "start" | "seq" | "steps" | "library" | "settings" | "audio";
 
 type SubScreen =
   | { kind: "blockDetail"; blockId: string }
@@ -76,6 +77,14 @@ export function App() {
             store.setProject(evt.project);
           }
           break;
+        // Step-Sequencer: ein Command ändert genau EINEN Sequencer — der Server
+        // schickt ihn einzeln statt eines Projekt-Snapshots (s. stepseq.* in ws.rs).
+        case "stepSeq.state":
+          if (evt.seq) store.upsertStepSeq(evt.seq);
+          break;
+        case "stepSeq.deleted":
+          if (evt.seqId) store.removeStepSeq(evt.seqId);
+          break;
         case "midi.ports":
           store.setPorts(evt.outputs ?? [], evt.inputs ?? []);
           break;
@@ -120,6 +129,8 @@ export function App() {
           {view === "seq" && (
             <Overview onOpenBlock={(blockId) => setSub({ kind: "blockDetail", blockId })} />
           )}
+
+          {view === "steps" && <StepSeqView />}
 
           {view === "seq" && addDeviceOpen && <PortPickerPopup onClose={() => setAddDeviceOpen(false)} />}
 

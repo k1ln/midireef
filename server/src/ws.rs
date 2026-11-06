@@ -2395,6 +2395,8 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 broadcast_snapshot(state);
             }
         }
+        // ── Step-Sequencer („ST"-Ansicht) ──────────────────────────────────
+        t if t.starts_with("stepSeq.") => handle_step_seq(state, t, &cmd),
         // ── WLAN-Access-Point ──────────────────────────────────────────────
         "network.getState" => broadcast_network_state(state),
         "network.setAp" => {
@@ -2991,6 +2993,225 @@ fn switch_project(state: &AppState, proj: Project, save_current: bool) {
 
     broadcast_snapshot(state); // legt das neue Projekt gleich auf Platte an
     broadcast_project_list(state);
+}
+
+// ── Step-Sequencer ─────────────────────────────────────────────────────────
+// Eigener, schlanker Weg statt `broadcast_snapshot`: ein Knob-Zug im ST-View
+// feuert viele Commands, und ein voller Lane-Rebuild + Projekt-Snapshot an alle
+// Clients je Zwischenwert wäre genau das, was `STREAMED_SNAPSHOT_INTERVAL` oben
+// verhindern soll. Hier geht nur der EINE geänderte Sequencer als Event raus,
+// die Engine gleicht ihre Läufer über `seq_generation` ab, gespeichert wird
+// einmal kurz nach dem letzten Command.
+
+const SEQ_SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(400);
+
+fn schedule_seq_save(state: &AppState) {
+    if state.seq_save_pending.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return; // ein Speichern ist schon eingeplant, es nimmt den neuesten Stand mit
+    }
+    let state = state.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(SEQ_SAVE_DELAY).await;
+        state.seq_save_pending.store(false, std::sync::atomic::Ordering::Release);
+        if let Err(e) = state.save_project() {
+            tracing::warn!("Auto-Save (Step-Sequencer) fehlgeschlagen: {e}");
+        }
+    });
+}
+
+fn seq_changed(state: &AppState, seq: &crate::stepseq::StepSeq) {
+    state.seq_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let _ = state.events.send(serde_json::json!({ "t": "stepSeq.state", "seq": seq }));
+    schedule_seq_save(state);
+}
+
+/// Ändert EINEN Sequencer unter dem Projekt-Lock, normalisiert ihn und meldet ihn.
+fn with_step_seq<F: FnOnce(&mut crate::stepseq::StepSeq)>(state: &AppState, seq_id: &str, f: F) {
+    let updated = {
+        let mut proj = state.project.lock().unwrap();
+        proj.step_seqs.iter_mut().find(|s| s.id == seq_id).map(|s| {
+            f(s);
+            s.normalize();
+            s.clone()
+        })
+    };
+    if let Some(seq) = updated {
+        seq_changed(state, &seq);
+    }
+}
+
+fn rand_below(n: u64) -> u64 {
+    (uuid::Uuid::new_v4().as_u128() % n.max(1) as u128) as u64
+}
+
+fn handle_step_seq(state: &AppState, t: &str, cmd: &serde_json::Value) {
+    use crate::stepseq::{SeqStep, SeqTarget, StepSeq, MAX_STEPS};
+    let seq_id = str_field(cmd, "seqId").unwrap_or_default();
+    match t {
+        "stepSeq.create" => {
+            let new = {
+                let mut proj = state.project.lock().unwrap();
+                let name = str_field(cmd, "name")
+                    .map(|n| n.trim().to_string())
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or_else(|| format!("Seq {}", proj.step_seqs.len() + 1));
+                let mut s = StepSeq::new(&name);
+                // Bequemer Start: gleich aufs erste Device zielen (Noten, Kanal 1).
+                if let Some(d) = proj.devices.first() {
+                    s.targets.push(SeqTarget::Device {
+                        device_id: d.id.clone(),
+                        channel: 1,
+                        mode: "note".to_string(),
+                        cc: 74,
+                        mod_cc: None,
+                    });
+                }
+                proj.step_seqs.push(s.clone());
+                s
+            };
+            seq_changed(state, &new);
+        }
+        "stepSeq.duplicate" => {
+            let copy = {
+                let mut proj = state.project.lock().unwrap();
+                proj.step_seqs.iter().find(|s| s.id == seq_id).cloned().map(|mut c| {
+                    c.id = uuid::Uuid::new_v4().to_string();
+                    c.name = format!("{} copy", c.name);
+                    c.running = false;
+                    proj.step_seqs.push(c.clone());
+                    c
+                })
+            };
+            if let Some(c) = copy {
+                seq_changed(state, &c);
+            }
+        }
+        "stepSeq.delete" => {
+            let removed = {
+                let mut proj = state.project.lock().unwrap();
+                let before = proj.step_seqs.len();
+                proj.step_seqs.retain(|s| s.id != seq_id);
+                proj.step_seqs.len() != before
+            };
+            if removed {
+                state.seq_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let _ = state.events.send(serde_json::json!({ "t": "stepSeq.deleted", "seqId": seq_id }));
+                schedule_seq_save(state);
+            }
+        }
+        "stepSeq.setRunning" => {
+            if let Some(running) = cmd.get("running").and_then(|v| v.as_bool()) {
+                with_step_seq(state, &seq_id, |s| s.running = running);
+            }
+        }
+        // Skalare Felder (Name, Farbe, Länge, Raster, Richtung, Swing, …) in einem Rutsch.
+        "stepSeq.set" => {
+            let Some(patch) = cmd.get("patch").and_then(|v| v.as_object()) else { return };
+            with_step_seq(state, &seq_id, |s| {
+                if let Some(n) = patch.get("name").and_then(|v| v.as_str()) {
+                    let n: String = n.trim().chars().take(24).collect();
+                    if !n.is_empty() {
+                        s.name = n;
+                    }
+                }
+                match patch.get("color") {
+                    Some(serde_json::Value::String(c)) => s.color = Some(c.clone()),
+                    Some(serde_json::Value::Null) => s.color = None,
+                    _ => {}
+                }
+                if let Some(v) = patch.get("free").and_then(|v| v.as_bool()) {
+                    s.free = v;
+                }
+                if let Some(v) = patch.get("length").and_then(|v| v.as_u64()) {
+                    s.length = v.min(MAX_STEPS as u64) as u32;
+                }
+                if let Some(v) = patch.get("rate").and_then(|v| v.as_str()) {
+                    s.rate = v.to_string();
+                }
+                if let Some(v) = patch.get("direction").and_then(|v| v.as_str()) {
+                    s.direction = v.to_string();
+                }
+                if let Some(v) = patch.get("swing").and_then(|v| v.as_f64()) {
+                    s.swing = v;
+                }
+                if let Some(v) = patch.get("transpose").and_then(|v| v.as_i64()) {
+                    s.transpose = v.clamp(-48, 48) as i32;
+                }
+            });
+        }
+        "stepSeq.setStep" => {
+            let (Some(idx), Some(patch)) = (
+                cmd.get("step").and_then(|v| v.as_u64()),
+                cmd.get("patch").and_then(|v| v.as_object()),
+            ) else {
+                return;
+            };
+            with_step_seq(state, &seq_id, |s| {
+                let Some(st) = s.steps.get_mut(idx as usize) else { return };
+                if let Some(v) = patch.get("on").and_then(|v| v.as_bool()) {
+                    st.on = v;
+                }
+                if let Some(v) = patch.get("pitch").and_then(|v| v.as_u64()) {
+                    st.pitch = v.min(127) as u8;
+                }
+                if let Some(v) = patch.get("velocity").and_then(|v| v.as_u64()) {
+                    st.velocity = v.clamp(1, 127) as u8;
+                }
+                if let Some(v) = patch.get("gate").and_then(|v| v.as_f64()) {
+                    st.gate = v;
+                }
+                if let Some(v) = patch.get("mod").and_then(|v| v.as_u64()) {
+                    st.modulation = v.min(127) as u8;
+                }
+            });
+        }
+        "stepSeq.setTargets" => {
+            if let Some(targets) = cmd
+                .get("targets")
+                .and_then(|v| serde_json::from_value::<Vec<SeqTarget>>(v.clone()).ok())
+            {
+                with_step_seq(state, &seq_id, |s| s.targets = targets);
+            }
+        }
+        // Zufall über die ganze Linie: `what` = pitch | velocity | gate | on.
+        "stepSeq.randomize" => {
+            let what = str_field(cmd, "what").unwrap_or_default();
+            let lo = cmd.get("min").and_then(|v| v.as_u64()).unwrap_or(48).min(127);
+            let hi = cmd.get("max").and_then(|v| v.as_u64()).unwrap_or(72).min(127).max(lo);
+            with_step_seq(state, &seq_id, |s| {
+                let len = s.length as usize;
+                for st in s.steps.iter_mut().take(len) {
+                    match what.as_str() {
+                        "pitch" => st.pitch = (lo + rand_below(hi - lo + 1)) as u8,
+                        "velocity" => st.velocity = (60 + rand_below(68)) as u8,
+                        "gate" => st.gate = 0.15 + rand_below(86) as f64 / 100.0,
+                        "on" => st.on = rand_below(100) < 70,
+                        _ => {}
+                    }
+                }
+            });
+        }
+        "stepSeq.clear" => {
+            with_step_seq(state, &seq_id, |s| {
+                let len = s.length as usize;
+                for st in s.steps.iter_mut().take(len) {
+                    *st = SeqStep::default();
+                }
+            });
+        }
+        // Linie um `by` Steps rotieren (positiv = nach hinten).
+        "stepSeq.shift" => {
+            let by = cmd.get("by").and_then(|v| v.as_i64()).unwrap_or(1);
+            with_step_seq(state, &seq_id, |s| {
+                let len = (s.length as usize).min(s.steps.len());
+                if len > 1 {
+                    let k = by.rem_euclid(len as i64) as usize;
+                    s.steps[..len].rotate_right(k);
+                }
+            });
+        }
+        _ => {}
+    }
 }
 
 fn broadcast_snapshot(state: &AppState) {

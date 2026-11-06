@@ -420,6 +420,9 @@ pub struct Project {
     /// Dashboard „Keys links" — schnelle Controller→Synth-Durchleitung.
     #[serde(default)]
     pub key_links: Vec<KeyLink>,
+    /// Step-Sequencer („ST"-Ansicht) — s. `stepseq.rs`.
+    #[serde(default)]
+    pub step_seqs: Vec<crate::stepseq::StepSeq>,
 
     #[serde(default)]
     pub metronome: MetronomeConfig,
@@ -449,6 +452,7 @@ impl Project {
             control_snapshots: serde_json::json!([]),
             routing: RoutingHub::default(),
             key_links: Vec::new(),
+            step_seqs: Vec::new(),
             metronome: MetronomeConfig::default(),
             created_at: now.clone(),
             updated_at: now,

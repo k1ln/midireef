@@ -928,6 +928,55 @@ export interface ControlScreenSnapshot {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Step-Sequencer („ST"-Ansicht, Korg-SQ-1-artig, aber lange Linien)
+// ────────────────────────────────────────────────────────────────────────────
+
+/** Ein Step: die Knobs des SQ-1 plus An/Aus. */
+export interface SeqStep {
+  on: boolean;
+  /** Tonhöhe 0–127 (Notenziel) bzw. Wert 0–127 (CC-/Program-Ziel). */
+  pitch: number;
+  velocity: Midi7Bit; // 1–127
+  /** Gate-Länge als Anteil des Step-Abstands, 0.05–1.0 (1.0 = legato). */
+  gate: number;
+  /** Mod-Wert 0–127 — geht an `modCc` eines Device-Ziels. */
+  mod: Midi7Bit;
+}
+
+/**
+ * Ziel eines Step-Sequencers.
+ *  - `control`: ein Dashboard-Control (Taster/Regler). Note-Taster spielen die
+ *    Step-Tonhöhe (Kanal/Port des Controls) mit Anschlag + Gate, CC-Controls
+ *    bekommen den Step-Wert als CC-Wert (inkl. Fan-out/Range des Controls),
+ *    Program-Change-Controls wählen das Programm.
+ *  - `device`: direkt ans Device — Noten (`mode: "note"`) oder ein CV-artiger
+ *    CC-Strom (`mode: "cc"`: Tonhöhe → CC-Wert 0–127 auf `cc`).
+ */
+export type SeqTarget =
+  | { kind: "control"; controlId: Id }
+  | { kind: "device"; deviceId: Id; channel: MidiChannel; mode: "note" | "cc"; cc: number; modCc?: number };
+
+export type SeqRate = "1/2" | "1/4" | "1/4T" | "1/8" | "1/8T" | "1/16" | "1/16T" | "1/32" | "1/32T";
+export type SeqDirection = "forward" | "reverse" | "pingPong" | "random";
+
+export interface StepSeq {
+  id: Id;
+  name: string;
+  color?: string;
+  /** Scharf geschaltet (beim Laden eines Projekts immer false). */
+  running: boolean;
+  /** false (Standard) = folgt Play/Stop des Transports; true = läuft frei. */
+  free: boolean;
+  length: number; // 1–64 Steps
+  rate: SeqRate;
+  direction: SeqDirection;
+  swing: number; // 0..1 — verzögert jeden zweiten Step (max. ein Drittel Step)
+  transpose: number; // Halbtöne, nur auf Notenziele
+  steps: SeqStep[]; // mindestens `length` Einträge
+  targets: SeqTarget[];
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Projekt & Transport
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -962,6 +1011,7 @@ export interface Project {
 
   routing: RoutingHub; // Routing-Hub
   keyLinks: KeyLink[]; // Dashboard „Keys links" (Controller → Synth)
+  stepSeqs: StepSeq[]; // Step-Sequencer („ST"-Ansicht)
 
   metronome: MetronomeConfig;
 
@@ -1139,6 +1189,22 @@ export type Command =
   | { t: "keyLink.setDevice"; linkId: Id; deviceId: Id }
   | { t: "keyLink.move"; linkId: Id; x: number; y: number }
   | { t: "keyLink.remove"; linkId: Id }
+  // ── Step-Sequencer („ST"-Ansicht) ──
+  // Antwort auf jede Änderung: ServerEvent "stepSeq.state" (der ganze Sequencer)
+  // bzw. "stepSeq.deleted". Läuft NICHT über state.snapshot — Knob-Ziehen feuert
+  // viele Commands und soll weder alle Lanes neu kompilieren noch jedes Mal das
+  // ganze Projekt an alle Clients schicken.
+  | { t: "stepSeq.create"; name?: string } // zielt gleich aufs erste Device (Noten, Kanal 1)
+  | { t: "stepSeq.duplicate"; seqId: Id }
+  | { t: "stepSeq.delete"; seqId: Id }
+  | { t: "stepSeq.setRunning"; seqId: Id; running: boolean }
+  // Skalare Felder in einem Rutsch: name, color (null löscht), free, length (wächst = Muster wiederholt sich), rate, direction, swing, transpose.
+  | { t: "stepSeq.set"; seqId: Id; patch: Partial<Pick<StepSeq, "name" | "free" | "length" | "rate" | "direction" | "swing" | "transpose">> & { color?: string | null } }
+  | { t: "stepSeq.setStep"; seqId: Id; step: number; patch: Partial<SeqStep> }
+  | { t: "stepSeq.setTargets"; seqId: Id; targets: SeqTarget[] }
+  | { t: "stepSeq.randomize"; seqId: Id; what: "pitch" | "velocity" | "gate" | "on"; min?: number; max?: number }
+  | { t: "stepSeq.clear"; seqId: Id }
+  | { t: "stepSeq.shift"; seqId: Id; by: number } // Linie rotieren (positiv = nach hinten)
   // ── Device & Profile ──
   | { t: "device.setSendClock"; deviceId: Id; sendClock: boolean }
   | { t: "device.setMuted"; deviceId: Id; muted: boolean } // Schnell-Mute des ganzen Geräts (alle Lanes schweigen, laufen aber weiter)
@@ -1227,6 +1293,9 @@ export type ServerEvent =
   | { t: "record.armState"; controlId: Id | null; laneId: Id | null } // aktueller Record-Arm-Zustand (beide null = nichts armiert)
   | { t: "routing.activity"; routeId: Id } // Route hat gerade Daten durchgeleitet (UI-Feedback)
   | { t: "keyLink.activity"; linkId: Id; semitones?: number } // Keys-Link hat gerade Noten durchgeleitet (kurzes UI-Aufblitzen); semitones = neue Transponierung eines Lane-Links
+  | { t: "stepSeq.state"; seq: StepSeq } // ein Sequencer hat sich geändert (oder wurde angelegt)
+  | { t: "stepSeq.deleted"; seqId: Id }
+  | { t: "stepSeq.step"; seqId: Id; step: number | null } // Playhead (null = steht)
   | { t: "midi.ports"; outputs: string[]; inputs: string[] }
   | { t: "project.list"; projects: ProjectSummary[]; currentId: Id } // beim Verbinden + nach jeder Projekt-Operation
   | { t: "server.logLines"; lines: string[] } // Antwort auf "server.log": letzte ≤1000 Log-Zeilen

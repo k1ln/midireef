@@ -50,6 +50,12 @@ pub struct AppState {
     pub learn_armed: Arc<AtomicBool>,
     /// Wird bei jeder Projekt-Änderung erhöht → die Engine kompiliert neu.
     pub generation: Arc<AtomicU64>,
+    /// Wie `generation`, nur für die Step-Sequencer („ST"): sie gleichen sich
+    /// über einen eigenen, schlanken Weg ab, ohne alle Lanes neu zu kompilieren.
+    pub seq_generation: Arc<AtomicU64>,
+    /// Ob für die Step-Sequencer schon ein verzögertes Speichern eingeplant ist
+    /// (Knob-Ziehen feuert viele Commands; geschrieben wird einmal danach).
+    pub seq_save_pending: Arc<AtomicBool>,
     /// Drosselt die "Kein Gerät zugewiesen"-Warnung (sonst Flut bei CC-Ziehen).
     pub last_device_warning: Arc<Mutex<Option<Instant>>>,
     /// Aktuell gehaltene Noten je Control-ID (nur Note-Mappings betroffen).
@@ -1016,6 +1022,12 @@ pub fn load_most_recent_project_from(data_dir: &std::path::Path) -> Option<Proje
 /// `resolutionPerBar`/`slewMs`/`curve` fallen ersatzlos weg — sie waren nie
 /// implementiert (die Senderate deckelt `MIN_CC_SEND_INTERVAL` in engine.rs).
 pub fn migrate_project(proj: &mut Project) {
+    // Step-Sequencer starten nach dem Laden immer gestoppt (ein Kiosk soll
+    // nicht von selbst losspielen) und mit gültigen Werten.
+    for s in proj.step_seqs.iter_mut() {
+        s.running = false;
+        s.normalize();
+    }
     let controls = proj.controls.clone();
 
     // ── Pass 1: Baustein-Bibliothek von Device- auf Projektebene heben ──

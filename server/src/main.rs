@@ -16,6 +16,7 @@ mod model;
 mod net_ap;
 mod scale;
 mod state;
+mod stepseq;
 mod td3;
 mod ws;
 
@@ -116,12 +117,14 @@ async fn main() {
     }));
     let project = Arc::new(Mutex::new(project));
     let generation = Arc::new(AtomicU64::new(0));
+    let seq_generation = Arc::new(AtomicU64::new(0));
 
     let (events_tx, _rx) = broadcast::channel::<serde_json::Value>(256);
     let clock = clock::spawn(
         transport.clone(),
         project.clone(),
         generation.clone(),
+        seq_generation.clone(),
         events_tx.clone(),
         data_dir.clone(),
     );
@@ -155,6 +158,8 @@ async fn main() {
         data_dir,
         learn_armed: Arc::new(AtomicBool::new(false)),
         generation,
+        seq_generation,
+        seq_save_pending: Arc::new(AtomicBool::new(false)),
         last_device_warning: Arc::new(Mutex::new(None)),
         held_notes: Arc::new(Mutex::new(std::collections::HashMap::new())),
         record_armed: Arc::new(Mutex::new(None)),
