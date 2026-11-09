@@ -1207,6 +1207,25 @@ textarea {
   pointer-events: none;
 }
 
+/* Pfeil-Griff hinter jeder Note: Länge ziehen (s. RollCanvas NoteBar). */
+.roll-note-arrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--pal-text-dim);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 0 6px 6px 0;
+  cursor: ew-resize;
+  user-select: none;
+}
+.roll-note-arrow.active {
+  color: var(--pal-text);
+  background: rgba(255, 255, 255, 0.18);
+}
+
 /* ── Einspiel-Leiste unter der Piano-Rolle (PlayIn.tsx) ─────────────────── */
 .play-in-bar {
   /* Klebt am unteren Rand des scrollenden Editors: die Rolle darüber scrollt

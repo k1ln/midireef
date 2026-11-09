@@ -136,6 +136,9 @@ fn clock_loop(
     // wie der Haupt-Puls, aber UNABHÄNGIG von `playing` — sonst ließe sich ein
     // Baustein bei gestopptem Transport gar nicht anspielen.
     let mut preview_next_pulse = Instant::now();
+    // Zuletzt gemeldeter Stand der Vorschau (`block.preview`-Event): nur bei
+    // Änderung senden, also einmal je Step statt je Puls.
+    let mut preview_reported: Option<(String, u32)> = None;
     let mut pulses: u64 = 0;
     let mut taps: Vec<Instant> = Vec::new();
     // Live-Aufnahme (record.arm): pro (laneId, Note) der Step, an dem die
@@ -339,6 +342,14 @@ fn clock_loop(
         while preview_now >= preview_next_pulse {
             engine.on_preview_pulse(interval.as_secs_f64());
             preview_next_pulse += interval;
+        }
+        let preview_now_status = engine.preview_status();
+        if preview_now_status != preview_reported {
+            let _ = events.send(match &preview_now_status {
+                Some((block_id, step)) => serde_json::json!({ "t": "block.preview", "blockId": block_id, "step": step }),
+                None => serde_json::json!({ "t": "block.preview", "blockId": null }),
+            });
+            preview_reported = preview_now_status;
         }
 
         if playing {

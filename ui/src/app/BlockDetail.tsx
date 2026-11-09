@@ -2,13 +2,14 @@
 //! Steps (Beat/CC/…) editieren. Geöffnet von der Sequencer-Übersicht per
 //! langem Druck auf eine Slot-Kachel.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Block, BlockType } from "../state";
 import { useNet, useSend, useStoreValue, useRuntimeBlock } from "./store";
 import { useTouchKeyboard } from "./TouchKeyboard";
 import { Button } from "./widgets/Button";
 import { TRANSPORT_H } from "./layout";
 import { BeatEditor, ChordEditor, ArpEditor, WalkerEditor, ProgramChangeEditor, PatternShiftEditor } from "./blockdetail/editors";
+import { useBlockPreview } from "./blockdetail/useBlockPreview";
 import { MelodyEditor, MelodyToolbar, PaintToolbar, type MelodyLayout, type PaintTool, type PlayInMode } from "./blockdetail/MelodyEditor";
 import type { StepFlow } from "./blockdetail/StepGrid";
 import { useLocalPref } from "./useLocalPref";
@@ -73,13 +74,14 @@ export function BlockDetail({ blockId, onClose, onMove }: BlockDetailProps) {
 function PlayPreviewButtons({ block, send }: { block: Block; send: ReturnType<typeof useSend> }) {
   const net = useNet();
   const [loop, setLoop] = useState(false);
-  const [playing, setPlaying] = useState(false);
+  // Läuft die Vorschau gerade? Kommt vom Server (`block.preview`), damit auch
+  // ein Start aus der 1601-Ansicht hier als „läuft" erscheint.
+  const { playing } = useBlockPreview(block.id);
   const [toast, setToast] = useState<string | null>(null);
 
   useEffect(() => {
     const off = net.onEvent((evt) => {
       if (evt.t === "control.sendError" && evt.message) {
-        setPlaying(false);
         setToast(evt.message);
       }
     });
@@ -89,9 +91,11 @@ function PlayPreviewButtons({ block, send }: { block: Block; send: ReturnType<ty
   // Baustein gewechselt oder Editor verlassen: eine laufende Schleife nicht
   // im Hintergrund weiterlaufen lassen — die "▶ Play"-Vorschau gehört an den
   // offenen Editor, nicht ans Projekt.
+  const playingRef = useRef(false);
+  playingRef.current = playing;
   useEffect(() => {
     return () => {
-      if (playing) send({ t: "block.stopPreview" });
+      if (playingRef.current) send({ t: "block.stopPreview" });
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [block.id]);
@@ -120,16 +124,11 @@ function PlayPreviewButtons({ block, send }: { block: Block; send: ReturnType<ty
         style={{ width: 44, height: 40, fontSize: 18 }}
         title="Play this block standalone — not tied to any lane"
         onClick={() => {
-          if (loop && playing) {
-            send({ t: "block.stopPreview" });
-            setPlaying(false);
-          } else {
-            send({ t: "block.play", blockId: block.id, loop });
-            setPlaying(loop);
-          }
+          if (playing) send({ t: "block.stopPreview" });
+          else send({ t: "block.play", blockId: block.id, loop });
         }}
       >
-        {loop && playing ? "■" : "▶"}
+        {playing ? "■" : "▶"}
       </Button>
       {toast && (
         <div

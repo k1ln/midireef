@@ -2249,6 +2249,16 @@ impl Engine {
         }
     }
 
+    /// Stand der laufenden Baustein-Vorschau für die UI: (Baustein, aktueller
+    /// Step). `None`, wenn keine läuft. Die Vorschau ist keine Lane und taucht
+    /// deshalb nicht in `lane.runtime` auf — der Playhead der Editoren käme
+    /// sonst nie an.
+    pub fn preview_status(&self) -> Option<(String, u32)> {
+        self.preview
+            .as_ref()
+            .map(|p| (p.block_id.clone(), p.pos / p.cb.pulses_per_step.max(1)))
+    }
+
     /// Beendet eine laufende Baustein-Vorschau sofort — noch fällige
     /// Note-Offs gehen sofort raus statt erst am regulären Fälligkeitspuls
     /// (der käme ja nie mehr, sobald `on_preview_pulse` nicht mehr tickt).

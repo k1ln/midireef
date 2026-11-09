@@ -19,7 +19,7 @@
 //!
 //!   Tipper auf leere Fläche  = Note setzen (an genau dieser Stelle)
 //!   Tipper auf Note          = Note entfernen
-//!   Ziehen am rechten Ende   = Länge ändern, live unter dem Finger
+//!   Ziehen am Pfeil ▸ hinter der Note = Länge ändern, live unter dem Finger
 //!   Ziehen am Rest der Note  = verschieben (Zeit frei, Tonhöhe pro Zeile)
 //!   Langes Drücken           = Editor der Note bzw. Akkord-Auswahl (leer)
 //!   Wischen auf leerer Fläche = scrollen (nativ, in beide Richtungen)
@@ -624,7 +624,16 @@ function NoteBar({
   const dragging = preview !== null;
   const vel = Math.min(127, Math.max(1, n.velocity ?? 100));
 
+  // Pfeil-Griff hinter der Note: eigene, fingergroße Fläche, die die Länge
+  // direkt unter dem Finger zieht (ein Wisch nach rechts = länger, links =
+  // kürzer). Mindestens 22px hoch, auch bei winzigen Zeilen.
+  const arrowH = Math.max(22, rowH - 2);
+  const arrow = useRef<{ id: number; x: number; len: number } | null>(null);
+  const arrowLen = (clientX: number) =>
+    clamp(arrow.current!.len + (clientX - arrow.current!.x) / px, ROLL_MIN_LENGTH, maxLen);
+
   return (
+    <>
     <div
       className="roll-note"
       style={{
@@ -646,16 +655,15 @@ function NoteBar({
         stop();
         e.currentTarget.setPointerCapture?.(e.pointerId);
         const rect = e.currentTarget.getBoundingClientRect();
-        // Greifbereich am rechten Ende: breit für den Finger, aber bei sehr
-        // schmalen Noten nie mehr als ihre halbe Breite — sonst ließe sich
-        // so eine Note nicht mehr verschieben.
-        const handle = Math.min(28, Math.max(10, rect.width * 0.4));
+        // Die Länge ändert der Pfeil HINTER der Note (`roll-note-arrow`), nicht
+        // ihr rechter Rand: der Rand war bei kleinen Noten kaum zu treffen, und
+        // jeder Versuch verschob stattdessen die Note.
         const rec = {
           id: e.pointerId,
           x: e.clientX,
           y: e.clientY,
           left: rect.left,
-          zone: e.clientX > rect.right - handle ? ("resize" as const) : ("move" as const),
+          zone: "move" as "move" | "resize",
           mode: "idle" as "idle" | "drag" | "dead",
           timer: undefined as number | undefined,
           fired: false,
@@ -707,7 +715,49 @@ function NoteBar({
       <div className="roll-note-body">
         {width >= 34 && rowH >= 18 ? noteName(n.note) : null}
       </div>
-      <div className="roll-note-handle" />
     </div>
+    <div
+      className={`roll-note-arrow${dragging && preview ? " active" : ""}`}
+      title="Drag to make the note longer or shorter"
+      style={{
+        position: "absolute",
+        left: left + shown.dx + shown.w,
+        top: top + 1 + shown.dy - (arrowH - (rowH - 2)) / 2,
+        width: 24,
+        height: arrowH,
+        zIndex: 2,
+        touchAction: "none",
+      }}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        if (!e.isPrimary || lock.current.pinch) return;
+        stop();
+        e.currentTarget.setPointerCapture?.(e.pointerId);
+        arrow.current = { id: e.pointerId, x: e.clientX, len };
+      }}
+      onPointerMove={(e) => {
+        if (!arrow.current || arrow.current.id !== e.pointerId) return;
+        if (lock.current.pinch) {
+          arrow.current = null;
+          setPreview(null);
+          return;
+        }
+        setPreview({ dx: 0, dy: 0, len: arrowLen(e.clientX) });
+      }}
+      onPointerUp={(e) => {
+        if (!arrow.current || arrow.current.id !== e.pointerId) return;
+        const final = arrowLen(e.clientX);
+        arrow.current = null;
+        setPreview(null);
+        onResize(n, final);
+      }}
+      onPointerCancel={() => {
+        arrow.current = null;
+        setPreview(null);
+      }}
+    >
+      ▸
+    </div>
+    </>
   );
 }

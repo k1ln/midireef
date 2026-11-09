@@ -17,6 +17,7 @@ mod net_ap;
 mod scale;
 mod state;
 mod stepseq;
+mod randseq;
 mod td3;
 mod ws;
 
@@ -273,10 +274,10 @@ fn spawn_midi_learn(state: &AppState) {
                     Ok((source_port, msg)) => {
                         // Live-Aufnahme (record.arm) läuft unabhängig vom
                         // Lern-Modus — beides sind unabhängige Vorgänge.
-                        state.forward_to_recorder(&msg);
+                        state.forward_to_recorder(&source_port, &msg);
                         // Einspielen in die offene Piano-Rolle — ebenfalls
                         // unabhängig vom Lern-Modus (s. `forward_note_input`).
-                        state.forward_note_input(&msg);
+                        state.forward_note_input(&source_port, &msg);
                         // Routing-Hub: ebenfalls unabhängig — eigene
                         // Quellen-Zuordnung über den benannten Eingang.
                         state.forward_via_routing(&source_port, &msg);

@@ -579,16 +579,25 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
             if let (Some(control_id), Some(lane_id)) =
                 (str_field(&cmd, "controlId"), str_field(&cmd, "laneId"))
             {
-                let channel = {
+                let (channel, source_ports) = {
                     let proj = state.project.lock().unwrap();
-                    find_control(&proj, &control_id).and_then(|c| {
+                    let ctrl = find_control(&proj, &control_id);
+                    let channel = ctrl.as_ref().and_then(|c| {
                         let m = c.get("mapping")?;
                         if m.get("kind").and_then(|v| v.as_str()) != Some("note") {
                             return None;
                         }
                         m.get("channel").and_then(|v| v.as_u64()).map(|v| v as u8)
-                    })
+                    });
+                    let dev_id = ctrl
+                        .as_ref()
+                        .and_then(|c| c.get("deviceId"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
+                    let dev = dev_id.and_then(|id| proj.devices.iter().find(|d| d.id == id).cloned());
+                    (channel, dev)
                 };
+                let source_ports = source_ports.map(|d| crate::state::connected_device_ports(&d)).unwrap_or_default();
                 let Some(channel) = channel else {
                     tracing::debug!("record.arm: Control „{control_id}“ hat kein Note-Mapping");
                     return;
@@ -600,7 +609,7 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                         None
                     }
                     _ => {
-                        let arm = crate::state::RecordArm { control_id: control_id.clone(), lane_id: lane_id.clone(), channel };
+                        let arm = crate::state::RecordArm { control_id: control_id.clone(), lane_id: lane_id.clone(), channel, source_ports: source_ports.clone() };
                         *armed = Some(arm);
                         Some((control_id, lane_id))
                     }
@@ -1268,6 +1277,60 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                         b["lengthBars"] = serde_json::json!(new_bars);
                         refit_block_content(b, old_spb, new_spb, new_spb * new_bars);
                     }
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        // Baustein-Detail (1601-Ansicht): Länge FREI in Steps, 8…128. Anders als
+        // `block.setLength` (ganze Takte × Auflösung) bleibt die Auflösung des
+        // Bausteins stehen und der Baustein wird ein einziger Takt aus `steps`
+        // Steps: die Taktart folgt (z.B. 12 Sechzehntel = 12/16), damit die
+        // Engine denselben Puls pro Step behält. Inhalt wird NICHT verschoben —
+        // hinten Abgeschnittenes fällt weg, neue Steps sind leer.
+        "block.setStepCount" => {
+            if let (Some(id), Some(steps)) = (str_field(&cmd, "blockId"), cmd.get("steps").and_then(|v| v.as_u64())) {
+                let steps = (steps as u32).clamp(MIN_STEP_COUNT, MAX_STEP_COUNT);
+                let mut proj = state.project.lock().unwrap();
+                if let Some(b) = find_block_mut(&mut proj, &id) {
+                    let old_spb = block_u32(b, "stepsPerBar", 16).max(1);
+                    let old_ts = b.get("timeSignature").and_then(|v| v.as_str()).unwrap_or("4/4").to_string();
+                    let pps = (crate::engine::pulses_per_bar(&old_ts) / old_spb).max(1);
+                    // Ein Step = `pps` Pulse; ein Sechzehntel = 6. Zähler in
+                    // Sechzehnteln, auf ganze gerundet.
+                    let numerator = ((pps * steps) as f64 / 6.0).round().max(1.0) as u32;
+                    b["stepsPerBar"] = serde_json::json!(steps);
+                    b["lengthBars"] = serde_json::json!(1);
+                    b["timeSignature"] = serde_json::json!(format!("{numerator}/16"));
+                    refit_block_content(b, steps, steps, steps);
+                }
+                drop(proj);
+                broadcast_snapshot(state);
+            }
+        }
+        // Baustein-Detail (1601-Ansicht): Zufalls-Melodie. Ersetzt ALLE Noten des
+        // Bausteins (s. `randseq.rs`); die UI fragt vorher nach.
+        "melody.randomize" => {
+            if let Some(id) = str_field(&cmd, "blockId") {
+                let f = |k: &str, d: f64| cmd.get(k).and_then(|v| v.as_f64()).unwrap_or(d);
+                let scale = cmd.get("scale").and_then(|v| v.as_str()).and_then(crate::scale::intervals);
+                let mut proj = state.project.lock().unwrap();
+                if let Some(b) = find_block_mut(&mut proj, &id) {
+                    let total = block_u32(b, "stepsPerBar", 16).max(1) * block_u32(b, "lengthBars", 1).max(1);
+                    let params = crate::randseq::Params {
+                        style: crate::randseq::Style::from_name(cmd.get("style").and_then(|v| v.as_str()).unwrap_or("random")),
+                        low: f("low", 48.0) as i32,
+                        span: (f("span", 24.0) as i32).clamp(0, 127),
+                        grid: (f("grid", 1.0) as i32).clamp(1, 12),
+                        root: (f("root", 0.0) as i32).rem_euclid(12) as u8,
+                        scale,
+                        density: f("density", 0.7),
+                        accent: f("accent", 0.3),
+                        tie: f("tie", 0.15),
+                        seed: cmd.get("seed").and_then(|v| v.as_u64()).unwrap_or(1),
+                        total_steps: total,
+                    };
+                    b["notes"] = serde_json::Value::Array(crate::randseq::generate(&params));
                 }
                 drop(proj);
                 broadcast_snapshot(state);
@@ -3356,6 +3419,9 @@ fn find_block_mut<'a>(proj: &'a mut Project, block_id: &str) -> Option<&'a mut s
 const MIN_STEPS_PER_BAR: u32 = 1;
 const MAX_STEPS_PER_BAR: u32 = 64;
 const MAX_LENGTH_BARS: u32 = 1024;
+/// Grenzen für `block.setStepCount` (1601-Ansicht).
+const MIN_STEP_COUNT: u32 = 8;
+const MAX_STEP_COUNT: u32 = 128;
 
 fn block_u32(b: &serde_json::Value, key: &str, default: u32) -> u32 {
     b.get(key).and_then(|v| v.as_u64()).unwrap_or(default as u64) as u32
@@ -3673,10 +3739,19 @@ fn block_preview_target(proj: &Project, block_id: &str) -> Option<(String, u8)> 
 /// Note-Off — ein Editor, den man mitten im Akkord schließt, dürfte sonst
 /// einen Ton stehen lassen, den nur noch Panic beendet.
 fn set_note_input(state: &AppState, block_id: Option<&str>) {
-    let echo = block_id.and_then(|id| {
-        let proj = state.project.lock().unwrap();
-        block_preview_target(&proj, id)
-    });
+    let (echo, target_dev) = block_id
+        .map(|id| {
+            let proj = state.project.lock().unwrap();
+            let echo = block_preview_target(&proj, id);
+            let dev = echo
+                .as_ref()
+                .and_then(|(port, _)| proj.devices.iter().find(|d| &d.midi_out_port == port))
+                .cloned();
+            (echo, dev)
+        })
+        .unwrap_or((None, None));
+    // Nur der Eingang des Zielgeräts darf einspielen (s. `NoteInputArm`).
+    let source_ports = target_dev.map(|d| crate::state::connected_device_ports(&d)).unwrap_or_default();
 
     let previous = {
         let mut guard = state.note_input.lock().unwrap();
@@ -3685,6 +3760,7 @@ fn set_note_input(state: &AppState, block_id: Option<&str>) {
             block_id: id.to_string(),
             echo,
             held: std::collections::HashSet::new(),
+            source_ports,
         });
         previous
     };

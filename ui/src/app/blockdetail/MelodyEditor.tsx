@@ -12,7 +12,10 @@
 //!     Standardansicht — nur sie kann Noten abbilden, die nicht auf einem Step
 //!     liegen (eingespielte Takes!). Die Spalten-Ansicht zeigt sie auf ihrem Step.
 //!
-//! Beide Ansichten sprechen dieselben Kommandos (melody.addNote/removeNote/
+//!   "seq" (1601) — wie der Behringer 1601: 16 Pitch-Fader, je Step drei
+//!     Gate-Bus-Schalter (Gate/Accent/Tie), s. MelodySeq.tsx.
+//!
+//! Alle Ansichten sprechen dieselben Kommandos (melody.addNote/removeNote/
 //! setNotePitch/setNoteLength) — es ist wirklich nur die Darstellung.
 //!
 //! Die Geste ist in BEIDEN Ansichten dieselbe — und bewusst die, die sich auf
@@ -42,11 +45,15 @@ import { RollCanvas, ROLL_MIN_LENGTH } from "./RollCanvas";
 import { useLongPress } from "../useLongPress";
 import { useLocalPref } from "../useLocalPref";
 import { NoteEditorPopup, type NoteRef } from "./NoteEditor";
+import { MelodySeq } from "./MelodySeq";
 import { usePlayIn, PlayInBar, type PlayInMode } from "./PlayIn";
 
 export type { PlayInMode } from "./PlayIn";
 
-export type MelodyLayout = "stack" | "grid";
+export type MelodyLayout = "stack" | "grid" | "seq";
+
+const NEXT_LAYOUT: Record<MelodyLayout, MelodyLayout> = { grid: "seq", seq: "stack", stack: "grid" };
+const LAYOUT_LABEL: Record<MelodyLayout, string> = { grid: "▦ Roll", seq: "▮▮ 1601", stack: "▤ Cols" };
 
 /** Default pitch used where the editor needs a starting point but there's no
  *  note to derive one from yet (first note in an empty column, initial
@@ -100,9 +107,10 @@ export function MelodyToolbar({
       <Button
         variant="alt"
         style={{ width: 84, height: 40, fontSize: 14 }}
-        onClick={() => setLayout(layout === "stack" ? "grid" : "stack")}
+        title="Switch view: Roll → 1601 (step sequencer) → Cols"
+        onClick={() => setLayout(NEXT_LAYOUT[layout])}
       >
-        {layout === "stack" ? "▤ Cols" : "▦ Roll"}
+        {LAYOUT_LABEL[layout]}
       </Button>
       {/* Nur in der Piano-Rolle: dort gibt es die Tonhöhen-Zeilen, an denen
           man den Cursor und das Eingespielte SIEHT. In der Spalten-Ansicht
@@ -203,6 +211,7 @@ export function MelodyEditor({
    *  braucht das armierte Werkzeug nur lesend, für Tipper auf die Zellen. */
   paint: PaintTool;
 }) {
+  if (layout === "seq") return <MelodySeq block={block} />;
   return layout === "stack" ? (
     <MelodyStack block={block} flow={flow} />
   ) : (

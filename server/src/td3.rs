@@ -118,22 +118,22 @@ pub struct Generated {
 }
 
 /// splitmix64 — klein, schnell, bei Seed 0 und kleinen Seeds trotzdem gut verteilt.
-struct Rng(u64);
+pub(crate) struct Rng(pub u64);
 impl Rng {
-    fn next(&mut self) -> u64 {
+    pub(crate) fn next(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
         z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
         z ^ (z >> 31)
     }
-    fn unit(&mut self) -> f64 {
+    pub(crate) fn unit(&mut self) -> f64 {
         (self.next() >> 11) as f64 / (1u64 << 53) as f64
     }
-    fn chance(&mut self, p: f64) -> bool {
+    pub(crate) fn chance(&mut self, p: f64) -> bool {
         self.unit() < p
     }
-    fn below(&mut self, n: usize) -> usize {
+    pub(crate) fn below(&mut self, n: usize) -> usize {
         (self.next() % n.max(1) as u64) as usize
     }
 }

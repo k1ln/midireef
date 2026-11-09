@@ -19,6 +19,10 @@ pub struct RecordArm {
     pub control_id: String,
     pub lane_id: String,
     pub channel: u8,
+    /// Portnamen des Geräts, dem das Keyboard-Control gehört — nur Noten von
+    /// diesem Eingang werden aufgenommen (leer = nicht einschränkbar, s.
+    /// `connected_device_ports`).
+    pub source_ports: Vec<String>,
 }
 
 /// Ein Melodie-Baustein, der gerade im Piano-Roll-Editor auf Eingabe wartet
@@ -37,6 +41,12 @@ pub struct NoteInputArm {
     /// Tonhöhen, die dieses Mithören gerade hält — beim Entwaffnen bekommt
     /// jede davon ihr Note-Off, sonst bliebe ein Ton hängen.
     pub held: HashSet<u8>,
+    /// Portnamen des Zielgeräts: nur Noten von DIESEM Eingang gehen in den
+    /// Editor. Ohne den Filter landet alles, was irgendein Eingang sendet
+    /// (Drumcomputer-Echo, Clock-Begleitnoten anderer Geräte), im Baustein,
+    /// sobald ein Beat läuft. Leer = nicht einschränkbar (s.
+    /// `connected_device_ports`).
+    pub source_ports: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -431,8 +441,8 @@ impl AppState {
     /// ist ein komplett separater Vorgang. Der Clock-Thread trägt die Note
     /// dort taktgenau ein (siehe `ClockCommand::RecordNoteIn` in clock.rs),
     /// weil nur er den laufenden Puls-Zähler kennt.
-    pub fn forward_to_recorder(&self, msg: &[u8]) {
-        if msg.len() < 3 {
+    pub fn forward_to_recorder(&self, source_port: &str, msg: &[u8]) {
+        if msg.len() < 3 || crate::midi::is_own_port(source_port) {
             return;
         }
         let status = msg[0] & 0xF0;
@@ -442,7 +452,7 @@ impl AppState {
         let channel = (msg[0] & 0x0F) + 1;
         let armed = self.record_armed.lock().unwrap().clone();
         let Some(arm) = armed else { return };
-        if arm.channel != channel {
+        if arm.channel != channel || !port_allowed(&arm.source_ports, source_port) {
             return;
         }
         let (note, velocity) = (msg[1], msg[2]);
@@ -461,14 +471,16 @@ impl AppState {
     ///
     /// Bewusst OHNE Kanalfilter: das angeschlossene Keyboard ist hier keine
     /// gelernte Zuordnung, sondern schlicht „das Ding, auf dem gespielt wird".
+    /// Wohl aber mit PORTfilter: nur der Eingang des Zielgeräts zählt (s.
+    /// `NoteInputArm::source_ports`).
     /// Wer beim Einspielen den Kanal seines Keyboards suchen muss, hat schon
     /// verloren.
     ///
     /// Eingetragen wird die Note NICHT hier: an welchem Step sie landet, weiß
     /// nur der Editor (sein Schreib-Cursor), und die Bildschirm-Klaviatur
     /// nimmt denselben Weg — so gibt es für beide Quellen genau einen Pfad.
-    pub fn forward_note_input(&self, msg: &[u8]) {
-        if msg.len() < 3 {
+    pub fn forward_note_input(&self, source_port: &str, msg: &[u8]) {
+        if msg.len() < 3 || crate::midi::is_own_port(source_port) {
             return;
         }
         let status = msg[0] & 0xF0;
@@ -481,6 +493,9 @@ impl AppState {
 
         let mut guard = self.note_input.lock().unwrap();
         let Some(arm) = guard.as_mut() else { return };
+        if !port_allowed(&arm.source_ports, source_port) {
+            return;
+        }
         let block_id = arm.block_id.clone();
         if let Some((port, ch)) = arm.echo.clone() {
             // Nur wirklich neue bzw. wirklich gehaltene Töne durchlassen: ein
@@ -938,6 +953,33 @@ fn strip_io_suffix(name: &str) -> String {
         }
     }
     trimmed.to_string()
+}
+
+/// Portnamen, unter denen ein Gerät als MIDI-EINGANG auftaucht (`midiInPort`
+/// und, da viele Geräte denselben Namen als In und Out melden, der Ausgang) —
+/// aber nur, wenn gerade wirklich ein Eingang dazu passt. Sonst leer: ein
+/// Gerät ohne eigenen Eingang (Synth, mit separatem Keyboard gespielt) darf
+/// die Eingabe nicht komplett abwürgen, dann gilt jeder Eingang.
+pub fn connected_device_ports(dev: &crate::model::Device) -> Vec<String> {
+    let names: Vec<String> = dev
+        .midi_in_port
+        .iter()
+        .chain(std::iter::once(&dev.midi_out_port))
+        .filter(|n| !n.is_empty())
+        .cloned()
+        .collect();
+    let (_, inputs) = crate::midi::list_ports();
+    if inputs.iter().any(|i| names.iter().any(|n| names_match(Some(n), i))) {
+        names
+    } else {
+        Vec::new()
+    }
+}
+
+/// Ob eine Nachricht vom Eingang `source_port` durch den Portfilter `allowed`
+/// kommt (leer = alles erlaubt).
+fn port_allowed(allowed: &[String], source_port: &str) -> bool {
+    allowed.is_empty() || allowed.iter().any(|n| names_match(Some(n), source_port))
 }
 
 /// Schreibt ein Projekt nach `<data_dir>/projects/<id>.json`. Freie Funktion
