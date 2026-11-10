@@ -180,7 +180,10 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
         "transport.tapTempo" => state.clock.send(ClockCommand::TapTempo),
         "transport.panic" => state.clock.send(ClockCommand::Panic),
         "transport.setBpm" => {
-            if let Some(bpm) = cmd.get("bpm").and_then(|v| v.as_f64()) {
+            if let Some(bpm) = cmd.get("bpm").and_then(|v| v.as_f64()).filter(|v| v.is_finite()) {
+                // Dieselbe Grenze wie im Clock-Thread — sonst stünde im Projekt
+                // ein Wert, den die Clock nie spielt.
+                let bpm = bpm.clamp(crate::clock::MIN_BPM, crate::clock::MAX_BPM);
                 state.project.lock().unwrap().bpm = bpm;
                 state.clock.send(ClockCommand::SetBpm(bpm));
             }
@@ -334,6 +337,17 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 cmd.get("sendClock").and_then(|v| v.as_bool()),
             ) {
                 with_device(state, &id, |d| d.send_clock = on);
+            }
+        }
+        "device.setClockRate" => {
+            if let (Some(id), Some(rate)) = (
+                str_field(&cmd, "deviceId"),
+                cmd.get("clockRate").and_then(|v| v.as_f64()),
+            ) {
+                // Auf einen erlaubten Wert einrasten (s. `ClockRate`), damit nie
+                // etwas Unsinniges im Projekt landet.
+                let rate = crate::engine::ClockRate::from_f64(rate).as_f64();
+                with_device(state, &id, |d| d.clock_rate = rate);
             }
         }
         // Schnell-Mute des ganzen Geräts — alle Lanes schweigen (s.

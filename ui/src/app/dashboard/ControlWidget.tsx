@@ -4,6 +4,7 @@
 //! (an Dashboard delegiert, da es die Multi-Pointer-Verfolgung besitzt).
 
 import { useEffect, useRef, useState } from "react";
+import { BPM_MAX, BPM_MIN } from "../../state";
 import { useNet, useSend } from "../store";
 
 export interface LiveControl {
@@ -74,8 +75,8 @@ export interface ControlWidgetProps {
 
 /** BPM-Bereich des Tempo-Knobs — dieselben Grenzen wie `transport.setBpm`
  *  serverseitig (`server/src/ws.rs`) und `Transport.tsx`s `setBpm`. */
-const TEMPO_MIN = 20;
-const TEMPO_MAX = 300;
+const TEMPO_MIN = BPM_MIN;
+const TEMPO_MAX = BPM_MAX;
 
 export function ControlWidget({ ctrl, deviceName, editMode, zoom, selected, onSelect, onContextMenu, onPress, onRelease, externalActive, recording, laneEnabled, laneGone, onToggleLane }: ControlWidgetProps) {
   const send = useSend();

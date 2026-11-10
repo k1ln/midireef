@@ -694,6 +694,8 @@ export interface Device {
   midiOutPort: string; // Portname
   midiInPort?: string;
   sendClock: boolean; // erhält dieses Device die MIDI-Clock?
+  /** Clock-Tempo relativ zum Projekt-BPM: 0.1, 0.125, 0.25, 0.5, 1 (Default), 2 … 10. */
+  clockRate?: number;
   muted: boolean; // Schnell-Mute: alle Lanes des Geräts schweigen (laufen aber weiter)
 
   /** Verknüpftes Geräte-Profil (benannte CC/PC-Maps). */
@@ -1207,6 +1209,7 @@ export type Command =
   | { t: "stepSeq.shift"; seqId: Id; by: number } // Linie rotieren (positiv = nach hinten)
   // ── Device & Profile ──
   | { t: "device.setSendClock"; deviceId: Id; sendClock: boolean }
+  | { t: "device.setClockRate"; deviceId: Id; clockRate: number }
   | { t: "device.setMuted"; deviceId: Id; muted: boolean } // Schnell-Mute des ganzen Geräts (alle Lanes schweigen, laufen aber weiter)
   | { t: "device.setProfile"; deviceId: Id; profileId?: Id }
   | { t: "device.setLatency"; deviceId: Id; latencyOffsetMs: number }

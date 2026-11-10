@@ -17,6 +17,15 @@ const CHANNEL_OPTIONS: SelectOption<number>[] = Array.from({ length: 16 }, (_, i
   label: `Ch ${i + 1}`,
 }));
 
+const CLOCK_RATE_OPTIONS: SelectOption<number>[] = [
+  { value: 0.1, label: "÷10 (1/10)" },
+  { value: 0.125, label: "÷8 (1/8)" },
+  { value: 0.25, label: "÷4 (1/4)" },
+  { value: 0.5, label: "÷2 (1/2)" },
+  { value: 1, label: "1× (project tempo)" },
+  ...Array.from({ length: 9 }, (_, i) => ({ value: i + 2, label: `${i + 2}×` })),
+];
+
 const PLAY_MODE_OPTIONS: SelectOption<string>[] = [
   { value: "sequential", label: "▶ Sequential — run through blocks in order" },
   { value: "random", label: "⇄ Random — jump to a random block" },
@@ -530,6 +539,20 @@ export function DeviceSettingsDock({ device, onOpenAddLane, onClose }: DeviceSet
           />
         </div>
       </Field>
+
+      {device.sendClock && (
+        <Field label="Clock speed">
+          <SelectMenu
+            variant="alt"
+            className="settings-dock-row"
+            title="Clock speed"
+            buttonLabel={CLOCK_RATE_OPTIONS.find((o) => o.value === (device.clockRate ?? 1))?.label ?? "1×"}
+            value={device.clockRate ?? 1}
+            options={CLOCK_RATE_OPTIONS}
+            onChange={(v) => send({ t: "device.setClockRate", deviceId: device.id, clockRate: v })}
+          />
+        </Field>
+      )}
 
       <Button
         variant="alt"

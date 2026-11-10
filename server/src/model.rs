@@ -332,6 +332,10 @@ pub fn default_device_color(index: usize) -> &'static str {
 /// Device (Instrument). Die Baustein-Bibliothek liegt seit der Projekt-Umstellung
 /// nicht mehr am Device, sondern an `Project.blocks` — ein Baustein ist reiner
 /// Inhalt und in jeder Lane jedes Geräts einsetzbar.
+fn default_clock_rate() -> f64 {
+    1.0
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Device {
@@ -351,6 +355,12 @@ pub struct Device {
     #[serde(rename = "channel", default, skip_serializing)]
     pub legacy_channel: Option<u8>,
     pub send_clock: bool,
+    /// Tempo der MIDI-Clock, die dieses Gerät bekommt, relativ zum Projekt-BPM:
+    /// 1.0 = gleich, 0.5 = halb, 2.0 = doppelt … Erlaubt sind 1/10, 1/8, 1/4,
+    /// 1/2 sowie 1…10 (s. `engine::ClockRate`); alles andere wird dort auf den
+    /// nächsten erlaubten Wert gerundet. `#[serde(default)]` → Altprojekte = 1×.
+    #[serde(default = "default_clock_rate")]
+    pub clock_rate: f64,
     /// Schnell-Mute des GANZEN Geräts: alle seine Lanes schweigen (laufen aber
     /// weiter, wie ein einzelnes `Lane.muted`). `#[serde(default)]` → Altprojekte
     /// laden als „nicht gemutet".
@@ -377,6 +387,7 @@ impl Device {
             midi_in_port: None,
             legacy_channel: None,
             send_clock: true,
+            clock_rate: 1.0,
             muted: false,
             profile_id: None,
             latency_offset_ms: 0.0,

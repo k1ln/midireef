@@ -16,6 +16,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { TransportState } from "../net";
+import { BPM_MAX, BPM_MIN } from "../state";
 import { useNet, useSend, useStoreValue } from "./store";
 import { useLocalPref } from "./useLocalPref";
 import { Button } from "./widgets/Button";
@@ -92,7 +93,7 @@ export function Transport({ view, onNav, onAddDevice }: TransportProps) {
   const bpmDragging = useRef(false);
 
   const setBpm = (value: number) => {
-    const next = Math.min(300, Math.max(20, Math.round(value)));
+    const next = Math.min(BPM_MAX, Math.max(BPM_MIN, Math.round(value)));
     if (next === bpmRef.current) return;
     bpmRef.current = next;
     setBpmDisplay(next);
@@ -258,7 +259,7 @@ export function Transport({ view, onNav, onAddDevice }: TransportProps) {
         onDragStart={() => (bpmDragging.current = true)}
         onDragEnd={() => (bpmDragging.current = false)}
         onTap={() =>
-          wheel({ title: "Tempo", min: 20, max: 300, value: bpmRef.current, unit: " BPM", onPick: setBpm })
+          wheel({ title: "Tempo", min: BPM_MIN, max: BPM_MAX, value: bpmRef.current, unit: " BPM", onPick: setBpm })
         }
       />
       <RepeatButton width={NUDGE} height={NUDGE} onFire={() => nudgeBpm(1)}>

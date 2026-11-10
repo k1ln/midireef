@@ -705,6 +705,77 @@ pub struct LaneRuntime {
     pub running: bool,
 }
 
+/// Clock-Tempo eines Geräts relativ zum Projekt-Tempo, als Bruch
+/// `num/den` Ticks je Basis-Puls (Basis = 24 PPQN): ½ → 1/2, 3× → 3/1.
+/// Bewusst nur die Werte der UI-Auswahl (1/10, 1/8, 1/4, 1/2, 1…10) — ein
+/// Bruch statt `f64` hält die Tick-Positionen exakt (kein Aufsummieren von
+/// Rundungsfehlern, ein 3×-Tick landet genau auf Puls k statt k±ε).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClockRate {
+    num: u64,
+    den: u64,
+}
+
+impl ClockRate {
+    pub const ONE: ClockRate = ClockRate { num: 1, den: 1 };
+
+    pub fn from_f64(v: f64) -> Self {
+        if !v.is_finite() || v <= 0.0 {
+            return Self::ONE;
+        }
+        if v >= 1.0 {
+            Self { num: (v.round() as u64).clamp(1, 10), den: 1 }
+        } else {
+            // Nächster erlaubter Teiler (Abstand im Verhältnis, nicht linear).
+            let d = [2u64, 4, 8, 10]
+                .into_iter()
+                .min_by(|a, b| {
+                    let da = (v * *a as f64).ln().abs();
+                    let db = (v * *b as f64).ln().abs();
+                    da.partial_cmp(&db).unwrap()
+                })
+                .unwrap();
+            Self { num: 1, den: d }
+        }
+    }
+
+    pub fn as_f64(self) -> f64 {
+        self.num as f64 / self.den as f64
+    }
+}
+
+/// Ein Clock-Ausgang samt Raster.
+struct ClockPort {
+    port: String,
+    rate: ClockRate,
+    /// Index des nächsten Ticks (Tick k liegt bei Position k·den/num Basis-
+    /// Pulsen). `None` = noch nicht eingerastet (neuer Port / neue Rate mitten
+    /// im Lauf): dann beginnt die Zählung am nächsten Raster-Punkt ab jetzt,
+    /// statt eine ganze Strecke Ticks nachzuholen.
+    next_tick: Option<u64>,
+}
+
+impl ClockPort {
+    /// Wie viele Ticks sind bis Position `pos` (Basis-Pulse) fällig?
+    fn due_ticks(&mut self, pos: f64) -> u32 {
+        let ClockRate { num, den } = self.rate;
+        let k = *self
+            .next_tick
+            .get_or_insert_with(|| (pos.max(0.0) * num as f64 / den as f64 - 1e-9).ceil().max(0.0) as u64);
+        // Anzahl Ticks mit k·den/num <= pos, d.h. k <= pos·num/den. Das Epsilon
+        // fängt Rundung bei exakt auf dem Raster liegendem `pos` ab.
+        let upto = (pos * num as f64 / den as f64 + 1e-9).floor();
+        if upto < 0.0 || (upto as u64) < k {
+            return 0;
+        }
+        let n = upto as u64 + 1 - k;
+        // Nach einem langen Hänger nicht dutzende Ticks auf einmal schicken.
+        let n = n.min(num.max(1) * 4);
+        self.next_tick = Some(upto as u64 + 1);
+        n as u32
+    }
+}
+
 pub struct Engine {
     midi: MidiOutManager,
     lanes: Vec<CLane>,
@@ -718,7 +789,7 @@ pub struct Engine {
     gen_seen: u64,
     /// Ports der Devices mit aktiviertem `sendClock` — Clock/Start/Stop gehen
     /// NUR dorthin, nicht an jeden offenen Ausgang (s. `Device::send_clock`).
-    clock_ports: Vec<String>,
+    clock_ports: Vec<ClockPort>,
     /// Sekunden seit Transport-Start — Basis für frei laufende (Hz-)LFOs,
     /// unabhängig vom BPM-synchronen Puls-Zähler.
     elapsed_secs: f64,
@@ -789,9 +860,16 @@ impl Engine {
         }
     }
 
-    pub fn clock_pulse(&mut self) {
-        for port in &self.clock_ports {
-            self.midi.send(port, &[MIDI_CLOCK]);
+    /// Sendet alle Clock-Ticks, die bis Position `pos` (in Basis-Pulsen seit
+    /// Start, Bruchteile erlaubt) fällig sind. Jeder Port hat sein eigenes
+    /// Raster (`ClockRate`): schnelle Geräte bekommen mehrere Ticks je
+    /// Basis-Puls, langsame nur jeden n-ten.
+    pub fn clock_ticks_until(&mut self, pos: f64) {
+        for cp in &mut self.clock_ports {
+            let n = cp.due_ticks(pos);
+            for _ in 0..n {
+                self.midi.send(&cp.port, &[MIDI_CLOCK]);
+            }
         }
     }
 
@@ -800,16 +878,17 @@ impl Engine {
         self.playing = true;
         self.next_global_pulse = 0;
         self.seqs.transport_start(&mut self.midi);
-        for port in &self.clock_ports {
-            self.midi.send(port, &[MIDI_START]);
+        for cp in &mut self.clock_ports {
+            cp.next_tick = Some(0);
+            self.midi.send(&cp.port, &[MIDI_START]);
         }
     }
 
     pub fn transport_stop(&mut self) {
         self.playing = false;
         self.seqs.transport_stop(&mut self.midi);
-        for port in &self.clock_ports {
-            self.midi.send(port, &[MIDI_STOP]);
+        for cp in &self.clock_ports {
+            self.midi.send(&cp.port, &[MIDI_STOP]);
         }
         self.midi.all_notes_off();
         self.pending.clear();
@@ -1288,10 +1367,22 @@ impl Engine {
             })
             .collect();
 
-        let mut clock_ports = Vec::new();
+        // Ein Port = eine Clock. Teilen sich zwei Geräte einen Port, gewinnt
+        // das erste (eine Leitung kann nur ein Tempo tragen).
+        let mut clock_ports: Vec<ClockPort> = Vec::new();
         for dev in &project.devices {
-            if dev.send_clock && !clock_ports.contains(&dev.midi_out_port) {
-                clock_ports.push(dev.midi_out_port.clone());
+            if dev.send_clock && !clock_ports.iter().any(|c| c.port == dev.midi_out_port) {
+                let rate = ClockRate::from_f64(dev.clock_rate);
+                // Laufenden Tick-Zähler übernehmen, solange sich die Rate nicht
+                // ändert — ein Rebuild mitten im Lauf darf die Clock nicht
+                // zurücksetzen. Bei neuer Rate (oder neuem Port) rastet der
+                // Zähler beim nächsten Tick neu auf die aktuelle Position ein.
+                let next_tick = self
+                    .clock_ports
+                    .iter()
+                    .find(|c| c.port == dev.midi_out_port && c.rate == rate)
+                    .and_then(|c| c.next_tick);
+                clock_ports.push(ClockPort { port: dev.midi_out_port.clone(), rate, next_tick });
             }
         }
         self.clock_ports = clock_ports;
@@ -3707,5 +3798,62 @@ mod walker_tests {
             moved_pitch,
             "an unrelated rebuild must not reset the walker's live position"
         );
+    }
+}
+
+#[cfg(test)]
+mod clock_rate_tests {
+    use super::*;
+
+    /// Simuliert `pulses` Basis-Pulse (Aufruf je Puls + einmal auf halber
+    /// Strecke dazwischen, wie der Clock-Thread) und zählt die Ticks.
+    fn ticks_over(rate: f64, pulses: u32) -> u32 {
+        let mut cp = ClockPort { port: String::new(), rate: ClockRate::from_f64(rate), next_tick: Some(0) };
+        let mut total = 0;
+        for p in 0..pulses {
+            total += cp.due_ticks(p as f64);
+            total += cp.due_ticks(p as f64 + 0.5);
+        }
+        total + cp.due_ticks(pulses as f64 - 0.01) // alles bis kurz vor Puls `pulses`
+    }
+
+    #[test]
+    fn ticks_per_beat_match_rate() {
+        // 96 Basis-Pulse = 4 Beats.
+        assert_eq!(ticks_over(1.0, 96), 96);
+        assert_eq!(ticks_over(2.0, 96), 192);
+        assert_eq!(ticks_over(3.0, 96), 288);
+        assert_eq!(ticks_over(10.0, 96), 960);
+        assert_eq!(ticks_over(0.5, 96), 48);
+        assert_eq!(ticks_over(0.25, 96), 24);
+        assert_eq!(ticks_over(0.125, 96), 12);
+        assert_eq!(ticks_over(0.1, 96), 10); // ceil(96/10): Ticks bei 0,10,…,90
+    }
+
+    #[test]
+    fn rate_snaps_to_allowed_values() {
+        for (inp, out) in [(0.0, 1.0), (-3.0, 1.0), (f64::NAN, 1.0), (0.3, 0.25), (0.45, 0.5), (0.11, 0.1), (0.12, 0.125), (2.4, 2.0), (99.0, 10.0)] {
+            assert_eq!(ClockRate::from_f64(inp).as_f64(), out, "{inp}");
+        }
+    }
+
+    #[test]
+    fn slow_clock_ticks_on_the_grid_and_fast_clock_between_pulses() {
+        let mut half = ClockPort { port: String::new(), rate: ClockRate::from_f64(0.5), next_tick: Some(0) };
+        assert_eq!(half.due_ticks(0.0), 1); // Tick direkt nach Start
+        assert_eq!(half.due_ticks(1.0), 0);
+        assert_eq!(half.due_ticks(2.0), 1);
+        let mut triple = ClockPort { port: String::new(), rate: ClockRate::from_f64(3.0), next_tick: Some(0) };
+        assert_eq!(triple.due_ticks(0.0), 1);
+        assert_eq!(triple.due_ticks(0.32), 0);
+        assert_eq!(triple.due_ticks(0.34), 1); // 1/3
+        assert_eq!(triple.due_ticks(1.0), 2); // 2/3 und 3/3 exakt
+    }
+
+    #[test]
+    fn unanchored_port_starts_at_next_grid_point() {
+        let mut cp = ClockPort { port: String::new(), rate: ClockRate::from_f64(0.5), next_tick: None };
+        assert_eq!(cp.due_ticks(5.0), 0); // Raster 0,2,4,6 → nächster Tick bei 6
+        assert_eq!(cp.due_ticks(6.0), 1);
     }
 }

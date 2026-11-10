@@ -87,6 +87,10 @@ impl ClockHandle {
     }
 }
 
+/// Erlaubter Tempo-Bereich (BPM) — gilt für Tippen, Wheel, Knob und Tap.
+pub const MIN_BPM: f64 = 1.0;
+pub const MAX_BPM: f64 = 1000.0;
+
 const PPQN: u32 = 24;
 const BEATS_PER_BAR: u32 = 4; // Grundgerüst: 4/4; folgt später der Taktart
 const UI_BROADCAST_EVERY: u32 = 6; // UI-Tick alle 6 Pulse (16tel)
@@ -211,7 +215,7 @@ fn clock_loop(
                     broadcast_runtime(&events, Vec::new(), bpm, false);
                 }
                 ClockCommand::SetBpm(v) => {
-                    bpm = v.clamp(20.0, 300.0);
+                    bpm = v.clamp(MIN_BPM, MAX_BPM);
                     interval = pulse_interval(bpm);
                     let mut t = transport.lock().unwrap();
                     t.bpm = bpm;
@@ -228,7 +232,7 @@ fn clock_loop(
                         }
                         let avg = sum / (taps.len() - 1) as f64;
                         if avg > 0.0 {
-                            bpm = (60.0 / avg).clamp(20.0, 300.0);
+                            bpm = (60.0 / avg).clamp(MIN_BPM, MAX_BPM);
                             interval = pulse_interval(bpm);
                             let mut t = transport.lock().unwrap();
                             t.bpm = bpm;
@@ -356,7 +360,7 @@ fn clock_loop(
             let now = Instant::now();
             while now >= next_pulse {
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    engine.clock_pulse();
+                    engine.clock_ticks_until(pulses as f64);
                     engine.on_pulse(pulses, interval.as_secs_f64());
                 }));
                 if res.is_err() {
@@ -381,6 +385,12 @@ fn clock_loop(
                     broadcast_runtime(&events, engine.runtime_snapshot(), bpm, true);
                 }
             }
+            // Zwischen zwei Basis-Pulsen fällige Ticks (Geräte mit Clock > 1×).
+            // `next_pulse` ist der Zeitpunkt von Puls `pulses`, also liegt jetzt
+            // bei `pulses - Restzeit/Intervall`.
+            let frac = next_pulse.saturating_duration_since(Instant::now()).as_secs_f64()
+                / interval.as_secs_f64();
+            engine.clock_ticks_until(pulses as f64 - frac);
             std::thread::sleep(Duration::from_millis(1));
         } else {
             std::thread::sleep(Duration::from_millis(5));

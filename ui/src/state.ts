@@ -278,12 +278,17 @@ export interface Lane {
   controls: LaneControl[];
 }
 
+/** Erlaubter Tempo-Bereich — muss zu `MIN_BPM`/`MAX_BPM` in server/src/clock.rs passen. */
+export const BPM_MIN = 1;
+export const BPM_MAX = 1000;
+
 export interface Device {
   id: string;
   name: string;
   color?: string;
   midiOutPort: string;
   sendClock: boolean;
+  clockRate?: number;
   muted?: boolean;
   latencyOffsetMs: number;
   lanes: Lane[];
