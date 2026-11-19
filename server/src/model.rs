@@ -219,6 +219,13 @@ pub struct Lane {
     /// Device-Kanal → 1).
     #[serde(default)]
     pub channel: u8,
+    /// MIDI-EINGANG, von dem aus diese Lane live eingespielt wird (Piano-Rolle
+    /// `noteInput`, Live-Aufnahme `record.arm`): nur Noten von genau diesem Port
+    /// zählen. `None` = jeder Eingang. Hängt bewusst an der Lane und nicht am
+    /// Device — am selben Synth können Lanes von verschiedenen Keyboards
+    /// gespielt werden.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub midi_in_port: Option<String>,
     /// Nur für `role == "cc"`: der Ziel-Knob dieser Lane (ein gelerntes
     /// Live-Control aus `Project.controls`, `kind == "knob"`). Die CC-Bausteine
     /// der Lane liefern ausschließlich die BEWEGUNG (0..1) — Port, Kanal und
@@ -289,6 +296,7 @@ impl Lane {
             play_mode: "sequential".to_string(),
             trigger_quantize: "nextBar".to_string(),
             channel: 1,
+            midi_in_port: None,
             cc_control_id: None,
             chain_slot: None,
             keytrack_source_lane_id: None,

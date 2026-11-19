@@ -5,7 +5,7 @@
 
 import { useState } from "react";
 import type { Device, Lane } from "../../state";
-import { useSend } from "../store";
+import { useSend, useStoreValue } from "../store";
 import { useTouchKeyboard } from "../TouchKeyboard";
 import { useLocalPref } from "../useLocalPref";
 import { Button } from "../widgets/Button";
@@ -16,6 +16,8 @@ const CHANNEL_OPTIONS: SelectOption<number>[] = Array.from({ length: 16 }, (_, i
   value: i + 1,
   label: `Ch ${i + 1}`,
 }));
+
+const NO_INPUTS: string[] = [];
 
 const CLOCK_RATE_OPTIONS: SelectOption<number>[] = [
   { value: 0.1, label: "÷10 (1/10)" },
@@ -245,6 +247,15 @@ export function LaneSettingsDock({ lane, onOpenCcTarget, onOpenChain, onOpenKeyt
   const quantize = lane.triggerQuantize || "nextBar";
   const channel = lane.channel || 1;
   const collapsed = !!lane.collapsed;
+  const midiInputs = useStoreValue((s) => s.midiInputs ?? NO_INPUTS);
+  const midiIn = lane.midiInPort || "";
+  // Ein gespeicherter Port, der gerade nicht angesteckt ist, bleibt wählbar
+  // (sonst würde das Menü ihn stillschweigend als „Any" anzeigen).
+  const inputOptions: SelectOption<string>[] = [
+    { value: "", label: "Any input" },
+    ...(midiIn && !midiInputs.includes(midiIn) ? [{ value: midiIn, label: `${midiIn} (offline)` }] : []),
+    ...midiInputs.map((p) => ({ value: p, label: p })),
+  ];
 
   return (
     <DockShell
@@ -270,6 +281,18 @@ export function LaneSettingsDock({ lane, onOpenCcTarget, onOpenChain, onOpenKeyt
           value={channel}
           options={CHANNEL_OPTIONS}
           onChange={(v) => send({ t: "lane.setChannel", laneId: lane.id, channel: v })}
+        />
+      </Field>
+
+      <Field label="MIDI input (live play-in)">
+        <SelectMenu
+          variant="alt"
+          className="settings-dock-row"
+          title="MIDI input for this lane"
+          buttonLabel={midiIn || "Any input"}
+          value={midiIn}
+          options={inputOptions}
+          onChange={(v) => send({ t: "lane.setMidiIn", laneId: lane.id, port: v || null })}
         />
       </Field>
 

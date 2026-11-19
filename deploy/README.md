@@ -39,8 +39,14 @@ das Nachladen ohne Reload.
 
 ```bash
 cp deploy/config.env.example deploy/config.env
-$EDITOR deploy/config.env          # PI_HOST, PI_USER, PI_DIR
+$EDITOR deploy/config.env          # PI_HOST, PI_USER, PI_DIR, PI_HOSTNAME
 ```
+
+`PI_HOSTNAME` (Standard `midireef`) ist der Name, den der Pi im Netz tragen soll:
+nach `make deploy` ist die UI von jedem Gerät im selben Netz (z.B. Tablet) unter
+`http://<PI_HOSTNAME>.local:8787` erreichbar. Der Release-Build setzt den
+Hostnamen auf dem Pi (`deploy/set-hostname.sh`, idempotent) und zieht `PI_HOST`
+in `config.env` nach, falls es der alte `.local`-Name war.
 
 **2. SSH-Key auf den Pi** (sonst fragt jeder Deploy nach dem Passwort):
 

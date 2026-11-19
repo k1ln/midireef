@@ -19,15 +19,14 @@ pub struct RecordArm {
     pub control_id: String,
     pub lane_id: String,
     pub channel: u8,
-    /// Portnamen des Geräts, dem das Keyboard-Control gehört — nur Noten von
-    /// diesem Eingang werden aufgenommen (leer = nicht einschränkbar, s.
-    /// `connected_device_ports`).
+    /// Eingang der Ziel-Lane (`Lane::midi_in_port`) — nur Noten von diesem Port
+    /// werden aufgenommen (leer = jeder Eingang).
     pub source_ports: Vec<String>,
 }
 
 /// Ein Melodie-Baustein, der gerade im Piano-Roll-Editor auf Eingabe wartet
-/// (`noteInput.listen`). Solange einer armiert ist, werden Noten JEDES
-/// MIDI-Eingangs als `noteInput.note` an die UI gemeldet — dort trägt der
+/// (`noteInput.listen`). Solange einer armiert ist, werden Noten des
+/// Lane-Eingangs (oder, ohne Auswahl, JEDES MIDI-Eingangs) als `noteInput.note` an die UI gemeldet — dort trägt der
 /// Editor sie an seinem Schreib-Cursor ein (siehe `PlayIn.tsx`).
 #[derive(Debug, Clone)]
 pub struct NoteInputArm {
@@ -41,11 +40,8 @@ pub struct NoteInputArm {
     /// Tonhöhen, die dieses Mithören gerade hält — beim Entwaffnen bekommt
     /// jede davon ihr Note-Off, sonst bliebe ein Ton hängen.
     pub held: HashSet<u8>,
-    /// Portnamen des Zielgeräts: nur Noten von DIESEM Eingang gehen in den
-    /// Editor. Ohne den Filter landet alles, was irgendein Eingang sendet
-    /// (Drumcomputer-Echo, Clock-Begleitnoten anderer Geräte), im Baustein,
-    /// sobald ein Beat läuft. Leer = nicht einschränkbar (s.
-    /// `connected_device_ports`).
+    /// Eingang der Ziel-Lane (`Lane::midi_in_port`): nur Noten von DIESEM Port
+    /// gehen in den Editor. Leer = jeder Eingang.
     pub source_ports: Vec<String>,
 }
 
@@ -471,7 +467,7 @@ impl AppState {
     ///
     /// Bewusst OHNE Kanalfilter: das angeschlossene Keyboard ist hier keine
     /// gelernte Zuordnung, sondern schlicht „das Ding, auf dem gespielt wird".
-    /// Wohl aber mit PORTfilter: nur der Eingang des Zielgeräts zählt (s.
+    /// Wohl aber mit PORTfilter: nur der Eingang der Ziel-Lane zählt (s.
     /// `NoteInputArm::source_ports`).
     /// Wer beim Einspielen den Kanal seines Keyboards suchen muss, hat schon
     /// verloren.
@@ -955,25 +951,14 @@ fn strip_io_suffix(name: &str) -> String {
     trimmed.to_string()
 }
 
-/// Portnamen, unter denen ein Gerät als MIDI-EINGANG auftaucht (`midiInPort`
-/// und, da viele Geräte denselben Namen als In und Out melden, der Ausgang) —
-/// aber nur, wenn gerade wirklich ein Eingang dazu passt. Sonst leer: ein
-/// Gerät ohne eigenen Eingang (Synth, mit separatem Keyboard gespielt) darf
-/// die Eingabe nicht komplett abwürgen, dann gilt jeder Eingang.
-pub fn connected_device_ports(dev: &crate::model::Device) -> Vec<String> {
-    let names: Vec<String> = dev
-        .midi_in_port
+/// Eingangsfilter einer Lane für das Live-Einspielen: der gewählte Port
+/// (`Lane::midi_in_port`) oder leer = jeder Eingang.
+pub fn lane_input_ports(lane: &crate::model::Lane) -> Vec<String> {
+    lane.midi_in_port
         .iter()
-        .chain(std::iter::once(&dev.midi_out_port))
-        .filter(|n| !n.is_empty())
+        .filter(|p| !p.is_empty())
         .cloned()
-        .collect();
-    let (_, inputs) = crate::midi::list_ports();
-    if inputs.iter().any(|i| names.iter().any(|n| names_match(Some(n), i))) {
-        names
-    } else {
-        Vec::new()
-    }
+        .collect()
 }
 
 /// Ob eine Nachricht vom Eingang `source_port` durch den Portfilter `allowed`
@@ -1258,6 +1243,22 @@ fn knob_with_cc(controls: &serde_json::Value, device_id: &str, cc: u8) -> Option
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lane_input_filter() {
+        let mut lane = crate::model::Lane::new("melody", "L".into());
+        // Ohne Auswahl: jeder Eingang darf.
+        assert!(lane_input_ports(&lane).is_empty());
+        assert!(port_allowed(&lane_input_ports(&lane), "KeyStep 37 mk2 32:0"));
+        // Leerer String zählt wie „nicht gesetzt".
+        lane.midi_in_port = Some(String::new());
+        assert!(lane_input_ports(&lane).is_empty());
+        // Gewählter Eingang: nur dieser.
+        lane.midi_in_port = Some("KeyStep 37 mk2 32:0".into());
+        let allowed = lane_input_ports(&lane);
+        assert!(port_allowed(&allowed, "KeyStep 37 mk2 32:0"));
+        assert!(!port_allowed(&allowed, "TD-3-MO MIDI 1 48:0"));
+    }
+
     use super::*;
     use crate::model::{Device, Lane};
 

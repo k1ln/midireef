@@ -26,6 +26,8 @@ INSTALL_DIR="${MIDIREEF_DIR:-$HOME/midireef}"
 REPO_URL="${MIDIREEF_REPO:-https://github.com/k1ln/midireef.git}"
 BRANCH="${MIDIREEF_BRANCH:-main}"
 PORT="${MIDIREEF_PORT:-8787}"
+# Name im Netz → http://<name>.local:$PORT (z.B. vom Tablet). Leer = Hostname nicht anfassen.
+NET_HOSTNAME="${MIDIREEF_HOSTNAME-midireef}"
 PI_USER="$(whoami)"
 
 [[ "$(uname -s)" == "Linux" ]] || die "This installs a Linux (Raspberry Pi OS) service — run it on the Pi, not here."
@@ -71,6 +73,12 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
   || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
   chromium libasound2 alsa-utils network-manager curl rsync git nodejs npm wlr-randr \
   build-essential pkg-config libasound2-dev
+
+# ── 2b. Hostname (mDNS: http://<name>.local) ────────────────────────────────
+if [[ -n "$NET_HOSTNAME" ]]; then
+  log "Setting hostname to '$NET_HOSTNAME' (reachable as $NET_HOSTNAME.local)"
+  bash "$SRC_DIR/deploy/set-hostname.sh" "$NET_HOSTNAME" || warn "Could not set the hostname — the Pi keeps the name '$(hostname)'."
+fi
 
 mkdir -p "$INSTALL_DIR"/bin "$INSTALL_DIR"/ui "$INSTALL_DIR"/data/projects \
          "$HOME/.config/midireef" "$HOME/.config/systemd/user"

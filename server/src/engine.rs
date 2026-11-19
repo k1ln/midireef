@@ -2664,21 +2664,19 @@ struct BlockJson {
     // ── Arp ──
     #[serde(rename = "chordNotes", default)]
     chord_notes: Vec<i32>,
-    #[serde(default = "arp_up")]
-    direction: String,
     #[serde(rename = "gateSteps", default = "one_u32")]
     gate_steps: u32,
     #[serde(rename = "rateSteps", default = "one_u32")]
     rate_steps: u32,
     #[serde(default = "vel_100")]
     velocity: u8,
-    /// Welche Note EINES Durchlaufs durch den Notenvorrat driftet (0-basiert,
-    /// `None`/außerhalb des Vorrats = kein Drift).
-    #[serde(rename = "driftIndex", default)]
-    drift_index: Option<u32>,
-    /// Steps Verschiebung pro Loop für die Drift-Note, s. `StepMod.drift_steps`.
-    #[serde(rename = "driftAmount", default)]
-    drift_amount: i32,
+    /// Arp-MELODIE: Folge von Indizes in `chordNotes` (die "Quadrate"), je einer
+    /// pro `rateSteps`; `-1` = Pause. Die Melodie kennt keine Tonhöhen, nur
+    /// Verweise — ändert sich die Tonhöhe eines Quadrats, klingt jede Stelle,
+    /// die darauf zeigt, sofort anders. `None` (Altprojekt ohne Melodie) =
+    /// jedes Quadrat einmal aufwärts.
+    #[serde(default)]
+    pattern: Option<Vec<i32>>,
     // ── Walker ──
     #[serde(rename = "borderLow", default = "walker_border_low_default")]
     border_low: i32,
@@ -2919,22 +2917,30 @@ fn compile_block(
                 .collect();
             CKind::Chord(notes)
         }
-        // Arp: den Notenvorrat vorab in eine Einzelnoten-Folge ausrollen.
+        // Arp: Quadrate (`chordNotes`, Reihenfolge = Identität, Duplikate
+        // erlaubt) + Melodie (`pattern`, Indizes darauf) vorab zu einer
+        // Einzelnoten-Folge ausrollen.
         "arp" => {
-            let pool: Vec<u8> = b
+            let squares: Vec<u8> = b
                 .chord_notes
                 .iter()
                 .map(|n| (n + transpose).clamp(0, 127) as u8)
                 .collect();
-            CKind::Arp(build_note_sequence(
-                &pool,
-                &b.direction,
+            let default_pattern: Vec<i32>;
+            let pattern: &[i32] = match &b.pattern {
+                Some(p) => p,
+                None => {
+                    default_pattern = (0..squares.len() as i32).collect();
+                    &default_pattern
+                }
+            };
+            CKind::Arp(build_arp_pattern(
+                &squares,
+                pattern,
                 b.rate_steps.max(1),
                 b.gate_steps.max(1),
                 b.velocity.clamp(1, 127),
                 total_steps,
-                b.drift_index.map(|v| v as usize),
-                b.drift_amount,
             ))
         }
         // Walker: Nodes aus der JSON in Laufzeit-Zustand wandeln (Positionen
@@ -3089,6 +3095,42 @@ fn drifted_step(step: u32, drift_steps: i32, loops_done: u32, total_steps: u32) 
     let total = total_steps.max(1) as i64;
     let shifted = step as i64 + drift_steps as i64 * loops_done as i64;
     shifted.rem_euclid(total) as u32
+}
+
+/// Rollt eine Arp-Melodie aus: alle `rate_steps` Steps der nächste Eintrag von
+/// `pattern` (Index in `squares`, außerhalb/negativ = Pause), je `gate_steps`
+/// lang, die Melodie wiederholt sich, bis `total_steps` voll ist. Die
+/// Tonhöhe wird hier aufgelöst — beim nächsten Rebuild (jede Projekt-
+/// Änderung, auch während des Spielens) kommt sie also frisch aus den Quadraten.
+fn build_arp_pattern(
+    squares: &[u8],
+    pattern: &[i32],
+    rate_steps: u32,
+    gate_steps: u32,
+    vel: u8,
+    total_steps: u32,
+) -> Vec<CNote> {
+    if pattern.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut step = 0u32;
+    let mut i = 0usize;
+    while step < total_steps {
+        let idx = pattern[i % pattern.len()];
+        if let Some(&note) = usize::try_from(idx).ok().and_then(|k| squares.get(k)) {
+            out.push(CNote {
+                step,
+                len_steps: gate_steps as f32,
+                note,
+                vel,
+                m: StepMod::default(),
+            });
+        }
+        i += 1;
+        step += rate_steps;
+    }
+    out
 }
 
 /// Rollt einen Notenvorrat (Arp-Notenvorrat ODER die aktuellen Tonhöhen eines
@@ -3592,6 +3634,26 @@ mod groove_tests {
     fn build_arp_without_drift_index_drifts_nothing() {
         let notes = build_note_sequence(&[60, 64, 67], "up", 1, 1, 100, 6, None, 5);
         assert!(notes.iter().all(|n| n.m.drift_steps == 0));
+    }
+
+    /// Arp-Melodie: Verweise auf Quadrate, Pause bei -1/ungültigem Index, die
+    /// Melodie wiederholt sich über die Blocklänge. Dasselbe Quadrat an mehreren
+    /// Stellen = dieselbe Tonhöhe; ändert sich das Quadrat, ändern sich alle.
+    #[test]
+    fn arp_pattern_resolves_squares_and_loops() {
+        let pitches = |squares: &[u8]| -> Vec<(u32, u8)> {
+            build_arp_pattern(squares, &[0, 1, 0, -1, 7], 2, 1, 100, 12)
+                .iter()
+                .map(|n| (n.step, n.note))
+                .collect()
+        };
+        // Index 7 existiert nicht -> Pause wie -1. 6 Slots * rate 2 = 12 Steps:
+        // Slots 0..5 = [0,1,0,-1,7,0].
+        assert_eq!(pitches(&[60, 64]), vec![(0, 60), (2, 64), (4, 60), (10, 60)]);
+        // Quadrat 0 um 2 Halbtöne hoch: BEIDE Stellen ziehen mit, Quadrat 1 nicht.
+        assert_eq!(pitches(&[62, 64]), vec![(0, 62), (2, 64), (4, 62), (10, 62)]);
+        // Leere Melodie -> nichts.
+        assert!(build_arp_pattern(&[60], &[], 1, 1, 100, 16).is_empty());
     }
 
     /// `downUp` ist der Spiegel von `upDown`: startet oben, geht runter, dann

@@ -387,15 +387,18 @@ export interface ChordBlock extends BlockBase {
   scale?: Scale;
 }
 
-export type ArpDirection = "up" | "down" | "upDown" | "random" | "asPlayed";
-
+/**
+ * Arp = zwei getrennte Dinge: die "Quadrate" (`chordNotes`, Tonhöhen — Reihen-
+ * folge ist die Identität, Duplikate/Überkreuzen erlaubt) und die Melodie
+ * (`pattern`, Indizes auf die Quadrate, -1 = Pause). Ein Quadrat umzustimmen
+ * ändert jede Melodie-Stelle, die darauf zeigt — auch während des Spielens.
+ */
 export interface ArpBlock extends BlockBase {
   type: "arp";
-  baseNote: MidiNote;
-  chordNotes: MidiNote[]; // Notenvorrat
-  direction: ArpDirection;
+  chordNotes: MidiNote[]; // Quadrate
+  pattern?: number[]; // Melodie; fehlt (Altprojekt) = jedes Quadrat einmal aufwärts
   gateSteps: number; // Notenlänge in Steps
-  rateSteps: number; // Abstand zwischen Noten
+  rateSteps: number; // Abstand zwischen Melodie-Stellen
   velocity: Midi7Bit;
   scale?: Scale;
 }
@@ -618,6 +621,9 @@ export interface Lane {
 
   /** MIDI-Kanal dieser Lane (1–16). Der Kanal sitzt ausschließlich an der Lane. */
   channel: MidiChannel;
+
+  /** MIDI-Eingang, von dem diese Lane live eingespielt wird (Piano-Rolle, Live-Aufnahme). Leer/undefined = jeder Eingang. */
+  midiInPort?: string | null;
 
   /**
    * Nur für `role === "cc"`: Ziel-Knob dieser Lane — ein gelerntes Live-Control
@@ -1162,7 +1168,15 @@ export type Command =
   | { t: "block.previewNote"; blockId: Id; note: MidiNote; on: boolean; velocity?: Midi7Bit } // Baustein-Detail: Tonhöhe live anspielen (Klaviatur der Piano-Rolle). Ändert NICHTS am Projekt; Ziel ist die erste Lane, die den Baustein verwendet. on=false ist das zugehörige Note-Off
   | { t: "beat.toggleStep"; blockId: Id; lineId: Id; step: number } // Baustein-Detail: Step an/aus
   | { t: "chord.toggleNote"; blockId: Id; step: number; note: MidiNote } // Baustein-Detail: Note im Akkord an Step an/aus
-  | { t: "arp.toggleNote"; blockId: Id; note: MidiNote } // Baustein-Detail: Note im Notenvorrat an/aus
+  | { t: "arp.addSquare"; blockId: Id; note?: MidiNote } // neues Quadrat (ohne note: letztes + 2 Halbtöne)
+  | { t: "arp.setSquare"; blockId: Id; index: number; note: MidiNote } // Quadrat auf feste Tonhöhe
+  | { t: "arp.shiftSquare"; blockId: Id; index: number; delta: number } // Quadrat um delta Halbtöne (Pfeile)
+  | { t: "arp.removeSquare"; blockId: Id; index: number } // Melodie-Stellen darauf werden Pausen
+  | { t: "arp.setStep"; blockId: Id; index: number; square: number } // Melodie-Stelle → Quadrat (-1 = Pause); index == Länge hängt an
+  | { t: "arp.shiftStep"; blockId: Id; index: number; delta: number } // Pfeile an EINER Melodie-Stelle (nur sie, nicht alle auf demselben Quadrat)
+  | { t: "arp.playIn"; blockId: Id; index: number; note: MidiNote } // eingespielte Note: Quadrat dieser Tonhöhe suchen/anlegen, Melodie-Stelle index darauf
+  | { t: "arp.removeStep"; blockId: Id; index?: number } // ohne index: letzte Stelle
+  | { t: "arp.clearSteps"; blockId: Id }
   | { t: "walker.setBorder"; blockId: Id; which: "low" | "high"; note: MidiNote }
   | { t: "walker.addNode"; blockId: Id; startNote: MidiNote } // fügt zwischen bestehenden Nodes/Wänden ein (nach Tonhöhe sortiert)
   | { t: "walker.removeNode"; blockId: Id; nodeId: Id }

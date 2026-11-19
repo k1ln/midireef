@@ -12,7 +12,7 @@ import { useSend } from "../store";
 import { noteName, useNotePicker } from "../NotePicker";
 import { Button } from "../widgets/Button";
 import { Popup } from "../widgets/Popup";
-import { StepScroller, StepBars, StepCell, ROLL_LOW_NOTE, ROLL_HIGH_NOTE, type StepFlow } from "./StepGrid";
+import { StepBars, StepCell, ROLL_LOW_NOTE, ROLL_HIGH_NOTE, type StepFlow } from "./StepGrid";
 import { useNumberEditor, useSetField, useSetWalkerNodeField } from "../useNumberEditor";
 import { useWheelPicker } from "../widgets/WheelPicker";
 import { useLongPress } from "../useLongPress";
@@ -23,7 +23,6 @@ import { useTouchKeyboard } from "../TouchKeyboard";
  *  Feedback: "same sizes as melody"). */
 const BEAT_CELL = 64;
 
-const DIRECTIONS = ["up", "down", "upDown", "random", "asPlayed"];
 const MSG_KINDS = ["programChange", "cc", "note"];
 const WALKER_STYLES = ["up", "down", "upDown", "downUp", "random", "asPlayed", "chord", "rollUp", "rollDown"];
 
@@ -212,108 +211,6 @@ export function ChordEditor({ block, flow }: { block: Block; flow: StepFlow }) {
           })
         }
       </StepBars>
-    </div>
-  );
-}
-
-// ── Arp: Notenvorrat-Strip + Parameter ──────────────────────────────────────
-
-export function ArpEditor({ block }: { block: Block }) {
-  const send = useSend();
-  const wheel = useWheelPicker();
-  const setField = useSetField();
-  const base = block.baseNote ?? 60;
-  const low = base - 12;
-  const high = base + 12;
-  const chordNotes = block.chordNotes ?? [];
-  const direction = block.direction ?? "up";
-  const gateSteps = block.gateSteps ?? 1;
-  const rateSteps = block.rateSteps ?? 1;
-  const velocity = block.velocity ?? 100;
-  const driftIndex = block.driftIndex ?? 0;
-  const driftAmount = block.driftAmount ?? 0;
-  const maxDriftIndex = Math.max(0, chordNotes.length - 1);
-
-  const notes: number[] = [];
-  for (let n = low; n <= high; n++) notes.push(n);
-
-  return (
-    <div>
-      <div style={{ fontSize: 13, color: "var(--pal-text-dim)", marginBottom: 8 }}>Note pool (tap = on/off):</div>
-      <StepScroller>
-        <div className="step-row">
-          {notes.map((note) => {
-            const on = chordNotes.includes(note);
-            return (
-              <StepCell key={note} width={34} height={26} active={on} onClick={() => send({ t: "arp.toggleNote", blockId: block.id, note })} />
-            );
-          })}
-        </div>
-        <div className="step-row">
-          {notes.map((note) => (
-            <div key={note} style={{ width: 34, flexShrink: 0, fontSize: 9, color: note === base ? "var(--pal-white)" : "var(--pal-text-dim)", fontWeight: note === base ? 700 : 400 }}>
-              {noteName(note)}
-            </div>
-          ))}
-        </div>
-      </StepScroller>
-
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginTop: 20 }}>
-        <Button
-          style={{ width: 150, height: 34, fontSize: 14 }}
-          onClick={() =>
-            wheel({ title: "Base note", min: 0, max: 127, value: base, format: (v) => `${noteName(v)} (${v})`, onPick: (n) => setField(block.id, "baseNote", n) })
-          }
-        >
-          Base {noteName(base)}
-        </Button>
-        <Button
-          style={{ width: 170, height: 34, fontSize: 14 }}
-          onClick={() => setField(block.id, "direction", DIRECTIONS[(DIRECTIONS.indexOf(direction) + 1) % DIRECTIONS.length])}
-        >
-          Dir: {direction}
-        </Button>
-        <Button
-          style={{ width: 120, height: 34, fontSize: 14 }}
-          onClick={() => wheel({ title: "Gate", min: 1, max: 64, unit: " step(s)", value: gateSteps, onPick: (n) => setField(block.id, "gateSteps", n) })}
-        >
-          Gate {gateSteps}
-        </Button>
-        <Button
-          style={{ width: 120, height: 34, fontSize: 14 }}
-          onClick={() => wheel({ title: "Rate", min: 1, max: 64, unit: " step(s)", value: rateSteps, onPick: (n) => setField(block.id, "rateSteps", n) })}
-        >
-          Rate {rateSteps}
-        </Button>
-        <Button
-          style={{ width: 120, height: 34, fontSize: 14 }}
-          onClick={() => wheel({ title: "Velocity", min: 1, max: 127, value: velocity, onPick: (n) => setField(block.id, "velocity", n) })}
-        >
-          Vel {velocity}
-        </Button>
-      </div>
-
-      <div style={{ fontSize: 13, color: "var(--pal-text-dim)", marginTop: 20, marginBottom: 8 }}>
-        Drift — one note in the cycle slips a few steps further every time the block loops, so the pattern slowly goes crooked before it wraps back:
-      </div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
-        <Button
-          style={{ width: 150, height: 34, fontSize: 14 }}
-          onClick={() =>
-            wheel({ title: "Drift note", min: 0, max: maxDriftIndex, value: Math.min(driftIndex, maxDriftIndex), format: (v) => `note #${v + 1}`, onPick: (n) => setField(block.id, "driftIndex", n) })
-          }
-        >
-          Drift note #{driftIndex + 1}
-        </Button>
-        <Button
-          style={{ width: 170, height: 34, fontSize: 14 }}
-          onClick={() =>
-            wheel({ title: "Drift amount", min: -16, max: 16, unit: " step(s)/loop", value: driftAmount, onPick: (n) => setField(block.id, "driftAmount", n) })
-          }
-        >
-          Drift {driftAmount === 0 ? "off" : `${driftAmount > 0 ? "+" : ""}${driftAmount}/loop`}
-        </Button>
-      </div>
     </div>
   );
 }

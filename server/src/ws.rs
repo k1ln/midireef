@@ -433,6 +433,14 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 with_lane(state, &lane_id, |l| l.channel = ch);
             }
         }
+        // MIDI-Eingang einer Lane für das Live-Einspielen (Piano-Rolle,
+        // Live-Aufnahme). `port` null/leer = jeder Eingang.
+        "lane.setMidiIn" => {
+            if let Some(lane_id) = str_field(&cmd, "laneId") {
+                let port = str_field(&cmd, "port").filter(|p| !p.is_empty());
+                with_lane(state, &lane_id, |l| l.midi_in_port = port.clone());
+            }
+        }
         // Ziel-Knob einer CC-Lane setzen (controlId null → Ziel lösen). Erlaubt
         // sind NUR gelernte Knobs, die zum Device dieser Lane gehören und ein
         // CC-Mapping haben — alles andere hätte kein sendbares Ziel und würde
@@ -603,15 +611,15 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                         }
                         m.get("channel").and_then(|v| v.as_u64()).map(|v| v as u8)
                     });
-                    let dev_id = ctrl
-                        .as_ref()
-                        .and_then(|c| c.get("deviceId"))
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string);
-                    let dev = dev_id.and_then(|id| proj.devices.iter().find(|d| d.id == id).cloned());
-                    (channel, dev)
+                    let lane = proj
+                        .devices
+                        .iter()
+                        .flat_map(|d| d.lanes.iter())
+                        .find(|l| l.id == lane_id)
+                        .cloned();
+                    (channel, lane)
                 };
-                let source_ports = source_ports.map(|d| crate::state::connected_device_ports(&d)).unwrap_or_default();
+                let source_ports = source_ports.map(|l| crate::state::lane_input_ports(&l)).unwrap_or_default();
                 let Some(channel) = channel else {
                     tracing::debug!("record.arm: Control „{control_id}“ hat kein Note-Mapping");
                     return;
@@ -1767,29 +1775,120 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 broadcast_snapshot(state);
             }
         }
-        // Arp-Detail: Note im Notenvorrat (chordNotes) an/aus.
-        "arp.toggleNote" => {
-            if let (Some(id), Some(note)) = (
-                str_field(&cmd, "blockId"),
-                cmd.get("note").and_then(|v| v.as_u64()),
-            ) {
-                let mut proj = state.project.lock().unwrap();
-                if let Some(b) = find_block_mut(&mut proj, &id) {
-                    if !b["chordNotes"].is_array() {
-                        b["chordNotes"] = serde_json::json!([]);
+        // Arp: "Quadrate" (`chordNotes`, Tonhöhen, Reihenfolge = Identität,
+        // Duplikate erlaubt) und die Melodie (`pattern`, Indizes auf die
+        // Quadrate, -1 = Pause) sind getrennte Dinge. Eine Tonhöhen-Änderung
+        // am Quadrat zieht jede Melodie-Stelle mit, die darauf zeigt — auch
+        // während des Spielens (broadcast_snapshot → Engine-Rebuild).
+        "arp.addSquare" => {
+            if let Some(id) = str_field(&cmd, "blockId") {
+                let note = cmd.get("note").and_then(|v| v.as_i64());
+                with_arp(state, &id, |squares, _| {
+                    // Ohne Wunschton: zwei Halbtöne über dem letzten Quadrat.
+                    let n = note
+                        .unwrap_or_else(|| squares.last().map(|&l| l as i64 + 2).unwrap_or(60))
+                        .clamp(0, 127);
+                    if squares.len() < MAX_ARP_SQUARES {
+                        squares.push(n);
                     }
-                    if let Some(arr) = b["chordNotes"].as_array_mut() {
-                        let idx = arr.iter().position(|n| n.as_u64() == Some(note));
-                        match idx {
-                            Some(i) => {
-                                arr.remove(i);
+                });
+            }
+        }
+        "arp.setSquare" | "arp.shiftSquare" => {
+            if let (Some(id), Some(i)) = (
+                str_field(&cmd, "blockId"),
+                cmd.get("index").and_then(|v| v.as_u64()),
+            ) {
+                let note = cmd.get("note").and_then(|v| v.as_i64());
+                let delta = cmd.get("delta").and_then(|v| v.as_i64());
+                with_arp(state, &id, |squares, _| {
+                    if let Some(cur) = squares.get_mut(i as usize) {
+                        let next = match (note, delta) {
+                            (Some(n), _) => n,
+                            (None, Some(d)) => *cur + d,
+                            _ => *cur,
+                        };
+                        *cur = next.clamp(0, 127);
+                    }
+                });
+            }
+        }
+        // Quadrat löschen: seine Melodie-Stellen werden Pausen, die Indizes
+        // dahinter rücken nach.
+        "arp.removeSquare" => {
+            if let (Some(id), Some(i)) = (
+                str_field(&cmd, "blockId"),
+                cmd.get("index").and_then(|v| v.as_u64()),
+            ) {
+                let i = i as i64;
+                with_arp(state, &id, |squares, pattern| {
+                    if (i as usize) < squares.len() {
+                        squares.remove(i as usize);
+                        for p in pattern.iter_mut() {
+                            if *p == i {
+                                *p = -1;
+                            } else if *p > i {
+                                *p -= 1;
                             }
-                            None => arr.push(serde_json::json!(note)),
                         }
                     }
-                }
-                drop(proj);
-                broadcast_snapshot(state);
+                });
+            }
+        }
+        // Melodie-Stelle setzen (`square` = Index oder -1 für Pause); `index`
+        // == Länge hängt eine neue Stelle an.
+        "arp.setStep" => {
+            if let (Some(id), Some(i), Some(sq)) = (
+                str_field(&cmd, "blockId"),
+                cmd.get("index").and_then(|v| v.as_u64()),
+                cmd.get("square").and_then(|v| v.as_i64()),
+            ) {
+                with_arp(state, &id, |squares, pattern| arp_set_step(squares, pattern, i as usize, sq));
+            }
+        }
+        // Einspielen von einem MIDI-Eingang: Quadrat mit dieser Tonhöhe suchen
+        // (sonst ein neues anlegen) und die Melodie-Stelle `index` darauf
+        // setzen — ein Schritt, damit schnell gespielte Noten nicht auf einem
+        // veralteten Quadrat-Index landen.
+        "arp.playIn" => {
+            if let (Some(id), Some(i), Some(note)) = (
+                str_field(&cmd, "blockId"),
+                cmd.get("index").and_then(|v| v.as_u64()),
+                cmd.get("note").and_then(|v| v.as_i64()),
+            ) {
+                with_arp(state, &id, |squares, pattern| arp_play_in(squares, pattern, i as usize, note));
+            }
+        }
+        // Pfeile an EINER Melodie-Stelle: nur diese Stelle wird um `delta`
+        // Halbtöne verschoben (s. `arp_shift_step`) — im Gegensatz zu
+        // `arp.shiftSquare`, das jede Stelle auf dem Quadrat mitzieht.
+        "arp.shiftStep" => {
+            if let (Some(id), Some(i), Some(delta)) = (
+                str_field(&cmd, "blockId"),
+                cmd.get("index").and_then(|v| v.as_u64()),
+                cmd.get("delta").and_then(|v| v.as_i64()),
+            ) {
+                with_arp(state, &id, |squares, pattern| arp_shift_step(squares, pattern, i as usize, delta));
+            }
+        }
+        // Letzte Melodie-Stelle weg (`index` fehlt) oder die an `index`.
+        "arp.removeStep" => {
+            if let Some(id) = str_field(&cmd, "blockId") {
+                let index = cmd.get("index").and_then(|v| v.as_u64());
+                with_arp(state, &id, |_, pattern| match index {
+                    Some(i) if (i as usize) < pattern.len() => {
+                        pattern.remove(i as usize);
+                    }
+                    Some(_) => {}
+                    None => {
+                        pattern.pop();
+                    }
+                });
+            }
+        }
+        "arp.clearSteps" => {
+            if let Some(id) = str_field(&cmd, "blockId") {
+                with_arp(state, &id, |_, pattern| pattern.clear());
             }
         }
         // Walker-Detail: welche Wand (unten/oben) des Käfigs verschieben.
@@ -3357,6 +3456,95 @@ fn with_device<F: FnMut(&mut Device)>(state: &AppState, device_id: &str, mut f: 
     broadcast_snapshot(state);
 }
 
+/// Obergrenze für die Länge einer Arp-Melodie (Stellen).
+const MAX_ARP_PATTERN: usize = 64;
+
+/// Obergrenze für die Zahl der Quadrate eines Arps.
+const MAX_ARP_SQUARES: usize = 32;
+
+/// Melodie-Stelle `index` auf Quadrat `square` setzen (außerhalb/negativ =
+/// Pause); `index == pattern.len()` hängt eine neue Stelle an, alles dahinter
+/// wird ignoriert.
+fn arp_set_step(squares: &[i64], pattern: &mut Vec<i64>, index: usize, square: i64) {
+    let sq = if square >= 0 && (square as usize) < squares.len() { square } else { -1 };
+    if index < pattern.len() {
+        pattern[index] = sq;
+    } else if index == pattern.len() && pattern.len() < MAX_ARP_PATTERN {
+        pattern.push(sq);
+    }
+}
+
+/// Eine Melodie-Stelle um `delta` Halbtöne verschieben, OHNE andere Stellen
+/// mitzuziehen. Ist sie die einzige auf ihrem Quadrat, wandert das Quadrat
+/// selbst (kein Müll-Quadrat pro Tipper). Teilt sie sich das Quadrat mit
+/// anderen, zeigt sie danach auf das erste Quadrat mit der neuen Tonhöhe —
+/// ein neues, falls es keins gibt. Pausen und Indizes ohne Quadrat bleiben
+/// unberührt.
+fn arp_shift_step(squares: &mut Vec<i64>, pattern: &mut Vec<i64>, index: usize, delta: i64) {
+    let Some(&sq) = pattern.get(index) else { return };
+    let Some(&pitch) = usize::try_from(sq).ok().and_then(|k| squares.get(k)) else { return };
+    let target = (pitch + delta).clamp(0, 127);
+    if target == pitch {
+        return;
+    }
+    let shared = pattern.iter().filter(|&&p| p == sq).count() > 1;
+    if !shared {
+        squares[sq as usize] = target;
+        return;
+    }
+    let dest = match squares.iter().position(|&n| n == target) {
+        Some(i) => i,
+        None if squares.len() < MAX_ARP_SQUARES => {
+            squares.push(target);
+            squares.len() - 1
+        }
+        None => return,
+    };
+    pattern[index] = dest as i64;
+}
+
+/// Eingespielte Note: erstes Quadrat mit dieser Tonhöhe, sonst ein neues
+/// (solange Platz ist), dann die Melodie-Stelle `index` darauf. Ein Index
+/// hinter dem Ende hängt an: die UI zählt ihren Cursor schneller hoch, als
+/// Schnappschüsse zurückkommen, und zwei schnell gespielte Noten dürfen sich
+/// nicht gegenseitig überschreiben.
+fn arp_play_in(squares: &mut Vec<i64>, pattern: &mut Vec<i64>, index: usize, note: i64) {
+    let note = note.clamp(0, 127);
+    let sq = match squares.iter().position(|&n| n == note) {
+        Some(i) => i,
+        None if squares.len() < MAX_ARP_SQUARES => {
+            squares.push(note);
+            squares.len() - 1
+        }
+        None => return,
+    };
+    arp_set_step(squares, pattern, index.min(pattern.len()), sq as i64);
+}
+
+/// Bearbeitet die Quadrate (`chordNotes`) und die Melodie (`pattern`) eines
+/// Arp-Bausteins als Zahlenlisten und schreibt sie zurück. Ein Altprojekt ohne
+/// `pattern` bekommt hier erst seine implizite Melodie (jedes Quadrat einmal
+/// aufwärts), damit der erste Edit sie nicht verwirft. Danach Snapshot →
+/// Engine-Rebuild: wirkt auch bei laufendem Transport sofort.
+fn with_arp<F: FnOnce(&mut Vec<i64>, &mut Vec<i64>)>(state: &AppState, block_id: &str, f: F) {
+    {
+        let mut proj = state.project.lock().unwrap();
+        let Some(b) = find_block_mut(&mut proj, block_id) else { return };
+        if b.get("type").and_then(|v| v.as_str()) != Some("arp") {
+            return;
+        }
+        let nums = |v: Option<&serde_json::Value>| -> Option<Vec<i64>> {
+            v?.as_array().map(|a| a.iter().filter_map(|x| x.as_i64()).collect())
+        };
+        let mut squares = nums(b.get("chordNotes")).unwrap_or_default();
+        let mut pattern = nums(b.get("pattern")).unwrap_or_else(|| (0..squares.len() as i64).collect());
+        f(&mut squares, &mut pattern);
+        b["chordNotes"] = serde_json::json!(squares);
+        b["pattern"] = serde_json::json!(pattern);
+    }
+    broadcast_snapshot(state);
+}
+
 fn with_lane<F: FnMut(&mut Lane)>(state: &AppState, lane_id: &str, mut f: F) {
     {
         let mut proj = state.project.lock().unwrap();
@@ -3717,6 +3905,11 @@ fn lane_port_channel(dev: &Device, lane: &Lane) -> (String, u8) {
 /// Rolle, sonst die erste Lane überhaupt: zum Vorhören ist irgendein hörbares
 /// Ziel besser als Stille.
 fn block_preview_target(proj: &Project, block_id: &str) -> Option<(String, u8)> {
+    block_target_lane(proj, block_id).map(|(dev, lane)| lane_port_channel(dev, lane))
+}
+
+/// Die Lane hinter `block_preview_target` (Regeln dort) — samt Device.
+fn block_target_lane<'a>(proj: &'a Project, block_id: &str) -> Option<(&'a Device, &'a Lane)> {
     let role = proj
         .blocks
         .as_array()
@@ -3724,8 +3917,8 @@ fn block_preview_target(proj: &Project, block_id: &str) -> Option<(String, u8)> 
         .and_then(|b| b.get("type").and_then(|v| v.as_str()))
         .map(str::to_string);
 
-    let mut by_role: Option<(String, u8)> = None;
-    let mut any: Option<(String, u8)> = None;
+    let mut by_role: Option<(&'a Device, &'a Lane)> = None;
+    let mut any: Option<(&'a Device, &'a Lane)> = None;
     for dev in &proj.devices {
         for lane in &dev.lanes {
             let uses_block = lane.slots.as_array().is_some_and(|slots| {
@@ -3734,13 +3927,13 @@ fn block_preview_target(proj: &Project, block_id: &str) -> Option<(String, u8)> 
                     .any(|s| s.get("blockId").and_then(|v| v.as_str()) == Some(block_id))
             });
             if uses_block {
-                return Some(lane_port_channel(dev, lane));
+                return Some((dev, lane));
             }
             if by_role.is_none() && role.as_deref() == Some(lane.role.as_str()) {
-                by_role = Some(lane_port_channel(dev, lane));
+                by_role = Some((dev, lane));
             }
             if any.is_none() {
-                any = Some(lane_port_channel(dev, lane));
+                any = Some((dev, lane));
             }
         }
     }
@@ -3753,19 +3946,20 @@ fn block_preview_target(proj: &Project, block_id: &str) -> Option<(String, u8)> 
 /// Note-Off — ein Editor, den man mitten im Akkord schließt, dürfte sonst
 /// einen Ton stehen lassen, den nur noch Panic beendet.
 fn set_note_input(state: &AppState, block_id: Option<&str>) {
-    let (echo, target_dev) = block_id
+    let (echo, source_ports) = block_id
         .map(|id| {
             let proj = state.project.lock().unwrap();
-            let echo = block_preview_target(&proj, id);
-            let dev = echo
-                .as_ref()
-                .and_then(|(port, _)| proj.devices.iter().find(|d| &d.midi_out_port == port))
-                .cloned();
-            (echo, dev)
+            match block_target_lane(&proj, id) {
+                // Nur der gewählte Eingang der Ziel-Lane darf einspielen
+                // (s. `NoteInputArm`).
+                Some((dev, lane)) => (
+                    Some(lane_port_channel(dev, lane)),
+                    crate::state::lane_input_ports(lane),
+                ),
+                None => (None, Vec::new()),
+            }
         })
-        .unwrap_or((None, None));
-    // Nur der Eingang des Zielgeräts darf einspielen (s. `NoteInputArm`).
-    let source_ports = target_dev.map(|d| crate::state::connected_device_ports(&d)).unwrap_or_default();
+        .unwrap_or((None, Vec::new()));
 
     let previous = {
         let mut guard = state.note_input.lock().unwrap();
@@ -4205,9 +4399,9 @@ fn default_arp_block() -> serde_json::Value {
         "lengthBars": 1,
         "timeSignature": "4/4",
         "stepsPerBar": 16,
-        "baseNote": 60,
-        "chordNotes": [],
-        "direction": "up",
+        // Quadrate (Tonhöhen) + Melodie (Indizes darauf) — s. `with_arp`.
+        "chordNotes": [60, 64, 67],
+        "pattern": [0, 1, 2, 1],
         "gateSteps": 1,
         "rateSteps": 1,
         "velocity": 100,
@@ -4270,6 +4464,66 @@ fn default_pattern_shift_block() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Einspielen: eine Tonhöhe, die es schon als Quadrat gibt, wird
+    /// wiederverwendet (nicht verdoppelt); eine neue legt ein Quadrat an. Die
+    /// Stelle wird gesetzt bzw. am Ende angehängt (auch bei einem Index hinter
+    /// dem Ende).
+    #[test]
+    fn arp_play_in_reuses_or_creates_squares() {
+        let mut squares = vec![60, 64];
+        let mut pattern = vec![0, 1];
+        arp_play_in(&mut squares, &mut pattern, 2, 64); // vorhandenes Quadrat B
+        assert_eq!((squares.clone(), pattern.clone()), (vec![60, 64], vec![0, 1, 1]));
+        arp_play_in(&mut squares, &mut pattern, 3, 67); // neues Quadrat C
+        assert_eq!((squares.clone(), pattern.clone()), (vec![60, 64, 67], vec![0, 1, 1, 2]));
+        arp_play_in(&mut squares, &mut pattern, 0, 67); // bestehende Stelle ersetzen
+        assert_eq!(pattern, vec![2, 1, 1, 2]);
+        arp_play_in(&mut squares, &mut pattern, 9, 60); // hinter dem Ende: anhängen
+        assert_eq!(pattern, vec![2, 1, 1, 2, 0]);
+        // Ein Quadrat, das sich zuvor kreuzte, bleibt eigenständig: das ERSTE
+        // mit passender Tonhöhe gewinnt.
+        let mut sq = vec![60, 60];
+        let mut pat = vec![];
+        arp_play_in(&mut sq, &mut pat, 0, 60);
+        assert_eq!(pat, vec![0]);
+    }
+
+    /// Pfeile an einer Stelle: allein auf ihrem Quadrat → das Quadrat wandert;
+    /// geteilt → nur diese Stelle zieht um (auf ein vorhandenes oder neues
+    /// Quadrat), die anderen bleiben; Pausen und die Grenzen 0/127 bleiben stehen.
+    #[test]
+    fn arp_shift_step_changes_only_that_step() {
+        // Quadrat A (60) wird von Stelle 0 UND 2 benutzt, B (64) nur von Stelle 1.
+        let mut squares = vec![60, 64];
+        let mut pattern = vec![0, 1, 0];
+        arp_shift_step(&mut squares, &mut pattern, 1, 1); // allein → B selbst
+        assert_eq!((squares.clone(), pattern.clone()), (vec![60, 65], vec![0, 1, 0]));
+        arp_shift_step(&mut squares, &mut pattern, 2, 5); // geteilt, 60+5=65 existiert schon → zeigt dorthin
+        assert_eq!((squares.clone(), pattern.clone()), (vec![60, 65], vec![0, 1, 1]));
+        arp_shift_step(&mut squares, &mut pattern, 0, 2); // jetzt allein auf A → A wandert
+        assert_eq!((squares.clone(), pattern.clone()), (vec![62, 65], vec![0, 1, 1]));
+        arp_shift_step(&mut squares, &mut pattern, 2, 3); // geteilt mit 1, 65+3=68 neu
+        assert_eq!((squares.clone(), pattern.clone()), (vec![62, 65, 68], vec![0, 1, 2]));
+        // Pause, Index hinter dem Ende, Grenze: nichts passiert.
+        let mut sq = vec![127];
+        let mut pat = vec![-1, 0];
+        arp_shift_step(&mut sq, &mut pat, 0, 1);
+        arp_shift_step(&mut sq, &mut pat, 9, 1);
+        arp_shift_step(&mut sq, &mut pat, 1, 1);
+        assert_eq!((sq, pat), (vec![127], vec![-1, 0]));
+    }
+
+    /// Obergrenze der Quadrate: ist sie erreicht, wird für eine unbekannte
+    /// Tonhöhe weder ein Quadrat noch eine Stelle angelegt.
+    #[test]
+    fn arp_play_in_respects_square_cap() {
+        let mut squares: Vec<i64> = (0..MAX_ARP_SQUARES as i64).collect();
+        let mut pattern = vec![];
+        arp_play_in(&mut squares, &mut pattern, 0, 100);
+        assert_eq!(squares.len(), MAX_ARP_SQUARES);
+        assert!(pattern.is_empty());
+    }
 
     /// Auflösung verdoppeln: die Musik bleibt an derselben Stelle, nur das
     /// Raster darum wird feiner.

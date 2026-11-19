@@ -122,13 +122,11 @@ export interface Block {
   notes?: MelodyNote[]; // melody
   lines?: BeatLine[]; // beat
   chords?: ChordEvent[]; // chord
-  chordNotes?: number[]; // arp
-  direction?: string; // arp
+  chordNotes?: number[]; // arp: "Quadrate" (Tonhöhen)
+  pattern?: number[]; // arp: Melodie = Indizes in chordNotes, -1 = Pause
   gateSteps?: number; // arp
   rateSteps?: number; // arp
   velocity?: number; // arp
-  driftIndex?: number; // arp: which note of one pass through the pool drifts (0-based)
-  driftAmount?: number; // arp: steps that note shifts per loop (wraps within the block)
   borderLow?: number; // walker: fixed lower cage wall
   borderHigh?: number; // walker: fixed upper cage wall
   nodes?: WalkerNode[]; // walker
@@ -248,6 +246,8 @@ export interface Lane {
   playMode: string;
   triggerQuantize: string;
   channel: number; // MIDI-Kanal 1–16 dieser Lane
+  /** MIDI-Eingang, von dem diese Lane live eingespielt wird; leer/undefined = jeder. */
+  midiInPort?: string | null;
   ccControlId?: string | null; // cc-Lane: Ziel-Knob (LiveControl-Id desselben Geräts)
   /** Trigger-Kette: wird ein Slot dieser Lane ausgelöst, feuert (laneId, slotId) mit. */
   chainSlot?: { laneId: string; slotId: string } | null;

@@ -64,6 +64,12 @@ if [[ "$ROTATION" != "0" ]]; then
   "$(dirname "$0")/midireef-display" "$ROTATION" 2>/dev/null || true
 fi
 
+# Chromium sperrt sein Profil mit "<hostname>-<pid>". Nach einer Umbenennung des
+# Pi (set-hostname.sh) hält es diese Sperre für einen anderen Rechner und startet
+# nicht ("profile in use on another computer"). kiosk.sh ist der einzige Starter
+# (ein systemd-User-Dienst), eine übrig gebliebene Sperre ist also immer verwaist.
+rm -f "$PROFILE"/SingletonLock "$PROFILE"/SingletonCookie "$PROFILE"/SingletonSocket
+
 CHROMIUM="$(command -v chromium-browser || command -v chromium)"
 [[ -n "$CHROMIUM" ]] || { echo "kiosk: chromium nicht installiert" >&2; exit 1; }
 
