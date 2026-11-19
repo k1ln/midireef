@@ -126,7 +126,10 @@ export interface Block {
   pattern?: number[]; // arp: Melodie = Indizes in chordNotes, -1 = Pause
   gateSteps?: number; // arp
   rateSteps?: number; // arp
+  ratePulses?: number; // arp: Tempo in Pulsen pro Melodie-Stelle (24 = Viertel); hat Vorrang vor rateSteps
   velocity?: number; // arp
+  fitBar?: boolean; // arp: Länge folgt der Melodie (fehlt = an)
+  scale?: { root: string; name: string }; // arp: Skala für ▲/▼ und die Markierung (fehlt = chromatisch)
   borderLow?: number; // walker: fixed lower cage wall
   borderHigh?: number; // walker: fixed upper cage wall
   nodes?: WalkerNode[]; // walker

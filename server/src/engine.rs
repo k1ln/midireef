@@ -2668,6 +2668,11 @@ struct BlockJson {
     gate_steps: u32,
     #[serde(rename = "rateSteps", default = "one_u32")]
     rate_steps: u32,
+    /// Arp-Tempo in Pulsen pro Melodie-Stelle (24 = Viertel, 6 = Sechzehntel,
+    /// 3 = 1/32, 4 = 1/16-Triole …), unabhängig vom Raster des Bausteins — so
+    /// geht auch "schneller als ein Step". Fehlt es, gilt `rateSteps`.
+    #[serde(rename = "ratePulses", default)]
+    rate_pulses: Option<u32>,
     #[serde(default = "vel_100")]
     velocity: u8,
     /// Arp-MELODIE: Folge von Indizes in `chordNotes` (die "Quadrate"), je einer
@@ -2934,11 +2939,24 @@ fn compile_block(
                     &default_pattern
                 }
             };
+            // Tempo als Bruch in Steps: ratePulses → rp × stepsPerBar / pulsesPerBar,
+            // sonst rateSteps ganzzahlig. Die Bruchteile werden unten zu
+            // `micro_timing` innerhalb des Steps.
+            let (rate, gate) = match b.rate_pulses.filter(|&rp| rp > 0) {
+                Some(rp) => {
+                    let rate = (rp * steps_per_bar, ppb.max(1));
+                    // Eine Note länger als der Abstand zur nächsten würde sich
+                    // überlappen — bei gesetztem Tempo auf den Abstand begrenzen.
+                    let rate_steps = rate.0 as f32 / rate.1 as f32;
+                    (rate, (b.gate_steps.max(1) as f32).min(rate_steps))
+                }
+                None => ((b.rate_steps.max(1), 1), b.gate_steps.max(1) as f32),
+            };
             CKind::Arp(build_arp_pattern(
                 &squares,
                 pattern,
-                b.rate_steps.max(1),
-                b.gate_steps.max(1),
+                rate,
+                gate,
                 b.velocity.clamp(1, 127),
                 total_steps,
             ))
@@ -3097,38 +3115,45 @@ fn drifted_step(step: u32, drift_steps: i32, loops_done: u32, total_steps: u32) 
     shifted.rem_euclid(total) as u32
 }
 
-/// Rollt eine Arp-Melodie aus: alle `rate_steps` Steps der nächste Eintrag von
+/// Rollt eine Arp-Melodie aus: alle `rate` Steps (Bruch `(Zähler, Nenner)`, auch
+/// kleiner als 1 für "schneller als ein Step") der nächste Eintrag von
 /// `pattern` (Index in `squares`, außerhalb/negativ = Pause), je `gate_steps`
-/// lang, die Melodie wiederholt sich, bis `total_steps` voll ist. Die
+/// lang, die Melodie wiederholt sich, bis `total_steps` voll ist. Liegt eine
+/// Stelle zwischen zwei Steps, gehört sie zum Step davor und wird über
+/// `StepMod.micro_timing` (Bruchteil eines Steps später) verschoben. Die
 /// Tonhöhe wird hier aufgelöst — beim nächsten Rebuild (jede Projekt-
 /// Änderung, auch während des Spielens) kommt sie also frisch aus den Quadraten.
 fn build_arp_pattern(
     squares: &[u8],
     pattern: &[i32],
-    rate_steps: u32,
-    gate_steps: u32,
+    rate: (u32, u32),
+    gate_steps: f32,
     vel: u8,
     total_steps: u32,
 ) -> Vec<CNote> {
-    if pattern.is_empty() {
+    if pattern.is_empty() || rate.0 == 0 || rate.1 == 0 {
         return Vec::new();
     }
+    let (num, den) = (rate.0 as u64, rate.1 as u64);
+    let end = total_steps as u64 * den;
     let mut out = Vec::new();
-    let mut step = 0u32;
     let mut i = 0usize;
-    while step < total_steps {
+    loop {
+        let at = i as u64 * num; // Position in 1/den Steps
+        if at >= end {
+            break;
+        }
         let idx = pattern[i % pattern.len()];
         if let Some(&note) = usize::try_from(idx).ok().and_then(|k| squares.get(k)) {
             out.push(CNote {
-                step,
-                len_steps: gate_steps as f32,
+                step: (at / den) as u32,
+                len_steps: gate_steps,
                 note,
                 vel,
-                m: StepMod::default(),
+                m: StepMod { micro_timing: (at % den) as f32 / den as f32, ..StepMod::default() },
             });
         }
         i += 1;
-        step += rate_steps;
     }
     out
 }
@@ -3642,7 +3667,7 @@ mod groove_tests {
     #[test]
     fn arp_pattern_resolves_squares_and_loops() {
         let pitches = |squares: &[u8]| -> Vec<(u32, u8)> {
-            build_arp_pattern(squares, &[0, 1, 0, -1, 7], 2, 1, 100, 12)
+            build_arp_pattern(squares, &[0, 1, 0, -1, 7], (2, 1), 1.0, 100, 12)
                 .iter()
                 .map(|n| (n.step, n.note))
                 .collect()
@@ -3653,7 +3678,19 @@ mod groove_tests {
         // Quadrat 0 um 2 Halbtöne hoch: BEIDE Stellen ziehen mit, Quadrat 1 nicht.
         assert_eq!(pitches(&[62, 64]), vec![(0, 62), (2, 64), (4, 62), (10, 62)]);
         // Leere Melodie -> nichts.
-        assert!(build_arp_pattern(&[60], &[], 1, 1, 100, 16).is_empty());
+        assert!(build_arp_pattern(&[60], &[], (1, 1), 1.0, 100, 16).is_empty());
+    }
+
+    /// Schneller als ein Step: 1/32 im 16er-Raster = halber Step → jede zweite
+    /// Note liegt mit `micro_timing` 0.5 im Step davor; Triole = Drittel-Schritte.
+    #[test]
+    fn arp_pattern_can_run_faster_than_a_step() {
+        let at = |rate: (u32, u32)| -> Vec<(u32, f32)> {
+            build_arp_pattern(&[60], &[0], rate, 0.5, 100, 2).iter().map(|n| (n.step, n.m.micro_timing)).collect()
+        };
+        assert_eq!(at((1, 2)), vec![(0, 0.0), (0, 0.5), (1, 0.0), (1, 0.5)]);
+        assert_eq!(at((2, 3)), vec![(0, 0.0), (0, 2.0 / 3.0), (1, 1.0 / 3.0)]); // Triole: 3 Noten über 2 Steps
+        assert_eq!(at((3, 1)), vec![(0, 0.0)]);
     }
 
     /// `downUp` ist der Spiegel von `upDown`: startet oben, geht runter, dann

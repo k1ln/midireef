@@ -26,11 +26,11 @@ import { useWheelPicker } from "../widgets/WheelPicker";
 import { useLongPress } from "../useLongPress";
 import { useSetField } from "../useNumberEditor";
 
-const SQUARE = 76;
+const SQUARE = 152;
 const MAX_ARP_STEPS = 64; // wie MAX_ARP_PATTERN im Server
-const CELL_W = 40;
-const CELL_H = 34;
-const LABEL_W = 78;
+const CELL_W = 80;
+const CELL_H = 68;
+const LABEL_W = 156;
 
 const NO_DEVICES: Device[] = [];
 const NO_INPUTS: string[] = [];
@@ -39,6 +39,65 @@ const NO_INPUTS: string[] = [];
  *  gelöscht wird (die Reihenfolge ist seine Identität, nicht seine Tonhöhe). */
 function squareLetter(i: number) {
   return i < 26 ? String.fromCharCode(65 + i) : String(i + 1);
+}
+
+// ── Skala ───────────────────────────────────────────────────────────────────
+
+const ROOTS = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+/** Skalen, die der Arp anbietet — Namen und Intervalle wie `scale::intervals`
+ *  im Server (dort rechnen die ▲/▼-Pfeile damit). */
+const ARP_SCALES: { id: string; label: string; intervals: number[] }[] = [
+  { id: "major", label: "Major", intervals: [0, 2, 4, 5, 7, 9, 11] },
+  { id: "minor", label: "Minor", intervals: [0, 2, 3, 5, 7, 8, 10] },
+  { id: "dorian", label: "Dorian", intervals: [0, 2, 3, 5, 7, 9, 10] },
+  { id: "phrygian", label: "Phrygian", intervals: [0, 1, 3, 5, 7, 8, 10] },
+  { id: "lydian", label: "Lydian", intervals: [0, 2, 4, 6, 7, 9, 11] },
+  { id: "mixolydian", label: "Mixolydian", intervals: [0, 2, 4, 5, 7, 9, 10] },
+  { id: "locrian", label: "Locrian", intervals: [0, 1, 3, 5, 6, 8, 10] },
+  { id: "harmonicMinor", label: "Harmonic minor", intervals: [0, 2, 3, 5, 7, 8, 11] },
+  { id: "melodicMinor", label: "Melodic minor", intervals: [0, 2, 3, 5, 7, 9, 11] },
+  { id: "pentatonicMinor", label: "Minor pentatonic", intervals: [0, 3, 5, 7, 10] },
+  { id: "pentatonicMajor", label: "Major pentatonic", intervals: [0, 2, 4, 7, 9] },
+  { id: "blues", label: "Blues", intervals: [0, 3, 5, 6, 7, 10] },
+];
+
+type ArpScaleSel = { root: string; name: string } | undefined;
+type ScaleState = "none" | "root" | "in" | "out";
+
+/** Wie passt eine Tonhöhe zur Skala des Bausteins? `none` = keine Skala. */
+function scaleState(note: number, scale: ArpScaleSel): ScaleState {
+  const def = scale && ARP_SCALES.find((s) => s.id === scale.name);
+  const root = scale ? ROOTS.indexOf(scale.root) : -1;
+  if (!def || root < 0) return "none";
+  const rel = (((note - root) % 12) + 12) % 12;
+  return rel === 0 ? "root" : def.intervals.includes(rel) ? "in" : "out";
+}
+
+/** Ton einer Skala im Raster: leicht eingefärbt; der Grundton kräftiger. */
+const SCALE_TINT = "color-mix(in srgb, var(--pal-btn-alt) 28%, var(--pal-step-off))";
+const ROOT_TINT = "color-mix(in srgb, var(--pal-btn-alt) 55%, var(--pal-step-off))";
+
+// ── Tempo ───────────────────────────────────────────────────────────────────
+
+/** Tempo-Leiter in Pulsen pro Melodie-Stelle (24 PPQN), schnell → langsam.
+ *  Gerade Werte und Triolen; "×" ist relativ zu 1/16 (= 1×, ein Step im
+ *  16er-Raster). */
+const SPEEDS: { pulses: number; note: string; mult: string }[] = [
+  { pulses: 3, note: "1/32", mult: "2×" },
+  { pulses: 4, note: "1/16 triplet", mult: "1.5×" },
+  { pulses: 6, note: "1/16", mult: "1×" },
+  { pulses: 8, note: "1/8 triplet", mult: "¾×" },
+  { pulses: 12, note: "1/8", mult: "½×" },
+  { pulses: 16, note: "1/4 triplet", mult: "⅜×" },
+  { pulses: 24, note: "1/4", mult: "¼×" },
+  { pulses: 48, note: "1/2", mult: "⅛×" },
+  { pulses: 96, note: "1/1", mult: "1/16×" },
+];
+
+/** Pulse pro Takt aus der Taktart ("4/4" → 96, "3/4" → 72, "6/8" → 72). */
+function pulsesPerBar(ts: string | undefined): number {
+  const [n, d] = (ts ?? "4/4").split("/").map(Number);
+  return n > 0 && d > 0 ? Math.round((n * 96) / d) : 96;
 }
 
 /** Die Lane, auf der dieser Baustein klingt — dieselbe Regel wie
@@ -63,13 +122,14 @@ function useTargetLane(blockId: string): Lane | null {
  *  Baustein in keiner Lane läuft. Aktualisiert sich mit denselben Events wie
  *  der Playhead der Piano-Rolle. */
 function usePatternPlayhead(blockId: string, rateSteps: number, len: number): number | null {
+  // `rateSteps` darf ein Bruch sein (schneller als ein Step).
   const net = useNet();
   const runtime = useRuntime();
   const [idx, setIdx] = useState<number | null>(null);
   useEffect(() => {
     const sync = () => {
-      const step = runtime.currentStep(blockId);
-      setIdx(step === null || len === 0 ? null : Math.floor(step / Math.max(1, rateSteps)) % len);
+      const step = runtime.currentPosition(blockId);
+      setIdx(step === null || len === 0 ? null : Math.floor(step / Math.max(0.01, rateSteps) + 1e-6) % len);
     };
     sync();
     return net.onEvent((evt) => {
@@ -130,12 +190,16 @@ function ArpSquare({
   note,
   selected,
   onSelect,
+  fit,
+  fine,
 }: {
   block: Block;
   index: number;
   note: number;
   selected: boolean;
   onSelect: () => void;
+  fit: ScaleState;
+  fine: boolean;
 }) {
   const send = useSend();
   const wheel = useWheelPicker();
@@ -156,8 +220,8 @@ function ArpSquare({
       window.setTimeout(() => send({ t: "block.previewNote", blockId: block.id, note, on: false }), 220);
     },
   );
-  const shift = (delta: number) => send({ t: "arp.shiftSquare", blockId: block.id, index, delta });
-  const arrow = { width: SQUARE, height: 40, fontSize: 18 } as const;
+  const shift = (delta: number) => send({ t: "arp.shiftSquare", blockId: block.id, index, delta, fine });
+  const arrow = { width: SQUARE, height: 80, fontSize: 36 } as const;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
       <Button style={arrow} onClick={() => shift(1)} aria-label={`Square ${squareLetter(index)} up`}>
@@ -174,16 +238,20 @@ function ArpSquare({
           alignItems: "center",
           justifyContent: "center",
           borderRadius: 6,
-          border: "1px solid var(--pal-step-border)",
-          background: selected ? "var(--pal-btn-active)" : "var(--pal-step-off)",
+          border: fit === "out" ? "1px dashed var(--pal-text-dim)" : "1px solid var(--pal-step-border)",
+          background: selected ? "var(--pal-btn-active)" : fit === "root" ? ROOT_TINT : fit === "in" ? SCALE_TINT : "var(--pal-step-off)",
           color: selected ? "var(--pal-ink)" : "var(--pal-text)",
+          opacity: fit === "out" && !selected ? 0.6 : 1,
           touchAction: "none",
           userSelect: "none",
           cursor: "pointer",
         }}
       >
-        <div style={{ fontSize: 11, opacity: 0.6 }}>{squareLetter(index)}</div>
-        <div style={{ fontSize: 22, fontWeight: 700 }}>{noteName(note)}</div>
+        <div style={{ fontSize: 22, opacity: 0.6 }}>
+          {squareLetter(index)}
+          {fit === "root" && " ●"}
+        </div>
+        <div style={{ fontSize: 44, fontWeight: 700 }}>{noteName(note)}</div>
       </div>
       <Button style={arrow} onClick={() => shift(-1)} aria-label={`Square ${squareLetter(index)} down`}>
         ▼
@@ -218,11 +286,11 @@ function RollHeader({
     <div
       {...press}
       style={{
-        height: 24,
+        height: 48,
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        fontSize: 11,
+        fontSize: 22,
         color: isCursor ? "var(--pal-ink)" : isPlayhead ? "var(--pal-white)" : "var(--pal-text-dim)",
         background: isCursor ? "var(--pal-btn-active)" : isPlayhead ? "var(--pal-step-held)" : "transparent",
         borderLeft: col % 4 === 0 ? "1px solid var(--pal-step-border)" : "1px solid transparent",
@@ -240,11 +308,13 @@ const RollCell = memo(function RollCell({
   on,
   col,
   playhead,
+  fit,
   onTap,
 }: {
   on: boolean;
   col: number;
   playhead: boolean;
+  fit: ScaleState;
   onTap: () => void;
 }) {
   return (
@@ -255,7 +325,15 @@ const RollCell = memo(function RollCell({
         boxSizing: "border-box",
         borderLeft: col % 4 === 0 ? "1px solid var(--pal-step-border)" : "1px solid transparent",
         borderBottom: "1px solid var(--pal-panel-deep)",
-        background: on ? "var(--pal-btn-active)" : playhead ? "var(--pal-btn-alt)" : "var(--pal-step-off)",
+        background: on
+          ? "var(--pal-btn-active)"
+          : playhead
+            ? "var(--pal-btn-alt)"
+            : fit === "root"
+              ? ROOT_TINT
+              : fit === "in"
+                ? SCALE_TINT
+                : "var(--pal-step-off)",
         cursor: "pointer",
       }}
     />
@@ -271,6 +349,7 @@ function ArpRoll({
   playhead,
   cursor,
   setCursor,
+  scale,
 }: {
   block: Block;
   squares: number[];
@@ -281,6 +360,7 @@ function ArpRoll({
   /** null = kein Einspielen aktiv (kein Cursor). */
   cursor: number | null;
   setCursor: (i: number) => void;
+  scale: ArpScaleSel;
 }) {
   const send = useSend();
   const len = pattern.length;
@@ -313,11 +393,11 @@ function ArpRoll({
               key={c}
               onClick={() => setCursor(c)}
               style={{
-                height: 24,
+                height: 48,
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                fontSize: 14,
+                fontSize: 28,
                 color: cursor === c ? "var(--pal-ink)" : "var(--pal-text-dim)",
                 background: cursor === c ? "var(--pal-btn-active)" : "transparent",
                 cursor: "pointer",
@@ -336,6 +416,7 @@ function ArpRoll({
             pattern={pattern}
             cols={cols}
             playhead={playhead}
+            fit={scaleState(note, scale)}
             onSelect={() => onSelect(index)}
             tap={tap}
           />
@@ -352,6 +433,7 @@ function RollRow({
   pattern,
   cols,
   playhead,
+  fit,
   onSelect,
   tap,
 }: {
@@ -361,6 +443,7 @@ function RollRow({
   pattern: number[];
   cols: number;
   playhead: number | null;
+  fit: ScaleState;
   onSelect: () => void;
   tap: (col: number, sq: number) => void;
 }) {
@@ -376,17 +459,19 @@ function RollRow({
           boxSizing: "border-box",
           display: "flex",
           alignItems: "center",
-          gap: 6,
-          padding: "0 8px",
-          fontSize: 12,
-          background: selected ? "var(--pal-btn-active)" : "var(--pal-panel)",
+          gap: 12,
+          padding: "0 16px",
+          fontSize: 24,
+          background: selected ? "var(--pal-btn-active)" : fit === "root" ? ROOT_TINT : fit === "in" ? SCALE_TINT : "var(--pal-panel)",
           color: selected ? "var(--pal-ink)" : "var(--pal-text)",
+          opacity: fit === "out" && !selected ? 0.55 : 1,
           borderBottom: "1px solid var(--pal-panel-deep)",
           cursor: "pointer",
         }}
       >
         <b>{squareLetter(squareIndex)}</b>
         <span style={{ opacity: 0.8 }}>{noteName(note)}</span>
+        {fit === "root" && <span aria-label="root note">●</span>}
       </div>
       {Array.from({ length: cols }, (_, c) => (
         <RollCell
@@ -394,6 +479,7 @@ function RollRow({
           col={c}
           on={pattern[c] === squareIndex}
           playhead={playhead === c}
+          fit={fit}
           onTap={() => tap(c, squareIndex)}
         />
       ))}
@@ -403,7 +489,7 @@ function RollRow({
 
 // ── Gespielte Noten: die Melodie in Reihenfolge als Quadrate ───────────────
 
-const STEP_SQ_W = 56;
+const STEP_SQ_W = 112;
 
 /** Eine Stelle der Melodie als Quadrat mit ▲/▼ — ändert NUR diese Stelle
  *  (die Quadrate oben ändern dagegen jede Stelle auf demselben Quadrat). */
@@ -415,6 +501,7 @@ function ArpStepSquare({
   isCursor,
   isPlayhead,
   setCursor,
+  fine,
 }: {
   block: Block;
   col: number;
@@ -423,10 +510,11 @@ function ArpStepSquare({
   isCursor: boolean;
   isPlayhead: boolean;
   setCursor: (i: number) => void;
+  fine: boolean;
 }) {
   const send = useSend();
   const rest = note === undefined;
-  const shift = (delta: number) => send({ t: "arp.shiftStep", blockId: block.id, index: col, delta });
+  const shift = (delta: number) => send({ t: "arp.shiftStep", blockId: block.id, index: col, delta, fine });
   // Tippen: Cursor hierher + anspielen; lang halten: Stelle entfernen.
   const press = useLongPress(
     () => send({ t: "arp.removeStep", blockId: block.id, index: col }),
@@ -437,9 +525,9 @@ function ArpStepSquare({
       window.setTimeout(() => send({ t: "block.previewNote", blockId: block.id, note, on: false }), 200);
     },
   );
-  const arrow = { width: STEP_SQ_W, height: 34, fontSize: 15, padding: 0 } as const;
+  const arrow = { width: STEP_SQ_W, height: 68, fontSize: 30, padding: 0 } as const;
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 4, flexShrink: 0 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 8, flexShrink: 0 }}>
       <Button style={arrow} disabled={rest} onClick={() => shift(1)} aria-label={`Step ${col + 1} up`}>
         ▲
       </Button>
@@ -462,11 +550,11 @@ function ArpStepSquare({
           cursor: "pointer",
         }}
       >
-        <div style={{ fontSize: 10, opacity: 0.6 }}>
+        <div style={{ fontSize: 20, opacity: 0.6 }}>
           {col + 1}
           {!rest && ` · ${squareLetter(square)}`}
         </div>
-        <div style={{ fontSize: rest ? 20 : 17, fontWeight: 700, color: rest ? "var(--pal-text-dim)" : undefined }}>
+        <div style={{ fontSize: rest ? 40 : 34, fontWeight: 700, color: rest ? "var(--pal-text-dim)" : undefined }}>
           {rest ? "–" : noteName(note)}
         </div>
       </div>
@@ -488,7 +576,21 @@ export function ArpEditor({ block }: { block: Block }) {
   const pattern = block.pattern ?? squares.map((_, i) => i);
   const gateSteps = block.gateSteps ?? 1;
   const rateSteps = block.rateSteps ?? 1;
+  // Tempo: ratePulses hat Vorrang; sonst aus rateSteps und Raster abgeleitet.
+  const ppb = pulsesPerBar(block.timeSignature);
+  const stepsPerBar = block.stepsPerBar ?? 16;
+  const ratePulses = block.ratePulses ?? Math.max(1, Math.round((rateSteps * ppb) / stepsPerBar));
+  const rateInSteps = (ratePulses * stepsPerBar) / ppb;
+  // Position in der Leiter: der nächste gleich schnelle oder langsamere Eintrag.
+  const firstSlower = SPEEDS.findIndex((sp) => sp.pulses >= ratePulses);
+  const speedIdx = firstSlower < 0 ? SPEEDS.length : firstSlower;
+  const speedNow = SPEEDS.find((sp) => sp.pulses === ratePulses);
+  const setSpeed = (i: number) => setField(block.id, "ratePulses", SPEEDS[Math.min(SPEEDS.length - 1, Math.max(0, i))].pulses);
   const velocity = block.velocity ?? 100;
+  const fitBar = block.fitBar !== false;
+  const [semitone, setSemitone] = useState(false);
+  const scale: ArpScaleSel = ARP_SCALES.some((sc) => sc.id === block.scale?.name) ? block.scale : undefined;
+  const fine = !scale || semitone;
 
   const [picked, setPicked] = useState(0);
   const selected = Math.min(picked, Math.max(0, squares.length - 1));
@@ -507,23 +609,80 @@ export function ArpEditor({ block }: { block: Block }) {
   // Ohne gewählten Eingang gibt es nichts, wovon man einspielen könnte.
   const playInActive = playInOn && !!midiIn;
   const playIn = useArpPlayIn(block.id, playInActive);
-  const playhead = usePatternPlayhead(block.id, rateSteps, pattern.length);
+  const playhead = usePatternPlayhead(block.id, rateInSteps, pattern.length);
+
+  const setScale = (root: string, name: string) => setField(block.id, "scale", name ? { root, name } : null);
+  const scaleOptions: SelectOption<string>[] = [
+    { value: "", label: "Off (semitones)" },
+    ...ARP_SCALES.map((sc) => ({ value: sc.id, label: sc.label })),
+  ];
+  const rootOptions: SelectOption<string>[] = ROOTS.map((r) => ({ value: r, label: r }));
 
   const hint = { fontSize: 13, color: "var(--pal-text-dim)", marginBottom: 8 } as const;
   const small = { height: 34, fontSize: 14, padding: "0 14px" } as const;
 
   return (
     <div>
+      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
+        <div style={{ fontSize: 13, color: "var(--pal-text-dim)", marginRight: 4 }}>Scale:</div>
+        <SelectMenu
+          variant={scale ? "active" : "alt"}
+          title="Scale for ▲▼ and the markings"
+          buttonLabel={scale ? ARP_SCALES.find((sc) => sc.id === scale.name)?.label : "Off (semitones)"}
+          value={scale?.name ?? ""}
+          options={scaleOptions}
+          style={{ height: 34, fontSize: 14, padding: "0 12px" }}
+          onChange={(name) => {
+            // Beim Einschalten: Grundton = Tonklasse des gewählten Quadrats,
+            // damit man nicht erst von C aus in die eigene Tonart wandern muss.
+            const base = scale?.root ?? ROOTS[(((squares[selected] ?? 60) % 12) + 12) % 12];
+            setScale(base, name);
+          }}
+        />
+        <SelectMenu
+          variant="alt"
+          title="Root note"
+          buttonLabel={scale ? `Root ${scale.root}` : "Root"}
+          value={scale?.root ?? ""}
+          options={rootOptions}
+          disabled={!scale}
+          style={{ height: 34, fontSize: 14, padding: "0 12px" }}
+          onChange={(root) => scale && setScale(root, scale.name)}
+        />
+        {scale && (
+          <Button
+            variant={semitone ? "active" : "alt"}
+            style={{ height: 34, fontSize: 14, padding: "0 12px" }}
+            title="What the ▲▼ arrows do: next scale note, or one half tone (any note)"
+            onClick={() => setSemitone(!semitone)}
+          >
+            Arrows: {semitone ? "½ tone" : "scale"}
+          </Button>
+        )}
+        {scale && (
+          <div style={{ fontSize: 12, color: "var(--pal-text-dim)" }}>● = root · tinted = in scale · dashed = out of scale</div>
+        )}
+      </div>
       <div style={hint}>
-        Squares — tap = select &amp; hear, ▲▼ = one semitone, hold = pick the note. Changing a square changes every melody step that uses it, live:
+        Squares — tap = select &amp; hear, ▲▼ = {fine ? "one semitone" : "next note in the scale"}, hold = pick the note. Changing a square changes every melody
+        step that uses it, live:
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
         {squares.map((note, i) => (
-          <ArpSquare key={i} block={block} index={i} note={note} selected={i === selected} onSelect={() => setPicked(i)} />
+          <ArpSquare
+            key={i}
+            block={block}
+            index={i}
+            note={note}
+            selected={i === selected}
+            onSelect={() => setPicked(i)}
+            fit={scaleState(note, scale)}
+            fine={fine}
+          />
         ))}
-        <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", paddingTop: 46 }}>
+        <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", paddingTop: 92 }}>
           <Button
-            style={{ width: SQUARE, height: SQUARE, fontSize: 28 }}
+            style={{ width: SQUARE, height: SQUARE, fontSize: 56 }}
             onClick={() => {
               send({ t: "arp.addSquare", blockId: block.id });
               setPicked(squares.length);
@@ -587,15 +746,16 @@ export function ArpEditor({ block }: { block: Block }) {
           playhead={playhead}
           cursor={playInActive ? playIn.cursor : null}
           setCursor={playIn.setCursor}
+          scale={scale}
         />
       ) : (
         <div style={hint}>Add a square first.</div>
       )}
       <div style={{ ...hint, marginTop: 22 }}>
-        Played notes — the melody in order. ▲▼ change only that one step (the squares at the top change every step that uses them). Tap = hear &amp; move the
+        Played notes — the melody in order. ▲▼ change only that one step{fine ? "" : " (to the next scale note)"} (the squares at the top change every step that uses them). Tap = hear &amp; move the
         cursor, hold = remove the step:
       </div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
         {pattern.length === 0 && <div style={hint}>No steps yet.</div>}
         {pattern.map((sq, i) => (
           <ArpStepSquare
@@ -607,6 +767,7 @@ export function ArpEditor({ block }: { block: Block }) {
             isCursor={playInActive && playIn.cursor === i}
             isPlayhead={playhead === i}
             setCursor={playIn.setCursor}
+            fine={fine}
           />
         ))}
       </div>
@@ -617,6 +778,14 @@ export function ArpEditor({ block }: { block: Block }) {
         <Button style={small} onClick={() => send({ t: "arp.clearSteps", blockId: block.id })}>
           Clear melody
         </Button>
+        <Button
+          variant="alt"
+          style={small}
+          title="New random melody from the squares (same length, some rests)"
+          onClick={() => send({ t: "arp.randomize", blockId: block.id, seed: Math.floor(Math.random() * 2 ** 32) })}
+        >
+          🎲 Random
+        </Button>
       </div>
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginTop: 22 }}>
@@ -626,18 +795,49 @@ export function ArpEditor({ block }: { block: Block }) {
         >
           Gate {gateSteps}
         </Button>
-        <Button
-          style={{ width: 120, height: 34, fontSize: 14 }}
-          onClick={() => wheel({ title: "Rate", min: 1, max: 64, unit: " step(s)", value: rateSteps, onPick: (n) => setField(block.id, "rateSteps", n) })}
-        >
-          Rate {rateSteps}
-        </Button>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <Button
+            style={{ width: 44, height: 34, fontSize: 18, padding: 0 }}
+            aria-label="Faster"
+            title="Faster"
+            disabled={speedIdx <= 0 && !!speedNow}
+            onClick={() => setSpeed(speedIdx - 1)}
+          >
+            ▲
+          </Button>
+          <div style={{ minWidth: 150, textAlign: "center", fontSize: 14 }}>
+            <div style={{ fontWeight: 700 }}>
+              Speed {speedNow ? speedNow.note : `${ratePulses}p`}
+            </div>
+            <div style={{ fontSize: 11, color: "var(--pal-text-dim)" }}>{speedNow ? `${speedNow.mult} of 1/16` : "custom"}</div>
+          </div>
+          <Button
+            style={{ width: 44, height: 34, fontSize: 18, padding: 0 }}
+            aria-label="Slower"
+            title="Slower"
+            disabled={speedIdx >= SPEEDS.length - 1 && !!speedNow}
+            onClick={() => setSpeed(speedNow ? speedIdx + 1 : speedIdx)}
+          >
+            ▼
+          </Button>
+        </div>
         <Button
           style={{ width: 120, height: 34, fontSize: 14 }}
           onClick={() => wheel({ title: "Velocity", min: 1, max: 127, value: velocity, onPick: (n) => setField(block.id, "velocity", n) })}
         >
           Vel {velocity}
         </Button>
+        <Button
+          variant={fitBar ? "active" : "alt"}
+          style={{ width: 140, height: 34, fontSize: 14 }}
+          title="Block length follows the melody so the loop restarts exactly on a bar line"
+          onClick={() => setField(block.id, "fitBar", !fitBar)}
+        >
+          Fit bar {fitBar ? "on" : "off"}
+        </Button>
+        <div style={{ alignSelf: "center", fontSize: 13, color: "var(--pal-text-dim)" }}>
+          Loop: {block.lengthBars ?? 1} {(block.lengthBars ?? 1) === 1 ? "bar" : "bars"} · melody {Math.round((pattern.length * ratePulses) / 24 * 100) / 100} beats
+        </div>
       </div>
     </div>
   );

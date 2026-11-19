@@ -1265,7 +1265,11 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                                 obj.remove(&field);
                             }
                         }
-                        Some(v) => b[field] = v.clone(),
+                        Some(v) => b[field.clone()] = v.clone(),
+                    }
+                    // Arp: Tempo der Melodie bzw. "Fit bar" angefasst → Länge nachziehen.
+                    if matches!(field.as_str(), "rateSteps" | "ratePulses" | "fitBar") && b.get("type").and_then(|v| v.as_str()) == Some("arp") {
+                        arp_fit_length(b);
                     }
                 }
                 drop(proj);
@@ -1801,11 +1805,13 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
             ) {
                 let note = cmd.get("note").and_then(|v| v.as_i64());
                 let delta = cmd.get("delta").and_then(|v| v.as_i64());
-                with_arp(state, &id, |squares, _| {
+                let fine = cmd.get("fine").and_then(|v| v.as_bool()).unwrap_or(false);
+                with_arp_scaled(state, &id, |squares, _, scale| {
+                    let scale = if fine { None } else { scale }; // Halbtonschritt trotz Skala
                     if let Some(cur) = squares.get_mut(i as usize) {
                         let next = match (note, delta) {
                             (Some(n), _) => n,
-                            (None, Some(d)) => *cur + d,
+                            (None, Some(d)) => arp_step_pitch(*cur, d, scale),
                             _ => *cur,
                         };
                         *cur = next.clamp(0, 127);
@@ -1868,7 +1874,10 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 cmd.get("index").and_then(|v| v.as_u64()),
                 cmd.get("delta").and_then(|v| v.as_i64()),
             ) {
-                with_arp(state, &id, |squares, pattern| arp_shift_step(squares, pattern, i as usize, delta));
+                let fine = cmd.get("fine").and_then(|v| v.as_bool()).unwrap_or(false);
+                with_arp_scaled(state, &id, |squares, pattern, scale| {
+                    arp_shift_step(squares, pattern, i as usize, delta, if fine { None } else { scale })
+                });
             }
         }
         // Letzte Melodie-Stelle weg (`index` fehlt) oder die an `index`.
@@ -1884,6 +1893,13 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                         pattern.pop();
                     }
                 });
+            }
+        }
+        // Zufällige Melodie aus den vorhandenen Quadraten (Seed kommt von der UI).
+        "arp.randomize" => {
+            if let Some(id) = str_field(&cmd, "blockId") {
+                let seed = cmd.get("seed").and_then(|v| v.as_u64()).unwrap_or(1);
+                with_arp_scaled(state, &id, |squares, pattern, scale| arp_randomize(squares, pattern, scale, seed));
             }
         }
         "arp.clearSteps" => {
@@ -3474,16 +3490,81 @@ fn arp_set_step(squares: &[i64], pattern: &mut Vec<i64>, index: usize, square: i
     }
 }
 
-/// Eine Melodie-Stelle um `delta` Halbtöne verschieben, OHNE andere Stellen
+/// Obergrenze für die automatisch gewählte Länge ("Fit bar"), in Takten.
+const MAX_ARP_FIT_BARS: u32 = 64;
+
+/// "Fit bar": Bausteinlänge (Takte) so wählen, dass die Melodie (Stellen ×
+/// `rateSteps` Steps) ohne Abschneiden aufgeht — die kleinste Taktzahl, deren
+/// Step-Zahl ein Vielfaches der Melodie-Länge ist (6 Stellen im 16er-Raster →
+/// 3 Takte, 8 oder 16 → 1 Takt). So landet jeder Loop-Neustart exakt auf der
+/// Taktgrenze und die Melodie wird nie mittendrin abgebrochen. Wäre das mehr als
+/// `MAX_ARP_FIT_BARS` Takte, genügt, dass die Melodie einmal hineinpasst.
+/// Aus mit `fitBar: false`; leere Melodie lässt die Länge unverändert.
+fn arp_fit_length(b: &mut serde_json::Value) {
+    if b.get("fitBar").and_then(|v| v.as_bool()) == Some(false) {
+        return;
+    }
+    let len = match b.get("pattern").and_then(|v| v.as_array()) {
+        Some(p) => p.len(),
+        None => b.get("chordNotes").and_then(|v| v.as_array()).map_or(0, |a| a.len()),
+    } as u32;
+    if len == 0 {
+        return;
+    }
+    let spb = block_u32(b, "stepsPerBar", 16).max(1);
+    let ts = b.get("timeSignature").and_then(|v| v.as_str()).unwrap_or("4/4").to_string();
+    let ppb = crate::engine::pulses_per_bar(&ts).max(1);
+    // Alles in 1/spb Pulsen, damit auch krumme Raster ohne Rundung aufgehen:
+    // eine Melodie-Stelle dauert `ratePulses` Pulse (sonst `rateSteps` Steps
+    // à ppb/spb Pulse), ein Takt hat ppb × spb solcher Einheiten.
+    let per_step = match b.get("ratePulses").and_then(|v| v.as_u64()).filter(|&r| r > 0) {
+        Some(rp) => rp as u32 * spb,
+        None => block_u32(b, "rateSteps", 1).max(1) * ppb,
+    };
+    let span = len * per_step;
+    fn gcd(a: u32, b: u32) -> u32 {
+        if b == 0 { a } else { gcd(b, a % b) }
+    }
+    let bar_units = ppb * spb;
+    let mut bars = span / gcd(span, bar_units);
+    if bars > MAX_ARP_FIT_BARS {
+        bars = span.div_ceil(bar_units);
+    }
+    let bars = bars.clamp(1, MAX_LENGTH_BARS);
+    if block_u32(b, "lengthBars", 1) != bars {
+        b["lengthBars"] = serde_json::json!(bars);
+    }
+}
+
+/// Skala eines Arp-Bausteins als (Grundton-Pitchclass, Intervalle); `None` =
+/// keine Skala oder chromatisch → ▲/▼ gehen in Halbtönen.
+type ArpScale = Option<(u8, &'static [u8])>;
+
+fn arp_scale(block: &serde_json::Value) -> ArpScale {
+    let sc = block.get("scale")?;
+    let intervals = crate::scale::intervals(sc.get("name")?.as_str()?)?;
+    Some((crate::scale::root_pc(sc.get("root")?.as_str()?)?, intervals))
+}
+
+/// `pitch` um `delta` Pfeil-Schritte verschieben: Skalentöne, wenn der Arp
+/// eine Skala hat, sonst Halbtöne.
+fn arp_step_pitch(pitch: i64, delta: i64, scale: ArpScale) -> i64 {
+    match scale {
+        Some((root_pc, intervals)) => crate::scale::step_in_scale(pitch, delta, root_pc, intervals),
+        None => (pitch + delta).clamp(0, 127),
+    }
+}
+
+/// Eine Melodie-Stelle um `delta` Halbtöne (mit Skala: Skalentöne) verschieben, OHNE andere Stellen
 /// mitzuziehen. Ist sie die einzige auf ihrem Quadrat, wandert das Quadrat
 /// selbst (kein Müll-Quadrat pro Tipper). Teilt sie sich das Quadrat mit
 /// anderen, zeigt sie danach auf das erste Quadrat mit der neuen Tonhöhe —
 /// ein neues, falls es keins gibt. Pausen und Indizes ohne Quadrat bleiben
 /// unberührt.
-fn arp_shift_step(squares: &mut Vec<i64>, pattern: &mut Vec<i64>, index: usize, delta: i64) {
+fn arp_shift_step(squares: &mut Vec<i64>, pattern: &mut Vec<i64>, index: usize, delta: i64, scale: ArpScale) {
     let Some(&sq) = pattern.get(index) else { return };
     let Some(&pitch) = usize::try_from(sq).ok().and_then(|k| squares.get(k)) else { return };
-    let target = (pitch + delta).clamp(0, 127);
+    let target = arp_step_pitch(pitch, delta, scale);
     if target == pitch {
         return;
     }
@@ -3501,6 +3582,46 @@ fn arp_shift_step(squares: &mut Vec<i64>, pattern: &mut Vec<i64>, index: usize, 
         None => return,
     };
     pattern[index] = dest as i64;
+}
+
+/// Zufällige Melodie: gleich lang wie die bisherige (leer → 8 Stellen), jede
+/// Stelle ein zufälliges Quadrat, ~15 % Pausen, nie zweimal dasselbe Quadrat
+/// direkt hintereinander (soweit es mehrere gibt). Hat der Arp weniger als drei
+/// Quadrate, werden zuerst fünf Skalentöne aufwärts ab C4 (mit Skala: ab dem
+/// Grundton) als Quadrate angelegt — sonst gäbe es nichts zu kombinieren.
+fn arp_randomize(squares: &mut Vec<i64>, pattern: &mut Vec<i64>, scale: ArpScale, seed: u64) {
+    let mut rng = crate::td3::Rng(seed);
+    if squares.len() < 3 {
+        let (root_pc, intervals): (u8, &[u8]) = scale.unwrap_or((0, &[0, 2, 4, 7, 9]));
+        let mut n = 60 + root_pc as i64;
+        if n > 66 {
+            n -= 12;
+        }
+        let mut notes = vec![n];
+        while notes.len() < 5 {
+            let next = crate::scale::step_in_scale(*notes.last().unwrap(), 1, root_pc, intervals);
+            notes.push(next);
+        }
+        // Der Grundton selbst ist nur dann ein Skalenton, wenn 0 in den Intervallen steht.
+        squares.clear();
+        squares.extend(notes);
+    }
+    let len = if pattern.is_empty() { 8 } else { pattern.len() }.min(MAX_ARP_PATTERN);
+    let mut out = Vec::with_capacity(len);
+    let mut prev = -1i64;
+    for _ in 0..len {
+        if rng.chance(0.15) {
+            out.push(-1);
+            continue;
+        }
+        let mut sq = rng.below(squares.len()) as i64;
+        if squares.len() > 1 && sq == prev {
+            sq = (sq + 1 + rng.below(squares.len() - 1) as i64) % squares.len() as i64;
+        }
+        prev = sq;
+        out.push(sq);
+    }
+    *pattern = out;
 }
 
 /// Eingespielte Note: erstes Quadrat mit dieser Tonhöhe, sonst ein neues
@@ -3527,6 +3648,11 @@ fn arp_play_in(squares: &mut Vec<i64>, pattern: &mut Vec<i64>, index: usize, not
 /// aufwärts), damit der erste Edit sie nicht verwirft. Danach Snapshot →
 /// Engine-Rebuild: wirkt auch bei laufendem Transport sofort.
 fn with_arp<F: FnOnce(&mut Vec<i64>, &mut Vec<i64>)>(state: &AppState, block_id: &str, f: F) {
+    with_arp_scaled(state, block_id, |squares, pattern, _| f(squares, pattern));
+}
+
+/// Wie `with_arp`, reicht aber zusätzlich die Skala des Bausteins durch.
+fn with_arp_scaled<F: FnOnce(&mut Vec<i64>, &mut Vec<i64>, ArpScale)>(state: &AppState, block_id: &str, f: F) {
     {
         let mut proj = state.project.lock().unwrap();
         let Some(b) = find_block_mut(&mut proj, block_id) else { return };
@@ -3538,9 +3664,11 @@ fn with_arp<F: FnOnce(&mut Vec<i64>, &mut Vec<i64>)>(state: &AppState, block_id:
         };
         let mut squares = nums(b.get("chordNotes")).unwrap_or_default();
         let mut pattern = nums(b.get("pattern")).unwrap_or_else(|| (0..squares.len() as i64).collect());
-        f(&mut squares, &mut pattern);
+        let scale = arp_scale(b);
+        f(&mut squares, &mut pattern, scale);
         b["chordNotes"] = serde_json::json!(squares);
         b["pattern"] = serde_json::json!(pattern);
+        arp_fit_length(b);
     }
     broadcast_snapshot(state);
 }
@@ -4497,21 +4625,91 @@ mod tests {
         // Quadrat A (60) wird von Stelle 0 UND 2 benutzt, B (64) nur von Stelle 1.
         let mut squares = vec![60, 64];
         let mut pattern = vec![0, 1, 0];
-        arp_shift_step(&mut squares, &mut pattern, 1, 1); // allein → B selbst
+        arp_shift_step(&mut squares, &mut pattern, 1, 1, None); // allein → B selbst
         assert_eq!((squares.clone(), pattern.clone()), (vec![60, 65], vec![0, 1, 0]));
-        arp_shift_step(&mut squares, &mut pattern, 2, 5); // geteilt, 60+5=65 existiert schon → zeigt dorthin
+        arp_shift_step(&mut squares, &mut pattern, 2, 5, None); // geteilt, 60+5=65 existiert schon → zeigt dorthin
         assert_eq!((squares.clone(), pattern.clone()), (vec![60, 65], vec![0, 1, 1]));
-        arp_shift_step(&mut squares, &mut pattern, 0, 2); // jetzt allein auf A → A wandert
+        arp_shift_step(&mut squares, &mut pattern, 0, 2, None); // jetzt allein auf A → A wandert
         assert_eq!((squares.clone(), pattern.clone()), (vec![62, 65], vec![0, 1, 1]));
-        arp_shift_step(&mut squares, &mut pattern, 2, 3); // geteilt mit 1, 65+3=68 neu
+        arp_shift_step(&mut squares, &mut pattern, 2, 3, None); // geteilt mit 1, 65+3=68 neu
         assert_eq!((squares.clone(), pattern.clone()), (vec![62, 65, 68], vec![0, 1, 2]));
         // Pause, Index hinter dem Ende, Grenze: nichts passiert.
         let mut sq = vec![127];
         let mut pat = vec![-1, 0];
-        arp_shift_step(&mut sq, &mut pat, 0, 1);
-        arp_shift_step(&mut sq, &mut pat, 9, 1);
-        arp_shift_step(&mut sq, &mut pat, 1, 1);
+        arp_shift_step(&mut sq, &mut pat, 0, 1, None);
+        arp_shift_step(&mut sq, &mut pat, 9, 1, None);
+        arp_shift_step(&mut sq, &mut pat, 1, 1, None);
         assert_eq!((sq, pat), (vec![127], vec![-1, 0]));
+    }
+
+    /// Mit Skala gehen die Pfeile von Skalenton zu Skalenton — in jeder
+    /// Tonart; ohne (oder "chromatic") bleibt es bei Halbtönen.
+    #[test]
+    fn arp_arrows_follow_the_blocks_scale() {
+        let a_minor_pent = serde_json::json!({ "scale": { "root": "A", "name": "pentatonicMinor" } });
+        let sc = arp_scale(&a_minor_pent);
+        assert!(sc.is_some());
+        assert_eq!(arp_step_pitch(69, 1, sc), 72); // A → C
+        assert_eq!(arp_step_pitch(72, -1, sc), 69);
+        let mut squares = vec![69, 76];
+        let mut pattern = vec![0, 1, 0];
+        arp_shift_step(&mut squares, &mut pattern, 1, 1, sc); // allein: E → G
+        assert_eq!(squares, vec![69, 79]);
+        assert!(arp_scale(&serde_json::json!({ "scale": { "root": "C", "name": "chromatic" } })).is_none());
+        assert!(arp_scale(&serde_json::json!({})).is_none());
+        assert_eq!(arp_step_pitch(60, 1, None), 61);
+    }
+
+    #[test]
+    fn arp_fit_length_makes_the_loop_end_on_a_bar_line() {
+        let fit = |len: usize, rate: u32, spb: u32, extra: serde_json::Value| {
+            let mut b = serde_json::json!({
+                "type": "arp", "pattern": vec![0; len], "rateSteps": rate, "stepsPerBar": spb, "lengthBars": 1,
+            });
+            if let (Some(o), Some(e)) = (b.as_object_mut(), extra.as_object()) {
+                o.extend(e.clone());
+            }
+            arp_fit_length(&mut b);
+            b["lengthBars"].as_u64().unwrap()
+        };
+        let none = serde_json::json!({});
+        assert_eq!(fit(8, 1, 16, none.clone()), 1);
+        assert_eq!(fit(16, 1, 16, none.clone()), 1);
+        assert_eq!(fit(6, 1, 16, none.clone()), 3); // 48 Steps = 8 × 6
+        assert_eq!(fit(5, 2, 16, none.clone()), 5); // 10 Steps pro Durchlauf → 80 Steps
+        assert_eq!(fit(32, 1, 16, none.clone()), 2);
+        assert_eq!(fit(0, 1, 16, none.clone()), 1); // leer: unverändert
+        assert_eq!(fit(6, 1, 16, serde_json::json!({ "fitBar": false })), 1); // aus
+        // Zu lang für "geht genau auf": einmal hineinpassen genügt.
+        // Tempo in Pulsen: 1/32 (3 Pulse) × 16 Stellen = 48 Pulse = ½ Takt → 1 Takt;
+        // 1/16-Triole (4) × 6 Stellen = 24 Pulse → 1 Takt; 1/8 (12) × 5 Stellen = 60 → 5 Takte.
+        assert_eq!(fit(16, 1, 16, serde_json::json!({ "ratePulses": 3 })), 1);
+        assert_eq!(fit(6, 1, 16, serde_json::json!({ "ratePulses": 4 })), 1);
+        assert_eq!(fit(5, 1, 16, serde_json::json!({ "ratePulses": 12 })), 5);
+        assert_eq!(fit(97, 1, 16, none), 7); // 97 Steps: 97 Takte wären zu viel → 7 Takte
+    }
+
+    #[test]
+    fn arp_randomize_builds_a_valid_melody_in_the_scale() {
+        let a_minor_pent = serde_json::json!({ "scale": { "root": "A", "name": "pentatonicMinor" } });
+        let sc = arp_scale(&a_minor_pent);
+        // Ohne Quadrate: fünf Skalentöne ab dem Grundton, Melodie mit 8 Stellen.
+        let (mut squares, mut pattern) = (vec![], vec![]);
+        arp_randomize(&mut squares, &mut pattern, sc, 42);
+        assert_eq!(squares, vec![57, 60, 62, 64, 67]); // A3 C D E G
+        assert_eq!(pattern.len(), 8);
+        assert!(pattern.iter().all(|&p| (-1..squares.len() as i64).contains(&p)));
+        for w in pattern.windows(2) {
+            assert!(w[0] < 0 || w[0] != w[1], "same square twice in a row: {pattern:?}");
+        }
+        // Vorhandene Quadrate und Länge bleiben; anderer Seed → andere Melodie.
+        let mut sq = vec![60, 64, 67];
+        let mut pat = vec![0; 12];
+        arp_randomize(&mut sq, &mut pat, None, 1);
+        assert_eq!((sq.clone(), pat.len()), (vec![60, 64, 67], 12));
+        let first = pat.clone();
+        arp_randomize(&mut sq, &mut pat, None, 2);
+        assert_ne!(first, pat);
     }
 
     /// Obergrenze der Quadrate: ist sie erreicht, wird für eine unbekannte

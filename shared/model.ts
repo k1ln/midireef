@@ -398,9 +398,13 @@ export interface ArpBlock extends BlockBase {
   chordNotes: MidiNote[]; // Quadrate
   pattern?: number[]; // Melodie; fehlt (Altprojekt) = jedes Quadrat einmal aufwärts
   gateSteps: number; // Notenlänge in Steps
-  rateSteps: number; // Abstand zwischen Melodie-Stellen
+  rateSteps: number; // Abstand zwischen Melodie-Stellen (Steps)
+  /** Tempo in Pulsen pro Melodie-Stelle (24 PPQN: 24 = Viertel, 6 = 1/16, 3 = 1/32, 4 = 1/16-Triole); hat Vorrang vor `rateSteps` und geht auch schneller als ein Step. */
+  ratePulses?: number;
   velocity: Midi7Bit;
   scale?: Scale;
+  /** "Fit bar": Bausteinlänge folgt der Melodie, damit der Loop auf der Taktgrenze neu startet (fehlt = an). */
+  fitBar?: boolean;
 }
 
 // ── Walker ───────────────────────────────────────────────────────────────
@@ -1170,13 +1174,14 @@ export type Command =
   | { t: "chord.toggleNote"; blockId: Id; step: number; note: MidiNote } // Baustein-Detail: Note im Akkord an Step an/aus
   | { t: "arp.addSquare"; blockId: Id; note?: MidiNote } // neues Quadrat (ohne note: letztes + 2 Halbtöne)
   | { t: "arp.setSquare"; blockId: Id; index: number; note: MidiNote } // Quadrat auf feste Tonhöhe
-  | { t: "arp.shiftSquare"; blockId: Id; index: number; delta: number } // Quadrat um delta Halbtöne (Pfeile)
+  | { t: "arp.shiftSquare"; blockId: Id; index: number; delta: number; fine?: boolean } // Quadrat um delta Skalentöne bzw. Halbtöne (Pfeile); fine = Halbton trotz Skala
   | { t: "arp.removeSquare"; blockId: Id; index: number } // Melodie-Stellen darauf werden Pausen
   | { t: "arp.setStep"; blockId: Id; index: number; square: number } // Melodie-Stelle → Quadrat (-1 = Pause); index == Länge hängt an
-  | { t: "arp.shiftStep"; blockId: Id; index: number; delta: number } // Pfeile an EINER Melodie-Stelle (nur sie, nicht alle auf demselben Quadrat)
+  | { t: "arp.shiftStep"; blockId: Id; index: number; delta: number; fine?: boolean } // Pfeile an EINER Melodie-Stelle (nur sie, nicht alle auf demselben Quadrat)
   | { t: "arp.playIn"; blockId: Id; index: number; note: MidiNote } // eingespielte Note: Quadrat dieser Tonhöhe suchen/anlegen, Melodie-Stelle index darauf
   | { t: "arp.removeStep"; blockId: Id; index?: number } // ohne index: letzte Stelle
   | { t: "arp.clearSteps"; blockId: Id }
+  | { t: "arp.randomize"; blockId: Id; seed: number } // zufällige Melodie aus den Quadraten (ohne Quadrate: 5 Skalentöne anlegen)
   | { t: "walker.setBorder"; blockId: Id; which: "low" | "high"; note: MidiNote }
   | { t: "walker.addNode"; blockId: Id; startNote: MidiNote } // fügt zwischen bestehenden Nodes/Wänden ein (nach Tonhöhe sortiert)
   | { t: "walker.removeNode"; blockId: Id; nodeId: Id }

@@ -22,6 +22,34 @@ pub fn intervals(name: &str) -> Option<&'static [u8]> {
     })
 }
 
+/// Tonklasse (0..11) eines Grundton-Namens aus `ScaleRoot` ("C", "C#", …).
+pub fn root_pc(name: &str) -> Option<u8> {
+    ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+        .iter()
+        .position(|&n| n == name)
+        .map(|i| i as u8)
+}
+
+/// `note` um `delta` Skalentöne nach oben (+) bzw. unten (−) schieben. Anders
+/// als `shift_degrees` zählt eine Note außerhalb der Skala nicht als der
+/// Skalenton darunter: ▲ geht zum nächsten Skalenton DARÜBER, ▼ zum nächsten
+/// DARUNTER. Am Rand des MIDI-Bereichs bleibt die Note stehen.
+pub fn step_in_scale(note: i64, delta: i64, root_pc: u8, scale: &[u8]) -> i64 {
+    let dir = delta.signum();
+    let mut cur = note.clamp(0, 127);
+    for _ in 0..delta.abs() {
+        let mut n = cur + dir;
+        while (0..=127).contains(&n) && !in_scale(n as i32, root_pc, scale) {
+            n += dir;
+        }
+        if !(0..=127).contains(&n) {
+            break;
+        }
+        cur = n;
+    }
+    cur
+}
+
 fn in_scale(note: i32, root_pc: u8, scale: &[u8]) -> bool {
     let rel = (note - root_pc as i32).rem_euclid(12) as u8;
     scale.contains(&rel)
@@ -90,6 +118,32 @@ mod tests {
         assert_eq!(degrees_between(60, 67, 0, p), 3);
         // Grundton D (pc 2): D-Dur-Skala, Taste F# = Stufe 2.
         assert_eq!(degrees_between(62, 66, 2, c_major()), 2);
+    }
+
+    #[test]
+    fn step_in_scale_walks_the_scale_in_any_key() {
+        let minor_pent = intervals("pentatonicMinor").unwrap();
+        // A-Moll-Pentatonik: A C D E G — von A (69) aufwärts C D E G A.
+        let up: Vec<i64> = (1..=5).map(|d| step_in_scale(69, d, 9, minor_pent)).collect();
+        assert_eq!(up, vec![72, 74, 76, 79, 81]);
+        assert_eq!(step_in_scale(72, -1, 9, minor_pent), 69);
+        // Außerhalb der Skala: B (71) → ▲ C (72), ▼ A (69).
+        assert_eq!(step_in_scale(71, 1, 9, minor_pent), 72);
+        assert_eq!(step_in_scale(71, -1, 9, minor_pent), 69);
+        // Andere Tonart, gleiche Form: D-Dur-Pentatonik D E F# A B.
+        let major_pent = intervals("pentatonicMajor").unwrap();
+        assert_eq!(step_in_scale(62, 1, 2, major_pent), 64);
+        assert_eq!(step_in_scale(66, 1, 2, major_pent), 69);
+        // MIDI-Rand.
+        assert_eq!(step_in_scale(0, -1, 0, major_pent), 0);
+        assert_eq!(step_in_scale(127, 1, 7, major_pent), 127);
+    }
+
+    #[test]
+    fn root_names_map_to_pitch_classes() {
+        assert_eq!(root_pc("C"), Some(0));
+        assert_eq!(root_pc("A#"), Some(10));
+        assert_eq!(root_pc("H"), None);
     }
 
     #[test]
