@@ -26,7 +26,7 @@ import { useWheelPicker } from "../widgets/WheelPicker";
 import { useLongPress } from "../useLongPress";
 import { useSetField } from "../useNumberEditor";
 
-const SQUARE = 152;
+const SQUARE = 128; // Quadrate oben und gespielte Noten unten gleich groß
 const MAX_ARP_STEPS = 64; // wie MAX_ARP_PATTERN im Server
 const CELL_W = 80;
 const CELL_H = 68;
@@ -221,7 +221,7 @@ function ArpSquare({
     },
   );
   const shift = (delta: number) => send({ t: "arp.shiftSquare", blockId: block.id, index, delta, fine });
-  const arrow = { width: SQUARE, height: 80, fontSize: 36 } as const;
+  const arrow = { width: SQUARE, height: 72, fontSize: 32, padding: 0 } as const;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
       <Button style={arrow} onClick={() => shift(1)} aria-label={`Square ${squareLetter(index)} up`}>
@@ -251,7 +251,7 @@ function ArpSquare({
           {squareLetter(index)}
           {fit === "root" && " ●"}
         </div>
-        <div style={{ fontSize: 44, fontWeight: 700 }}>{noteName(note)}</div>
+        <div style={{ fontSize: 38, fontWeight: 700 }}>{noteName(note)}</div>
       </div>
       <Button style={arrow} onClick={() => shift(-1)} aria-label={`Square ${squareLetter(index)} down`}>
         ▼
@@ -489,7 +489,7 @@ function RollRow({
 
 // ── Gespielte Noten: die Melodie in Reihenfolge als Quadrate ───────────────
 
-const STEP_SQ_W = 112;
+const STEP_SQ_W = SQUARE;
 
 /** Eine Stelle der Melodie als Quadrat mit ▲/▼ — ändert NUR diese Stelle
  *  (die Quadrate oben ändern dagegen jede Stelle auf demselben Quadrat). */
@@ -525,9 +525,9 @@ function ArpStepSquare({
       window.setTimeout(() => send({ t: "block.previewNote", blockId: block.id, note, on: false }), 200);
     },
   );
-  const arrow = { width: STEP_SQ_W, height: 68, fontSize: 30, padding: 0 } as const;
+  const arrow = { width: STEP_SQ_W, height: 72, fontSize: 32, padding: 0 } as const;
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8, flexShrink: 0 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
       <Button style={arrow} disabled={rest} onClick={() => shift(1)} aria-label={`Step ${col + 1} up`}>
         ▲
       </Button>
@@ -550,11 +550,11 @@ function ArpStepSquare({
           cursor: "pointer",
         }}
       >
-        <div style={{ fontSize: 20, opacity: 0.6 }}>
+        <div style={{ fontSize: 22, opacity: 0.6 }}>
           {col + 1}
           {!rest && ` · ${squareLetter(square)}`}
         </div>
-        <div style={{ fontSize: rest ? 40 : 34, fontWeight: 700, color: rest ? "var(--pal-text-dim)" : undefined }}>
+        <div style={{ fontSize: rest ? 42 : 38, fontWeight: 700, color: rest ? "var(--pal-text-dim)" : undefined }}>
           {rest ? "–" : noteName(note)}
         </div>
       </div>
@@ -622,20 +622,80 @@ export function ArpEditor({ block }: { block: Block }) {
   ];
   const rootOptions: SelectOption<string>[] = ROOTS.map((r) => ({ value: r, label: r }));
 
-  const hint = { fontSize: 13, color: "var(--pal-text-dim)", marginBottom: 8 } as const;
-  const small = { height: 34, fontSize: 14, padding: "0 14px" } as const;
+  const hint = { fontSize: 15, color: "var(--pal-text-dim)", marginBottom: 8 } as const;
+  const small = { height: 46, fontSize: 17, padding: "0 16px" } as const;
 
   return (
     <div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
+        <Button
+          style={{ width: 150, height: 46, fontSize: 17 }}
+          title="Note length as a share of the time between notes"
+          onClick={() => wheel({ title: "Gate", min: 5, max: 100, unit: " %", value: gatePct, onPick: (n) => setField(block.id, "gatePct", n) })}
+        >
+          Gate {gatePct}%
+        </Button>
+        <Button
+          variant={swingPct > 0 ? "active" : "alt"}
+          style={{ width: 150, height: 46, fontSize: 17 }}
+          title="Delay every second note"
+          onClick={() => wheel({ title: "Swing", min: 0, max: 100, unit: " %", value: swingPct, onPick: (n) => setField(block.id, "swing", n / 100) })}
+        >
+          Swing {swingPct}%
+        </Button>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <Button
+            style={{ width: 56, height: 46, fontSize: 22, padding: 0 }}
+            aria-label="Faster"
+            title="Faster"
+            disabled={speedIdx <= 0 && !!speedNow}
+            onClick={() => setSpeed(speedIdx - 1)}
+          >
+            ▲
+          </Button>
+          <div style={{ minWidth: 170, textAlign: "center", fontSize: 17 }}>
+            <div style={{ fontWeight: 700 }}>
+              Speed {speedNow ? speedNow.note : `${ratePulses}p`}
+            </div>
+            <div style={{ fontSize: 13, color: "var(--pal-text-dim)" }}>{speedNow ? `${speedNow.mult} of 1/16` : "custom"}</div>
+          </div>
+          <Button
+            style={{ width: 56, height: 46, fontSize: 22, padding: 0 }}
+            aria-label="Slower"
+            title="Slower"
+            disabled={speedIdx >= SPEEDS.length - 1 && !!speedNow}
+            onClick={() => setSpeed(speedNow ? speedIdx + 1 : speedIdx)}
+          >
+            ▼
+          </Button>
+        </div>
+        <Button
+          style={{ width: 150, height: 46, fontSize: 17 }}
+          onClick={() => wheel({ title: "Velocity", min: 1, max: 127, value: velocity, onPick: (n) => setField(block.id, "velocity", n) })}
+        >
+          Vel {velocity}
+        </Button>
+        <Button
+          variant={fitBar ? "active" : "alt"}
+          style={{ width: 170, height: 46, fontSize: 17 }}
+          title="Block length follows the melody so the loop restarts exactly on a bar line"
+          onClick={() => setField(block.id, "fitBar", !fitBar)}
+        >
+          Fit bar {fitBar ? "on" : "off"}
+        </Button>
+        <div style={{ alignSelf: "center", fontSize: 15, color: "var(--pal-text-dim)" }}>
+          Loop: {block.lengthBars ?? 1} {(block.lengthBars ?? 1) === 1 ? "bar" : "bars"} · melody {Math.round((pattern.length * ratePulses) / 24 * 100) / 100} beats
+        </div>
+      </div>
       <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
-        <div style={{ fontSize: 13, color: "var(--pal-text-dim)", marginRight: 4 }}>Scale:</div>
+        <div style={{ fontSize: 15, color: "var(--pal-text-dim)", marginRight: 4 }}>Scale:</div>
         <SelectMenu
           variant={scale ? "active" : "alt"}
           title="Scale for ▲▼ and the markings"
           buttonLabel={scale ? ARP_SCALES.find((sc) => sc.id === scale.name)?.label : "Off (semitones)"}
           value={scale?.name ?? ""}
           options={scaleOptions}
-          style={{ height: 34, fontSize: 14, padding: "0 12px" }}
+          style={{ height: 46, fontSize: 17, padding: "0 14px" }}
           onChange={(name) => {
             // Beim Einschalten: Grundton = Tonklasse des gewählten Quadrats,
             // damit man nicht erst von C aus in die eigene Tonart wandern muss.
@@ -650,13 +710,13 @@ export function ArpEditor({ block }: { block: Block }) {
           value={scale?.root ?? ""}
           options={rootOptions}
           disabled={!scale}
-          style={{ height: 34, fontSize: 14, padding: "0 12px" }}
+          style={{ height: 46, fontSize: 17, padding: "0 14px" }}
           onChange={(root) => scale && setScale(root, scale.name)}
         />
         {scale && (
           <Button
             variant={semitone ? "active" : "alt"}
-            style={{ height: 34, fontSize: 14, padding: "0 12px" }}
+            style={{ height: 46, fontSize: 17, padding: "0 14px" }}
             title="What the ▲▼ arrows do: next scale note, or one half tone (any note)"
             onClick={() => setSemitone(!semitone)}
           >
@@ -664,7 +724,7 @@ export function ArpEditor({ block }: { block: Block }) {
           </Button>
         )}
         {scale && (
-          <div style={{ fontSize: 12, color: "var(--pal-text-dim)" }}>● = root · tinted = in scale · dashed = out of scale</div>
+          <div style={{ fontSize: 14, color: "var(--pal-text-dim)" }}>● = root · tinted = in scale · dashed = out of scale</div>
         )}
       </div>
       <div style={hint}>
@@ -684,9 +744,9 @@ export function ArpEditor({ block }: { block: Block }) {
             fine={fine}
           />
         ))}
-        <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", paddingTop: 92 }}>
+        <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", paddingTop: 78 }}>
           <Button
-            style={{ width: SQUARE, height: SQUARE, fontSize: 56 }}
+            style={{ width: SQUARE, height: SQUARE, fontSize: 52 }}
             onClick={() => {
               send({ t: "arp.addSquare", blockId: block.id });
               setPicked(squares.length);
@@ -706,7 +766,7 @@ export function ArpEditor({ block }: { block: Block }) {
       )}
 
       <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, marginTop: 22, marginBottom: 8 }}>
-        <div style={{ fontSize: 13, color: "var(--pal-text-dim)", marginRight: 4 }}>Melody — tap a field to place a square, tap again = rest:</div>
+        <div style={{ fontSize: 15, color: "var(--pal-text-dim)", marginRight: 4 }}>Melody — tap a field to place a square, tap again = rest:</div>
         <SelectMenu
           variant="alt"
           title="MIDI input for play-in"
@@ -715,12 +775,12 @@ export function ArpEditor({ block }: { block: Block }) {
           value={midiIn}
           options={inputOptions}
           disabled={!lane}
-          style={{ height: 34, fontSize: 14, padding: "0 12px", maxWidth: 260 }}
+          style={{ height: 46, fontSize: 17, padding: "0 14px", maxWidth: 260 }}
           onChange={(v) => lane && send({ t: "lane.setMidiIn", laneId: lane.id, port: v || null })}
         />
         <Button
           variant={playInActive ? "active" : "alt"}
-          style={{ width: 64, height: 34, fontSize: 14 }}
+          style={{ width: 76, height: 46, fontSize: 17 }}
           disabled={!midiIn}
           title={midiIn ? "Play the melody in from the selected MIDI input" : "Select a play-in input first"}
           onClick={() => setPlayInOn(!playInOn)}
@@ -790,67 +850,6 @@ export function ArpEditor({ block }: { block: Block }) {
         >
           🎲 Random
         </Button>
-      </div>
-
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginTop: 22 }}>
-        <Button
-          style={{ width: 120, height: 34, fontSize: 14 }}
-          title="Note length as a share of the time between notes"
-          onClick={() => wheel({ title: "Gate", min: 5, max: 100, unit: " %", value: gatePct, onPick: (n) => setField(block.id, "gatePct", n) })}
-        >
-          Gate {gatePct}%
-        </Button>
-        <Button
-          variant={swingPct > 0 ? "active" : "alt"}
-          style={{ width: 120, height: 34, fontSize: 14 }}
-          title="Delay every second note"
-          onClick={() => wheel({ title: "Swing", min: 0, max: 100, unit: " %", value: swingPct, onPick: (n) => setField(block.id, "swing", n / 100) })}
-        >
-          Swing {swingPct}%
-        </Button>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <Button
-            style={{ width: 44, height: 34, fontSize: 18, padding: 0 }}
-            aria-label="Faster"
-            title="Faster"
-            disabled={speedIdx <= 0 && !!speedNow}
-            onClick={() => setSpeed(speedIdx - 1)}
-          >
-            ▲
-          </Button>
-          <div style={{ minWidth: 150, textAlign: "center", fontSize: 14 }}>
-            <div style={{ fontWeight: 700 }}>
-              Speed {speedNow ? speedNow.note : `${ratePulses}p`}
-            </div>
-            <div style={{ fontSize: 11, color: "var(--pal-text-dim)" }}>{speedNow ? `${speedNow.mult} of 1/16` : "custom"}</div>
-          </div>
-          <Button
-            style={{ width: 44, height: 34, fontSize: 18, padding: 0 }}
-            aria-label="Slower"
-            title="Slower"
-            disabled={speedIdx >= SPEEDS.length - 1 && !!speedNow}
-            onClick={() => setSpeed(speedNow ? speedIdx + 1 : speedIdx)}
-          >
-            ▼
-          </Button>
-        </div>
-        <Button
-          style={{ width: 120, height: 34, fontSize: 14 }}
-          onClick={() => wheel({ title: "Velocity", min: 1, max: 127, value: velocity, onPick: (n) => setField(block.id, "velocity", n) })}
-        >
-          Vel {velocity}
-        </Button>
-        <Button
-          variant={fitBar ? "active" : "alt"}
-          style={{ width: 140, height: 34, fontSize: 14 }}
-          title="Block length follows the melody so the loop restarts exactly on a bar line"
-          onClick={() => setField(block.id, "fitBar", !fitBar)}
-        >
-          Fit bar {fitBar ? "on" : "off"}
-        </Button>
-        <div style={{ alignSelf: "center", fontSize: 13, color: "var(--pal-text-dim)" }}>
-          Loop: {block.lengthBars ?? 1} {(block.lengthBars ?? 1) === 1 ? "bar" : "bars"} · melody {Math.round((pattern.length * ratePulses) / 24 * 100) / 100} beats
-        </div>
       </div>
     </div>
   );
