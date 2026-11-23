@@ -21,6 +21,7 @@ import type { Block, Device, Lane } from "../../state";
 import { useNet, useRuntime, useSend, useStoreValue } from "../store";
 import { noteName } from "../NotePicker";
 import { Button } from "../widgets/Button";
+import { Knob } from "../widgets/Knob";
 import { SelectMenu, type SelectOption } from "../widgets/SelectMenu";
 import { useWheelPicker } from "../widgets/WheelPicker";
 import { useLongPress } from "../useLongPress";
@@ -569,7 +570,6 @@ function ArpStepSquare({
 
 export function ArpEditor({ block }: { block: Block }) {
   const send = useSend();
-  const wheel = useWheelPicker();
   const setField = useSetField();
   const squares = block.chordNotes ?? [];
   // Altprojekt ohne Melodie: jedes Quadrat einmal aufwärts (wie die Engine).
@@ -585,6 +585,8 @@ export function ArpEditor({ block }: { block: Block }) {
   const firstSlower = SPEEDS.findIndex((sp) => sp.pulses >= ratePulses);
   const speedIdx = firstSlower < 0 ? SPEEDS.length : firstSlower;
   const speedNow = SPEEDS.find((sp) => sp.pulses === ratePulses);
+  // Knopf: oben = schneller, daher die Leiter umgekehrt (nächster Eintrag bei Eigenwert).
+  const speedKnob = SPEEDS.length - 1 - Math.min(SPEEDS.length - 1, speedIdx);
   const setSpeed = (i: number) => setField(block.id, "ratePulses", SPEEDS[Math.min(SPEEDS.length - 1, Math.max(0, i))].pulses);
   // Gate: Notenlänge in % des Abstands zur nächsten Stelle (folgt dem Tempo).
   // Altprojekte mit nur `gateSteps`: daraus abgeleitet (max. 100 %).
@@ -627,54 +629,46 @@ export function ArpEditor({ block }: { block: Block }) {
 
   return (
     <div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
-        <Button
-          style={{ width: 150, height: 46, fontSize: 17 }}
-          title="Note length as a share of the time between notes"
-          onClick={() => wheel({ title: "Gate", min: 5, max: 100, unit: " %", value: gatePct, onPick: (n) => setField(block.id, "gatePct", n) })}
-        >
-          Gate {gatePct}%
-        </Button>
-        <Button
-          variant={swingPct > 0 ? "active" : "alt"}
-          style={{ width: 150, height: 46, fontSize: 17 }}
-          title="Delay every second note"
-          onClick={() => wheel({ title: "Swing", min: 0, max: 100, unit: " %", value: swingPct, onPick: (n) => setField(block.id, "swing", n / 100) })}
-        >
-          Swing {swingPct}%
-        </Button>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <Button
-            style={{ width: 56, height: 46, fontSize: 22, padding: 0 }}
-            aria-label="Faster"
-            title="Faster"
-            disabled={speedIdx <= 0 && !!speedNow}
-            onClick={() => setSpeed(speedIdx - 1)}
-          >
-            ▲
-          </Button>
-          <div style={{ minWidth: 170, textAlign: "center", fontSize: 17 }}>
-            <div style={{ fontWeight: 700 }}>
-              Speed {speedNow ? speedNow.note : `${ratePulses}p`}
-            </div>
-            <div style={{ fontSize: 13, color: "var(--pal-text-dim)" }}>{speedNow ? `${speedNow.mult} of 1/16` : "custom"}</div>
-          </div>
-          <Button
-            style={{ width: 56, height: 46, fontSize: 22, padding: 0 }}
-            aria-label="Slower"
-            title="Slower"
-            disabled={speedIdx >= SPEEDS.length - 1 && !!speedNow}
-            onClick={() => setSpeed(speedNow ? speedIdx + 1 : speedIdx)}
-          >
-            ▼
-          </Button>
-        </div>
-        <Button
-          style={{ width: 150, height: 46, fontSize: 17 }}
-          onClick={() => wheel({ title: "Velocity", min: 1, max: 127, value: velocity, onPick: (n) => setField(block.id, "velocity", n) })}
-        >
-          Vel {velocity}
-        </Button>
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 14, marginBottom: 16 }}>
+        <Knob
+          label="GATE"
+          value={gatePct}
+          min={5}
+          max={100}
+          unit="%"
+          size={96}
+          dragPx={300}
+          onChange={(n) => setField(block.id, "gatePct", n)}
+        />
+        <Knob
+          label="SWING"
+          value={swingPct}
+          min={0}
+          max={100}
+          unit="%"
+          size={96}
+          dragPx={300}
+          onChange={(n) => setField(block.id, "swing", n / 100)}
+        />
+        <Knob
+          label="SPEED"
+          value={speedKnob}
+          min={0}
+          max={SPEEDS.length - 1}
+          size={96}
+          dragPx={360}
+          format={(v) => (!speedNow && v === speedKnob ? `${ratePulses}p` : SPEEDS[SPEEDS.length - 1 - v].note)}
+          onChange={(v) => setSpeed(SPEEDS.length - 1 - v)}
+        />
+        <Knob
+          label="VELOCITY"
+          value={velocity}
+          min={1}
+          max={127}
+          size={96}
+          dragPx={360}
+          onChange={(n) => setField(block.id, "velocity", n)}
+        />
         <Button
           variant={fitBar ? "active" : "alt"}
           style={{ width: 170, height: 46, fontSize: 17 }}
