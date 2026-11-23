@@ -2668,6 +2668,15 @@ struct BlockJson {
     gate_steps: u32,
     #[serde(rename = "rateSteps", default = "one_u32")]
     rate_steps: u32,
+    /// Arp-Notenlänge in Prozent des Abstands zwischen zwei Melodie-Stellen
+    /// (5..100); hat Vorrang vor `gateSteps` und skaliert mit dem Tempo mit.
+    #[serde(rename = "gatePct", default)]
+    gate_pct: Option<f32>,
+    /// Arp-Swing 0..1: verzögert jede zweite Melodie-Stelle (um `swing` ×
+    /// halber Abstand, wie `Lane.swing` beim Step-Raster). Unabhängig vom
+    /// Lane-/Projekt-Swing.
+    #[serde(default)]
+    swing: Option<f32>,
     /// Arp-Tempo in Pulsen pro Melodie-Stelle (24 = Viertel, 6 = Sechzehntel,
     /// 3 = 1/32, 4 = 1/16-Triole …), unabhängig vom Raster des Bausteins — so
     /// geht auch "schneller als ein Step". Fehlt es, gilt `rateSteps`.
@@ -2942,21 +2951,25 @@ fn compile_block(
             // Tempo als Bruch in Steps: ratePulses → rp × stepsPerBar / pulsesPerBar,
             // sonst rateSteps ganzzahlig. Die Bruchteile werden unten zu
             // `micro_timing` innerhalb des Steps.
-            let (rate, gate) = match b.rate_pulses.filter(|&rp| rp > 0) {
-                Some(rp) => {
-                    let rate = (rp * steps_per_bar, ppb.max(1));
-                    // Eine Note länger als der Abstand zur nächsten würde sich
-                    // überlappen — bei gesetztem Tempo auf den Abstand begrenzen.
-                    let rate_steps = rate.0 as f32 / rate.1 as f32;
-                    (rate, (b.gate_steps.max(1) as f32).min(rate_steps))
-                }
-                None => ((b.rate_steps.max(1), 1), b.gate_steps.max(1) as f32),
+            let rate = match b.rate_pulses.filter(|&rp| rp > 0) {
+                Some(rp) => (rp * steps_per_bar, ppb.max(1)),
+                None => (b.rate_steps.max(1), 1),
+            };
+            let rate_steps = rate.0 as f32 / rate.1 as f32;
+            let gate = match b.gate_pct {
+                Some(pct) => rate_steps * (pct / 100.0).clamp(0.05, 1.0),
+                // Eine Note länger als der Abstand zur nächsten würde sich
+                // überlappen — bei gesetztem Tempo (`ratePulses`) auf den
+                // Abstand begrenzen.
+                None if b.rate_pulses.is_some_and(|rp| rp > 0) => (b.gate_steps.max(1) as f32).min(rate_steps),
+                None => b.gate_steps.max(1) as f32,
             };
             CKind::Arp(build_arp_pattern(
                 &squares,
                 pattern,
                 rate,
                 gate,
+                b.swing.unwrap_or(0.0).clamp(0.0, 1.0),
                 b.velocity.clamp(1, 127),
                 total_steps,
             ))
@@ -3128,29 +3141,45 @@ fn build_arp_pattern(
     pattern: &[i32],
     rate: (u32, u32),
     gate_steps: f32,
+    swing: f32,
     vel: u8,
     total_steps: u32,
 ) -> Vec<CNote> {
     if pattern.is_empty() || rate.0 == 0 || rate.1 == 0 {
         return Vec::new();
     }
+    // Swing: jede zweite Stelle (i ungerade) um `swing` × halber Abstand
+    // später. Rechnung in Einheiten von 1/(den × SCALE) Steps, damit sie exakt
+    // bleibt (swing in Promille).
+    const SCALE: u64 = 2000;
     let (num, den) = (rate.0 as u64, rate.1 as u64);
+    let swing_pm = (swing.clamp(0.0, 1.0) * 1000.0).round() as u64;
+    let unit = den * SCALE;
     let end = total_steps as u64 * den;
     let mut out = Vec::new();
     let mut i = 0usize;
     loop {
-        let at = i as u64 * num; // Position in 1/den Steps
+        let at = i as u64 * num; // Position in 1/den Steps (ungeswingt)
         if at >= end {
             break;
         }
+        let delay = if i % 2 == 1 { num * swing_pm } else { 0 }; // in 1/unit Steps
+        // Hinter das Loop-Ende wandern lassen wäre ein Wrap — stattdessen am Ende festhalten.
+        let at_swung = (at * SCALE + delay).min(end * SCALE - 1);
         let idx = pattern[i % pattern.len()];
         if let Some(&note) = usize::try_from(idx).ok().and_then(|k| squares.get(k)) {
+            // Die verzögerte Note darf die nächste (ungeswingte) nicht überlappen.
+            let len_steps = if delay > 0 {
+                gate_steps.min((num * SCALE - delay) as f32 / unit as f32)
+            } else {
+                gate_steps
+            };
             out.push(CNote {
-                step: (at / den) as u32,
-                len_steps: gate_steps,
+                step: (at_swung / unit) as u32,
+                len_steps,
                 note,
                 vel,
-                m: StepMod { micro_timing: (at % den) as f32 / den as f32, ..StepMod::default() },
+                m: StepMod { micro_timing: (at_swung % unit) as f32 / unit as f32, ..StepMod::default() },
             });
         }
         i += 1;
@@ -3667,7 +3696,7 @@ mod groove_tests {
     #[test]
     fn arp_pattern_resolves_squares_and_loops() {
         let pitches = |squares: &[u8]| -> Vec<(u32, u8)> {
-            build_arp_pattern(squares, &[0, 1, 0, -1, 7], (2, 1), 1.0, 100, 12)
+            build_arp_pattern(squares, &[0, 1, 0, -1, 7], (2, 1), 1.0, 0.0, 100, 12)
                 .iter()
                 .map(|n| (n.step, n.note))
                 .collect()
@@ -3678,7 +3707,7 @@ mod groove_tests {
         // Quadrat 0 um 2 Halbtöne hoch: BEIDE Stellen ziehen mit, Quadrat 1 nicht.
         assert_eq!(pitches(&[62, 64]), vec![(0, 62), (2, 64), (4, 62), (10, 62)]);
         // Leere Melodie -> nichts.
-        assert!(build_arp_pattern(&[60], &[], (1, 1), 1.0, 100, 16).is_empty());
+        assert!(build_arp_pattern(&[60], &[], (1, 1), 1.0, 0.0, 100, 16).is_empty());
     }
 
     /// Schneller als ein Step: 1/32 im 16er-Raster = halber Step → jede zweite
@@ -3686,11 +3715,26 @@ mod groove_tests {
     #[test]
     fn arp_pattern_can_run_faster_than_a_step() {
         let at = |rate: (u32, u32)| -> Vec<(u32, f32)> {
-            build_arp_pattern(&[60], &[0], rate, 0.5, 100, 2).iter().map(|n| (n.step, n.m.micro_timing)).collect()
+            build_arp_pattern(&[60], &[0], rate, 0.5, 0.0, 100, 2).iter().map(|n| (n.step, n.m.micro_timing)).collect()
         };
         assert_eq!(at((1, 2)), vec![(0, 0.0), (0, 0.5), (1, 0.0), (1, 0.5)]);
         assert_eq!(at((2, 3)), vec![(0, 0.0), (0, 2.0 / 3.0), (1, 1.0 / 3.0)]); // Triole: 3 Noten über 2 Steps
         assert_eq!(at((3, 1)), vec![(0, 0.0)]);
+    }
+
+    /// Arp-Swing verzögert jede zweite Stelle um `swing` × halber Abstand und
+    /// kürzt sie, damit sie die nächste nicht überlappt; Swing 0 ändert nichts.
+    #[test]
+    fn arp_swing_delays_every_second_note() {
+        let run = |swing: f32| -> Vec<(u32, f32, f32)> {
+            build_arp_pattern(&[60], &[0], (1, 1), 1.0, swing, 100, 4)
+                .iter()
+                .map(|n| (n.step, n.m.micro_timing, n.len_steps))
+                .collect()
+        };
+        assert_eq!(run(0.0), vec![(0, 0.0, 1.0), (1, 0.0, 1.0), (2, 0.0, 1.0), (3, 0.0, 1.0)]);
+        // Swing 1 = halber Abstand später (Step 1 → 1.5).
+        assert_eq!(run(1.0), vec![(0, 0.0, 1.0), (1, 0.5, 0.5), (2, 0.0, 1.0), (3, 0.5, 0.5)]);
     }
 
     /// `downUp` ist der Spiegel von `upDown`: startet oben, geht runter, dann

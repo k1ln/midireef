@@ -586,6 +586,10 @@ export function ArpEditor({ block }: { block: Block }) {
   const speedIdx = firstSlower < 0 ? SPEEDS.length : firstSlower;
   const speedNow = SPEEDS.find((sp) => sp.pulses === ratePulses);
   const setSpeed = (i: number) => setField(block.id, "ratePulses", SPEEDS[Math.min(SPEEDS.length - 1, Math.max(0, i))].pulses);
+  // Gate: Notenlänge in % des Abstands zur nächsten Stelle (folgt dem Tempo).
+  // Altprojekte mit nur `gateSteps`: daraus abgeleitet (max. 100 %).
+  const gatePct = block.gatePct ?? Math.min(100, Math.max(5, Math.round((gateSteps / Math.max(0.01, rateInSteps)) * 100)));
+  const swingPct = Math.round((block.swing ?? 0) * 100);
   const velocity = block.velocity ?? 100;
   const fitBar = block.fitBar !== false;
   const [semitone, setSemitone] = useState(false);
@@ -791,9 +795,18 @@ export function ArpEditor({ block }: { block: Block }) {
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginTop: 22 }}>
         <Button
           style={{ width: 120, height: 34, fontSize: 14 }}
-          onClick={() => wheel({ title: "Gate", min: 1, max: 64, unit: " step(s)", value: gateSteps, onPick: (n) => setField(block.id, "gateSteps", n) })}
+          title="Note length as a share of the time between notes"
+          onClick={() => wheel({ title: "Gate", min: 5, max: 100, unit: " %", value: gatePct, onPick: (n) => setField(block.id, "gatePct", n) })}
         >
-          Gate {gateSteps}
+          Gate {gatePct}%
+        </Button>
+        <Button
+          variant={swingPct > 0 ? "active" : "alt"}
+          style={{ width: 120, height: 34, fontSize: 14 }}
+          title="Delay every second note"
+          onClick={() => wheel({ title: "Swing", min: 0, max: 100, unit: " %", value: swingPct, onPick: (n) => setField(block.id, "swing", n / 100) })}
+        >
+          Swing {swingPct}%
         </Button>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <Button

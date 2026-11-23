@@ -125,6 +125,8 @@ export interface Block {
   chordNotes?: number[]; // arp: "Quadrate" (Tonhöhen)
   pattern?: number[]; // arp: Melodie = Indizes in chordNotes, -1 = Pause
   gateSteps?: number; // arp
+  gatePct?: number; // arp: Notenlänge in % des Abstands zur nächsten Stelle (5..100); hat Vorrang vor gateSteps
+  swing?: number; // arp: 0..1, verzögert jede zweite Melodie-Stelle
   rateSteps?: number; // arp
   ratePulses?: number; // arp: Tempo in Pulsen pro Melodie-Stelle (24 = Viertel); hat Vorrang vor rateSteps
   velocity?: number; // arp

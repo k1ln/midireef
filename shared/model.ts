@@ -398,6 +398,10 @@ export interface ArpBlock extends BlockBase {
   chordNotes: MidiNote[]; // Quadrate
   pattern?: number[]; // Melodie; fehlt (Altprojekt) = jedes Quadrat einmal aufwärts
   gateSteps: number; // Notenlänge in Steps
+  /** Notenlänge in % des Abstands zur nächsten Melodie-Stelle (5..100); hat Vorrang vor `gateSteps` und folgt dem Tempo. */
+  gatePct?: number;
+  /** Swing 0..1: verzögert jede zweite Melodie-Stelle um `swing` × halber Abstand. */
+  swing?: number;
   rateSteps: number; // Abstand zwischen Melodie-Stellen (Steps)
   /** Tempo in Pulsen pro Melodie-Stelle (24 PPQN: 24 = Viertel, 6 = 1/16, 3 = 1/32, 4 = 1/16-Triole); hat Vorrang vor `rateSteps` und geht auch schneller als ein Step. */
   ratePulses?: number;
