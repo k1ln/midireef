@@ -27,9 +27,16 @@ export class Net {
   private buildId?: string;
 
   constructor(url?: string) {
-    // Server läuft standardmäßig auf Port 8787 desselben Hosts.
+    // Im Betrieb liefert der Server das UI selbst aus — der WebSocket hängt
+    // am selben Origin (egal ob Port 80 oder 8787). Nur im Vite-Dev-Betrieb
+    // (anderer Port) läuft der Server separat auf 8787 desselben Hosts.
     const host = location.hostname || "localhost";
-    this.url = url ?? Net.urlFromLocation() ?? `ws://${host}:8787/ws`;
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const sameOrigin = !(import.meta as { env?: { DEV?: boolean } }).env?.DEV && !!location.host;
+    this.url =
+      url ??
+      Net.urlFromLocation() ??
+      (sameOrigin ? `${proto}://${location.host}/ws` : `ws://${host}:8787/ws`);
   }
 
   /** Override der Server-Adresse per `?ws=…` in der URL.

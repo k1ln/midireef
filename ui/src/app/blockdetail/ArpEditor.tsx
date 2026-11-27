@@ -581,13 +581,7 @@ export function ArpEditor({ block }: { block: Block }) {
   const stepsPerBar = block.stepsPerBar ?? 16;
   const ratePulses = block.ratePulses ?? Math.max(1, Math.round((rateSteps * ppb) / stepsPerBar));
   const rateInSteps = (ratePulses * stepsPerBar) / ppb;
-  // Position in der Leiter: der nächste gleich schnelle oder langsamere Eintrag.
-  const firstSlower = SPEEDS.findIndex((sp) => sp.pulses >= ratePulses);
-  const speedIdx = firstSlower < 0 ? SPEEDS.length : firstSlower;
   const speedNow = SPEEDS.find((sp) => sp.pulses === ratePulses);
-  // Knopf: oben = schneller, daher die Leiter umgekehrt (nächster Eintrag bei Eigenwert).
-  const speedKnob = SPEEDS.length - 1 - Math.min(SPEEDS.length - 1, speedIdx);
-  const setSpeed = (i: number) => setField(block.id, "ratePulses", SPEEDS[Math.min(SPEEDS.length - 1, Math.max(0, i))].pulses);
   // Gate: Notenlänge in % des Abstands zur nächsten Stelle (folgt dem Tempo).
   // Altprojekte mit nur `gateSteps`: daraus abgeleitet (max. 100 %).
   const gatePct = block.gatePct ?? Math.min(100, Math.max(5, Math.round((gateSteps / Math.max(0.01, rateInSteps)) * 100)));
@@ -651,16 +645,6 @@ export function ArpEditor({ block }: { block: Block }) {
           onChange={(n) => setField(block.id, "swing", n / 100)}
         />
         <Knob
-          label="SPEED"
-          value={speedKnob}
-          min={0}
-          max={SPEEDS.length - 1}
-          size={96}
-          dragPx={360}
-          format={(v) => (!speedNow && v === speedKnob ? `${ratePulses}p` : SPEEDS[SPEEDS.length - 1 - v].note)}
-          onChange={(v) => setSpeed(SPEEDS.length - 1 - v)}
-        />
-        <Knob
           label="VELOCITY"
           value={velocity}
           min={1}
@@ -680,6 +664,21 @@ export function ArpEditor({ block }: { block: Block }) {
         <div style={{ alignSelf: "center", fontSize: 15, color: "var(--pal-text-dim)" }}>
           Loop: {block.lengthBars ?? 1} {(block.lengthBars ?? 1) === 1 ? "bar" : "bars"} · melody {Math.round((pattern.length * ratePulses) / 24 * 100) / 100} beats
         </div>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
+        <div style={{ fontSize: 15, color: "var(--pal-text-dim)", marginRight: 4 }}>Speed:</div>
+        {SPEEDS.map((sp) => (
+          <Button
+            key={sp.pulses}
+            variant={sp.pulses === ratePulses ? "active" : "alt"}
+            style={{ minWidth: 84, height: 46, fontSize: 17, padding: "0 10px" }}
+            title={`${sp.note} (${sp.mult} of 1/16)`}
+            onClick={() => setField(block.id, "ratePulses", sp.pulses)}
+          >
+            {sp.note.replace(" triplet", "T")}
+          </Button>
+        ))}
+        {!speedNow && <div style={{ fontSize: 15, color: "var(--pal-text-dim)" }}>custom: {ratePulses}p</div>}
       </div>
       <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
         <div style={{ fontSize: 15, color: "var(--pal-text-dim)", marginRight: 4 }}>Scale:</div>

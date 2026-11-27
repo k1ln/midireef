@@ -85,7 +85,7 @@ Tap the gear icon (⚙) → your project is listed under "Currently open"; tap *
 
 ## 7. Optional: Wi-Fi access point mode
 
-If there's no network available where you're performing, the Pi can host its own. In Settings (⚙) → "Wi-Fi access point", set a network name and password, tap **Apply**. The screen then shows a QR code and the address (`http://10.42.0.1:8787`) to join from a phone or laptop — useful for controlling MidiReef remotely from another device, or just checking on it.
+If there's no network available where you're performing, the Pi can host its own. In Settings (⚙) → "Wi-Fi access point", set a network name and password, tap **Apply**. The screen then shows a QR code and the address (`http://10.42.0.1`) to join from a phone or laptop — useful for controlling MidiReef remotely from another device, or just checking on it.
 
 Note: the Pi only has one Wi-Fi radio, so turning the access point on drops any Wi-Fi network it was previously connected to (an Ethernet connection, if you have one plugged in, keeps working and is shared to AP clients).
 

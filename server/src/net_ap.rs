@@ -178,7 +178,7 @@ pub fn status() -> (bool, String) {
 /// vorher via `status()` (nur wenn `supported()`), damit die Karte
 /// „läuft"/„läuft nicht" korrekt zeigt. Das Passwort geht bewusst mit zurück —
 /// der vertraute Kiosk muss es (und den QR-Code zum Beitreten) anzeigen; wer
-/// den AP-Schlüssel nicht kennt, erreicht `:8787` ohnehin nicht.
+/// den AP-Schlüssel nicht kennt, erreicht den Port ohnehin nicht.
 pub fn state_event(cfg: &NetworkConfig, port: u16, active: bool) -> serde_json::Value {
     serde_json::json!({
         "t": "network.state",

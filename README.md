@@ -65,7 +65,7 @@ cd ~/midireef/src && git pull && ./deploy/install.sh
 
 Your saved projects live in `~/midireef/data/` and are never touched by an update.
 
-The installer also names the Pi `midireef`, so any device on the same network (a tablet, say) can open the UI at **`http://midireef.local:8787`**. Pick another name with `MIDIREEF_HOSTNAME=studio ./deploy/install.sh`, or `MIDIREEF_HOSTNAME= ./deploy/install.sh` to leave the hostname alone. Some Android tablets and older Windows versions can't resolve `.local` names — use the Pi's IP address there.
+The installer also names the Pi `midireef`, so any device on the same network (a tablet, say) can open the UI at **`http://midireef.local`**. Pick another name with `MIDIREEF_HOSTNAME=studio ./deploy/install.sh`, or `MIDIREEF_HOSTNAME= ./deploy/install.sh` to leave the hostname alone. Some Android tablets and older Windows versions can't resolve `.local` names — use the Pi's IP address there.
 
 ---
 

@@ -11,15 +11,15 @@ Chromium im Vollbild-Kiosk, der Rust-Server als `systemd`-Dienst, MIDI über ALS
 Mac (Entwicklung)                          Pi 5 (Betrieb)
 ─────────────────                          ──────────────
 server/src ──┐                             systemd: midireef-server
-             ├─ Docker (arm64, nativ) ──►    ├─ :8787/ws     ← WebSocket
-             │                                └─ :8787/*      ← gebautes UI
+             ├─ Docker (arm64, nativ) ──►    ├─ :80/ws      ← WebSocket
+             │                                └─ :80/*      ← gebautes UI
 ui/src ──────┴─ vite build ───────────►    systemd --user: midireef-kiosk
-                                              └─ Chromium --kiosk localhost:8787
+                                              └─ Chromium --kiosk localhost
 ```
 
 Der Rust-Server bedient **beides** auf einem Port: `/ws` und die statischen
 UI-Dateien aus `MIDIREEF_UI_DIR` (Default `./ui`). Damit gibt es keinen zweiten
-Webserver und keinen Port-Mismatch — der Kiosk zeigt einfach `localhost:8787`.
+Webserver und keinen Port-Mismatch — der Kiosk zeigt einfach `localhost`.
 
 ### Warum die UI sich selbst neu lädt
 
@@ -44,7 +44,7 @@ $EDITOR deploy/config.env          # PI_HOST, PI_USER, PI_DIR, PI_HOSTNAME
 
 `PI_HOSTNAME` (Standard `midireef`) ist der Name, den der Pi im Netz tragen soll:
 nach `make deploy` ist die UI von jedem Gerät im selben Netz (z.B. Tablet) unter
-`http://<PI_HOSTNAME>.local:8787` erreichbar. Der Release-Build setzt den
+`http://<PI_HOSTNAME>.local` erreichbar. Der Release-Build setzt den
 Hostnamen auf dem Pi (`deploy/set-hostname.sh`, idempotent) und zieht `PI_HOST`
 in `config.env` nach, falls es der alte `.local`-Name war.
 
@@ -159,7 +159,7 @@ Der Pi kann sein eigenes WLAN aufspannen — praktisch, wenn kein Netz da ist un
 man trotzdem per Handy/Laptop an die UI will. Bedient wird das **in der UI**
 (Einstellungen → „Wi-Fi access point"), nicht per Skript: WLAN-Name + Passwort
 eintippen, „Apply". Läuft der AP, zeigt die Karte die Adresse
-`http://10.42.0.1:8787` und einen QR-Code zum Beitreten. Das Passwort gilt fürs
+`http://10.42.0.1` und einen QR-Code zum Beitreten. Das Passwort gilt fürs
 WLAN; die App selbst hat keins.
 
 Was `make setup` dafür einrichtet:
@@ -215,7 +215,7 @@ wegräumen; falls nicht, `rm -rf ~/.cache/midireef-chromium` auf dem Pi.
 
 **Ruckelnde Hintergrundszene.** GPU-Rendering prüfen: im Kiosk `chrome://gpu` ist
 ohne Tastatur nicht erreichbar, daher stattdessen mit
-`make kiosk-url URL=http://localhost:8787` kurz eine normale Seite laden — oder die
+`make kiosk-url URL=http://localhost` kurz eine normale Seite laden — oder die
 Qualitätsstufe der Pixi-Szene senken (siehe `ui/src/scene/underwater.ts`).
 
 **Deploy hängt bei `sudo`.** Der Pi-Benutzer braucht passwortloses `sudo`

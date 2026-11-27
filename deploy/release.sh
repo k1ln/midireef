@@ -75,7 +75,7 @@ if [[ -n "${PI_HOSTNAME:-}" && "$PI_HOST" == *.local && "$PI_HOST" != "$NEW_HOST
   done
   if [[ $reachable == 1 ]]; then
     sed "s|^PI_HOST=.*|PI_HOST=$NEW_HOST|" deploy/config.env > deploy/config.env.tmp && mv deploy/config.env.tmp deploy/config.env
-    ok "Pi ist jetzt unter http://$NEW_HOST:${MIDIREEF_PORT:-8787} erreichbar — PI_HOST in deploy/config.env darauf umgestellt."
+    ok "Pi ist jetzt unter http://$NEW_HOST erreichbar — PI_HOST in deploy/config.env darauf umgestellt."
   else
     warn "$NEW_HOST antwortet (noch) nicht per SSH. Ist der Pi umbenannt, setze PI_HOST=$NEW_HOST in deploy/config.env."
   fi

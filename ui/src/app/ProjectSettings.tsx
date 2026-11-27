@@ -857,7 +857,7 @@ function WifiApCard() {
               <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 6 }}>{network.ssid}</div>
               <div style={{ fontSize: 13, color: "var(--pal-text-dim)" }}>Then open</div>
               <div className="mono" style={{ fontSize: 16, fontWeight: 700 }}>
-                http://{network.apAddress}:{network.port}
+                http://{network.apAddress}{network.port === 80 ? "" : `:${network.port}`}
               </div>
               <div style={{ fontSize: 12, color: "var(--pal-text-dim)", marginTop: 8 }}>
                 Scan the code to join the Wi-Fi.

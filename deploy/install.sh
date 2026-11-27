@@ -25,8 +25,8 @@ die()  { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 INSTALL_DIR="${MIDIREEF_DIR:-$HOME/midireef}"
 REPO_URL="${MIDIREEF_REPO:-https://github.com/k1ln/midireef.git}"
 BRANCH="${MIDIREEF_BRANCH:-main}"
-PORT="${MIDIREEF_PORT:-8787}"
-# Name im Netz → http://<name>.local:$PORT (z.B. vom Tablet). Leer = Hostname nicht anfassen.
+PORT="${MIDIREEF_PORT:-80}"
+# Name im Netz → http://<name>.local (z.B. vom Tablet). Leer = Hostname nicht anfassen.
 NET_HOSTNAME="${MIDIREEF_HOSTNAME-midireef}"
 PI_USER="$(whoami)"
 
@@ -181,7 +181,7 @@ sudo udevadm trigger --subsystem-match=input --action=change
 
 echo
 ok "MidiReef installed."
-echo "  Open:    http://localhost:$PORT  (also reachable at http://$(hostname).local:$PORT from another device)"
+echo "  Open:    http://localhost:$PORT  (also reachable at http://$(hostname).local from another device)"
 echo "  Logs:    journalctl -u midireef-server -f"
 echo "  Status:  systemctl status midireef-server; systemctl --user status midireef-kiosk"
 echo "  Update:  cd $SRC_DIR && git pull && ./deploy/install.sh"

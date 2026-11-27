@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Setzt den Hostnamen des Pi, damit er im Netz unter <name>.local (mDNS/Avahi)
-# erreichbar ist: http://<name>.local:8787
+# erreichbar ist: http://<name>.local
 #
 # Läuft AUF dem Pi (aufgerufen von install.sh und release.sh), idempotent: ist
 # der Name schon gesetzt, passiert nichts. Aufruf: set-hostname.sh <name>

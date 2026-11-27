@@ -5,7 +5,7 @@
 # Compositor-Socket und Ziel-URL werden hier selbst ermittelt und abgewartet.
 set -uo pipefail
 
-URL="$(cat "$HOME/.config/midireef/kiosk-url" 2>/dev/null || echo http://localhost:8787)"
+URL="$(cat "$HOME/.config/midireef/kiosk-url" 2>/dev/null || echo http://localhost)"
 PROFILE="$HOME/.cache/midireef-chromium"
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
