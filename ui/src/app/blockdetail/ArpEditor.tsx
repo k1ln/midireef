@@ -523,10 +523,10 @@ function ArpStepSquare({
 }) {
   const send = useSend();
   const rest = note === undefined;
-  // Ein Tipp = eine Wiederholung mehr, nach dem Maximum wieder auf 1.
+  // − / + ändern die Anschläge um eins, ohne Umbruch (bei 1 bzw. dem Maximum gesperrt).
   const shownReps = Math.min(reps, repsCap);
-  const cycleReps = () =>
-    send({ t: "arp.setStepRepeats", blockId: block.id, index: col, repeats: shownReps >= repsCap ? 1 : shownReps + 1 });
+  const setReps = (n: number) =>
+    send({ t: "arp.setStepRepeats", blockId: block.id, index: col, repeats: Math.min(repsCap, Math.max(1, n)) });
   const shift = (delta: number) => send({ t: "arp.shiftStep", blockId: block.id, index: col, delta, fine });
   // Tippen: Cursor hierher + anspielen; lang halten: Stelle entfernen.
   const press = useLongPress(
@@ -574,16 +574,36 @@ function ArpStepSquare({
       <Button style={arrow} disabled={rest} onClick={() => shift(-1)} aria-label={`Step ${col + 1} down`}>
         ▼
       </Button>
-      <Button
-        variant={shownReps > 1 ? "active" : "alt"}
-        style={{ width: STEP_SQ_W, height: 72, fontSize: 30, padding: 0 }}
-        disabled={rest || repsCap < 2}
-        onClick={cycleReps}
-        aria-label={`Step ${col + 1} hits: ${shownReps}`}
-        title="Hits per note — tap to add one, wraps back to 1"
-      >
-        ×{shownReps}
-      </Button>
+      <div style={{ display: "flex", width: STEP_SQ_W, height: 72, gap: 4, alignItems: "center" }}>
+        <Button
+          style={{ width: 44, height: 72, fontSize: 30, padding: 0 }}
+          disabled={rest || shownReps <= 1}
+          onClick={() => setReps(shownReps - 1)}
+          aria-label={`Step ${col + 1} fewer hits`}
+        >
+          −
+        </Button>
+        <div
+          style={{
+            flex: 1,
+            textAlign: "center",
+            fontSize: 26,
+            fontWeight: 700,
+            color: rest ? "var(--pal-text-dim)" : shownReps > 1 ? "var(--pal-white)" : "var(--pal-text-dim)",
+          }}
+          title="Hits per note"
+        >
+          {rest ? "" : `×${shownReps}`}
+        </div>
+        <Button
+          style={{ width: 44, height: 72, fontSize: 30, padding: 0 }}
+          disabled={rest || shownReps >= repsCap}
+          onClick={() => setReps(shownReps + 1)}
+          aria-label={`Step ${col + 1} more hits`}
+        >
+          +
+        </Button>
+      </div>
     </div>
   );
 }
@@ -810,7 +830,7 @@ export function ArpEditor({ block }: { block: Block }) {
       )}
       <div style={{ ...hint, marginTop: 22 }}>
         Played notes — the melody in order. ▲▼ change only that one step{fine ? "" : " (to the next scale note)"} (the squares at the top change every step that uses them). Tap = hear &amp; move the
-        cursor, hold = remove the step. ×N under a step = hits per note (tap to cycle):
+        cursor, hold = remove the step. −/+ under a step = hits per note:
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
         {pattern.length === 0 && <div style={hint}>No steps yet.</div>}
