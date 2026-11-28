@@ -127,7 +127,7 @@ export interface Block {
   gateSteps?: number; // arp
   gatePct?: number; // arp: Notenlänge in % des Abstands zur nächsten Stelle (5..100); hat Vorrang vor gateSteps
   swing?: number; // arp: 0..1, verzögert jede zweite Melodie-Stelle
-  repeats?: number; // arp: 1..10 Anschläge pro Melodie-Stelle
+  stepRepeats?: number[]; // arp: je Melodie-Stelle 1..10 Anschläge (parallel zu pattern; fehlt = 1)
   rateSteps?: number; // arp
   ratePulses?: number; // arp: Tempo in Pulsen pro Melodie-Stelle (24 = Viertel); hat Vorrang vor rateSteps
   velocity?: number; // arp

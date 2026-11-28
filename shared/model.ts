@@ -402,8 +402,8 @@ export interface ArpBlock extends BlockBase {
   gatePct?: number;
   /** Swing 0..1: verzögert jede zweite Melodie-Stelle um `swing` × halber Abstand. */
   swing?: number;
-  /** Wiederholungen 1..10: jede Melodie-Stelle schlägt so oft an, gleichmäßig über ihren Abstand verteilt; das Gate gilt je Anschlag. */
-  repeats?: number;
+  /** Wiederholungen je Melodie-Stelle (parallel zu `pattern`, 1..10, fehlend = 1): die Stelle schlägt so oft an, gleichmäßig über ihren Abstand verteilt; das Gate gilt je Anschlag. */
+  stepRepeats?: number[];
   rateSteps: number; // Abstand zwischen Melodie-Stellen (Steps)
   /** Tempo in Pulsen pro Melodie-Stelle (24 PPQN: 24 = Viertel, 6 = 1/16, 3 = 1/32, 4 = 1/16-Triole); hat Vorrang vor `rateSteps` und geht auch schneller als ein Step. */
   ratePulses?: number;
@@ -1185,6 +1185,7 @@ export type Command =
   | { t: "arp.setStep"; blockId: Id; index: number; square: number } // Melodie-Stelle → Quadrat (-1 = Pause); index == Länge hängt an
   | { t: "arp.shiftStep"; blockId: Id; index: number; delta: number; fine?: boolean } // Pfeile an EINER Melodie-Stelle (nur sie, nicht alle auf demselben Quadrat)
   | { t: "arp.playIn"; blockId: Id; index: number; note: MidiNote } // eingespielte Note: Quadrat dieser Tonhöhe suchen/anlegen, Melodie-Stelle index darauf
+  | { t: "arp.setStepRepeats"; blockId: Id; index: number; repeats: number } // Anschläge dieser Melodie-Stelle (1..10)
   | { t: "arp.removeStep"; blockId: Id; index?: number } // ohne index: letzte Stelle
   | { t: "arp.clearSteps"; blockId: Id }
   | { t: "arp.randomize"; blockId: Id; seed: number } // zufällige Melodie aus den Quadraten (ohne Quadrate: 5 Skalentöne anlegen)

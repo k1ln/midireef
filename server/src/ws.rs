@@ -1880,10 +1880,34 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
                 });
             }
         }
+        // Anschläge (Ratchet) EINER Melodie-Stelle, 1..10.
+        "arp.setStepRepeats" => {
+            if let (Some(id), Some(i), Some(n)) = (
+                str_field(&cmd, "blockId"),
+                cmd.get("index").and_then(|v| v.as_u64()),
+                cmd.get("repeats").and_then(|v| v.as_u64()),
+            ) {
+                with_arp_reps(state, &id, |reps, len| {
+                    if (i as usize) < len {
+                        reps.resize(len, 1);
+                        reps[i as usize] = n.clamp(1, 10);
+                    }
+                });
+            }
+        }
         // Letzte Melodie-Stelle weg (`index` fehlt) oder die an `index`.
         "arp.removeStep" => {
             if let Some(id) = str_field(&cmd, "blockId") {
                 let index = cmd.get("index").and_then(|v| v.as_u64());
+                edit_arp_reps(state, &id, |reps| match index {
+                    Some(i) if (i as usize) < reps.len() => {
+                        reps.remove(i as usize);
+                    }
+                    Some(_) => {}
+                    None => {
+                        reps.pop();
+                    }
+                });
                 with_arp(state, &id, |_, pattern| match index {
                     Some(i) if (i as usize) < pattern.len() => {
                         pattern.remove(i as usize);
@@ -1899,11 +1923,13 @@ fn dispatch(state: &AppState, cmd: serde_json::Value) {
         "arp.randomize" => {
             if let Some(id) = str_field(&cmd, "blockId") {
                 let seed = cmd.get("seed").and_then(|v| v.as_u64()).unwrap_or(1);
+                edit_arp_reps(state, &id, |reps| reps.clear()); // neue Melodie, neue (keine) Wiederholungen
                 with_arp_scaled(state, &id, |squares, pattern, scale| arp_randomize(squares, pattern, scale, seed));
             }
         }
         "arp.clearSteps" => {
             if let Some(id) = str_field(&cmd, "blockId") {
+                edit_arp_reps(state, &id, |reps| reps.clear());
                 with_arp(state, &id, |_, pattern| pattern.clear());
             }
         }
@@ -3640,6 +3666,61 @@ fn arp_play_in(squares: &mut Vec<i64>, pattern: &mut Vec<i64>, index: usize, not
         None => return,
     };
     arp_set_step(squares, pattern, index.min(pattern.len()), sq as i64);
+}
+
+/// Liest die Wiederholungen je Melodie-Stelle (`stepRepeats`) eines Arp-Bausteins.
+fn arp_reps_of(b: &serde_json::Value) -> Vec<u64> {
+    b.get("stepRepeats")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().map(|x| x.as_u64().unwrap_or(1).clamp(1, 10)).collect())
+        .unwrap_or_default()
+}
+
+/// Schreibt `stepRepeats` zurück; nur Einsen (= Standard) werden gar nicht gespeichert.
+fn arp_store_reps(b: &mut serde_json::Value, mut reps: Vec<u64>) {
+    while reps.last() == Some(&1) {
+        reps.pop();
+    }
+    if reps.is_empty() {
+        if let Some(o) = b.as_object_mut() {
+            o.remove("stepRepeats");
+        }
+    } else {
+        b["stepRepeats"] = serde_json::json!(reps);
+    }
+}
+
+/// Ändert nur `stepRepeats` (ohne Snapshot) — für Befehle, die die Melodie
+/// verschieben (Stelle löschen/leeren); der anschließende `with_arp`-Aufruf
+/// sendet den Snapshot.
+fn edit_arp_reps<F: FnOnce(&mut Vec<u64>)>(state: &AppState, block_id: &str, f: F) {
+    let mut proj = state.project.lock().unwrap();
+    let Some(b) = find_block_mut(&mut proj, block_id) else { return };
+    if b.get("type").and_then(|v| v.as_str()) != Some("arp") {
+        return;
+    }
+    let mut reps = arp_reps_of(b);
+    f(&mut reps);
+    arp_store_reps(b, reps);
+}
+
+/// Wie `edit_arp_reps`, reicht die Melodie-Länge durch und sendet den Snapshot.
+fn with_arp_reps<F: FnOnce(&mut Vec<u64>, usize)>(state: &AppState, block_id: &str, f: F) {
+    {
+        let mut proj = state.project.lock().unwrap();
+        let Some(b) = find_block_mut(&mut proj, block_id) else { return };
+        if b.get("type").and_then(|v| v.as_str()) != Some("arp") {
+            return;
+        }
+        let len = match b.get("pattern").and_then(|v| v.as_array()) {
+            Some(p) => p.len(),
+            None => b.get("chordNotes").and_then(|v| v.as_array()).map_or(0, |a| a.len()),
+        };
+        let mut reps = arp_reps_of(b);
+        f(&mut reps, len);
+        arp_store_reps(b, reps);
+    }
+    broadcast_snapshot(state);
 }
 
 /// Bearbeitet die Quadrate (`chordNotes`) und die Melodie (`pattern`) eines

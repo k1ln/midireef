@@ -21,7 +21,7 @@ import type { Block, Device, Lane } from "../../state";
 import { useNet, useRuntime, useSend, useStoreValue } from "../store";
 import { noteName } from "../NotePicker";
 import { Button } from "../widgets/Button";
-import { Knob } from "../widgets/Knob";
+import { HSlider } from "../widgets/HSlider";
 import { SelectMenu, type SelectOption } from "../widgets/SelectMenu";
 import { useWheelPicker } from "../widgets/WheelPicker";
 import { useLongPress } from "../useLongPress";
@@ -491,6 +491,8 @@ function RollRow({
 // ── Gespielte Noten: die Melodie in Reihenfolge als Quadrate ───────────────
 
 const STEP_SQ_W = SQUARE;
+/** Obergrenze der Anschläge je Stelle in der UI (die Engine erlaubt 10). */
+const MAX_STEP_REPEATS = 8;
 
 /** Eine Stelle der Melodie als Quadrat mit ▲/▼ — ändert NUR diese Stelle
  *  (die Quadrate oben ändern dagegen jede Stelle auf demselben Quadrat). */
@@ -503,6 +505,8 @@ function ArpStepSquare({
   isPlayhead,
   setCursor,
   fine,
+  reps,
+  repsCap,
 }: {
   block: Block;
   col: number;
@@ -512,9 +516,17 @@ function ArpStepSquare({
   isPlayhead: boolean;
   setCursor: (i: number) => void;
   fine: boolean;
+  /** Anschläge dieser Stelle (1 = normal). */
+  reps: number;
+  /** Mehr als so viele Anschläge passen bei diesem Tempo nicht in eine Stelle. */
+  repsCap: number;
 }) {
   const send = useSend();
   const rest = note === undefined;
+  // Ein Tipp = eine Wiederholung mehr, nach dem Maximum wieder auf 1.
+  const shownReps = Math.min(reps, repsCap);
+  const cycleReps = () =>
+    send({ t: "arp.setStepRepeats", blockId: block.id, index: col, repeats: shownReps >= repsCap ? 1 : shownReps + 1 });
   const shift = (delta: number) => send({ t: "arp.shiftStep", blockId: block.id, index: col, delta, fine });
   // Tippen: Cursor hierher + anspielen; lang halten: Stelle entfernen.
   const press = useLongPress(
@@ -562,6 +574,16 @@ function ArpStepSquare({
       <Button style={arrow} disabled={rest} onClick={() => shift(-1)} aria-label={`Step ${col + 1} down`}>
         ▼
       </Button>
+      <Button
+        variant={shownReps > 1 ? "active" : "alt"}
+        style={{ width: STEP_SQ_W, height: 72, fontSize: 30, padding: 0 }}
+        disabled={rest || repsCap < 2}
+        onClick={cycleReps}
+        aria-label={`Step ${col + 1} hits: ${shownReps}`}
+        title="Hits per note — tap to add one, wraps back to 1"
+      >
+        ×{shownReps}
+      </Button>
     </div>
   );
 }
@@ -586,9 +608,8 @@ export function ArpEditor({ block }: { block: Block }) {
   // Altprojekte mit nur `gateSteps`: daraus abgeleitet (max. 100 %).
   const gatePct = block.gatePct ?? Math.min(100, Math.max(5, Math.round((gateSteps / Math.max(0.01, rateInSteps)) * 100)));
   const swingPct = Math.round((block.swing ?? 0) * 100);
-  const repeats = Math.min(10, Math.max(1, Math.round(block.repeats ?? 1)));
   // Die Engine rastet auf ganze Pulse: mehr Anschläge als Pulse pro Stelle gibt es nicht.
-  const repeatsCap = Math.max(1, Math.floor(ratePulses));
+  const repeatsCap = Math.min(MAX_STEP_REPEATS, Math.max(1, Math.floor(ratePulses)));
   const velocity = block.velocity ?? 100;
   const fitBar = block.fitBar !== false;
   const [semitone, setSemitone] = useState(false);
@@ -626,46 +647,12 @@ export function ArpEditor({ block }: { block: Block }) {
 
   return (
     <div>
+      <div style={{ display: "flex", flexWrap: "wrap", columnGap: 28, rowGap: 6, marginBottom: 10 }}>
+        <HSlider label="GATE" value={gatePct} min={5} max={100} unit="%" onChange={(n) => setField(block.id, "gatePct", n)} />
+        <HSlider label="SWING" value={swingPct} min={0} max={100} unit="%" onChange={(n) => setField(block.id, "swing", n / 100)} />
+        <HSlider label="VELOCITY" value={velocity} min={1} max={127} onChange={(n) => setField(block.id, "velocity", n)} />
+      </div>
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 14, marginBottom: 16 }}>
-        <Knob
-          label="GATE"
-          value={gatePct}
-          min={5}
-          max={100}
-          unit="%"
-          size={96}
-          dragPx={300}
-          onChange={(n) => setField(block.id, "gatePct", n)}
-        />
-        <Knob
-          label="SWING"
-          value={swingPct}
-          min={0}
-          max={100}
-          unit="%"
-          size={96}
-          dragPx={300}
-          onChange={(n) => setField(block.id, "swing", n / 100)}
-        />
-        <Knob
-          label="REPEAT"
-          value={repeats}
-          min={1}
-          max={10}
-          unit="×"
-          size={96}
-          dragPx={200}
-          onChange={(n) => setField(block.id, "repeats", n)}
-        />
-        <Knob
-          label="VELOCITY"
-          value={velocity}
-          min={1}
-          max={127}
-          size={96}
-          dragPx={360}
-          onChange={(n) => setField(block.id, "velocity", n)}
-        />
         <Button
           variant={fitBar ? "active" : "alt"}
           style={{ width: 170, height: 46, fontSize: 17 }}
@@ -674,11 +661,6 @@ export function ArpEditor({ block }: { block: Block }) {
         >
           Fit bar {fitBar ? "on" : "off"}
         </Button>
-        {repeats > repeatsCap && (
-          <div style={{ alignSelf: "center", fontSize: 15, color: "var(--pal-text-dim)" }}>
-            Repeat is limited to {repeatsCap}× at this speed
-          </div>
-        )}
         <div style={{ alignSelf: "center", fontSize: 15, color: "var(--pal-text-dim)" }}>
           Loop: {block.lengthBars ?? 1} {(block.lengthBars ?? 1) === 1 ? "bar" : "bars"} · melody {Math.round((pattern.length * ratePulses) / 24 * 100) / 100} beats
         </div>
@@ -828,7 +810,7 @@ export function ArpEditor({ block }: { block: Block }) {
       )}
       <div style={{ ...hint, marginTop: 22 }}>
         Played notes — the melody in order. ▲▼ change only that one step{fine ? "" : " (to the next scale note)"} (the squares at the top change every step that uses them). Tap = hear &amp; move the
-        cursor, hold = remove the step:
+        cursor, hold = remove the step. ×N under a step = hits per note (tap to cycle):
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
         {pattern.length === 0 && <div style={hint}>No steps yet.</div>}
@@ -843,6 +825,8 @@ export function ArpEditor({ block }: { block: Block }) {
             isPlayhead={playhead === i}
             setCursor={playIn.setCursor}
             fine={fine}
+            reps={block.stepRepeats?.[i] ?? 1}
+            repsCap={repeatsCap}
           />
         ))}
       </div>
