@@ -586,6 +586,9 @@ export function ArpEditor({ block }: { block: Block }) {
   // Altprojekte mit nur `gateSteps`: daraus abgeleitet (max. 100 %).
   const gatePct = block.gatePct ?? Math.min(100, Math.max(5, Math.round((gateSteps / Math.max(0.01, rateInSteps)) * 100)));
   const swingPct = Math.round((block.swing ?? 0) * 100);
+  const repeats = Math.min(10, Math.max(1, Math.round(block.repeats ?? 1)));
+  // Die Engine rastet auf ganze Pulse: mehr Anschläge als Pulse pro Stelle gibt es nicht.
+  const repeatsCap = Math.max(1, Math.floor(ratePulses));
   const velocity = block.velocity ?? 100;
   const fitBar = block.fitBar !== false;
   const [semitone, setSemitone] = useState(false);
@@ -645,6 +648,16 @@ export function ArpEditor({ block }: { block: Block }) {
           onChange={(n) => setField(block.id, "swing", n / 100)}
         />
         <Knob
+          label="REPEAT"
+          value={repeats}
+          min={1}
+          max={10}
+          unit="×"
+          size={96}
+          dragPx={200}
+          onChange={(n) => setField(block.id, "repeats", n)}
+        />
+        <Knob
           label="VELOCITY"
           value={velocity}
           min={1}
@@ -661,6 +674,11 @@ export function ArpEditor({ block }: { block: Block }) {
         >
           Fit bar {fitBar ? "on" : "off"}
         </Button>
+        {repeats > repeatsCap && (
+          <div style={{ alignSelf: "center", fontSize: 15, color: "var(--pal-text-dim)" }}>
+            Repeat is limited to {repeatsCap}× at this speed
+          </div>
+        )}
         <div style={{ alignSelf: "center", fontSize: 15, color: "var(--pal-text-dim)" }}>
           Loop: {block.lengthBars ?? 1} {(block.lengthBars ?? 1) === 1 ? "bar" : "bars"} · melody {Math.round((pattern.length * ratePulses) / 24 * 100) / 100} beats
         </div>

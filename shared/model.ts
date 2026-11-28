@@ -402,6 +402,8 @@ export interface ArpBlock extends BlockBase {
   gatePct?: number;
   /** Swing 0..1: verzögert jede zweite Melodie-Stelle um `swing` × halber Abstand. */
   swing?: number;
+  /** Wiederholungen 1..10: jede Melodie-Stelle schlägt so oft an, gleichmäßig über ihren Abstand verteilt; das Gate gilt je Anschlag. */
+  repeats?: number;
   rateSteps: number; // Abstand zwischen Melodie-Stellen (Steps)
   /** Tempo in Pulsen pro Melodie-Stelle (24 PPQN: 24 = Viertel, 6 = 1/16, 3 = 1/32, 4 = 1/16-Triole); hat Vorrang vor `rateSteps` und geht auch schneller als ein Step. */
   ratePulses?: number;
